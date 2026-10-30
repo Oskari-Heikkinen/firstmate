@@ -1,5 +1,5 @@
 {
- "code_ref": "9c6dee0f8022643548f75a231a9e2dbc2e55d799",
+ "code_ref": "05dee070c31decde34b684cb80bd24dbd7e653ff",
  "excluded": [
   {
    "class": "outside-roots",
@@ -517,7 +517,7 @@
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-crew-state.sh:1071",
+     "site": "bin/fm-crew-state.sh:1081",
      "source": "run_choice=$(fm_nm_select_run \"$CREW_BRANCH\" \"$run_overview\" \"$WT\" \"$NM_TIMEOUT\")",
      "template": "X:<NM_HOME | nm-home-resolver output | ~/.no-mistakes>/state.sqlite (no-mistakes state db)"
     },
@@ -559,21 +559,21 @@
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-crew-state.sh:255",
+     "site": "bin/fm-crew-state.sh:265",
      "source": "if fm_suspend_validate \"$META\" \"$ID\" \"$FM_HOME\" \"${FM_DATA_OVERRIDE:-$FM_HOME/data}\"; then",
      "template": "X:<project clone from D/<t>/suspension.json .project>/.git (git rev-parse/bundle)"
     },
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-crew-state.sh:290",
+     "site": "bin/fm-crew-state.sh:300",
      "source": "if reason=$(fm_dod_accept_ship_done \"$KIND\" \"$mode\" \"$WT\" \"$project\" \"$LOG_LINE\" \"$STATE\" \"$ID\" \"$META\"); then",
      "template": "X:<project clone from S/<t>.meta project=>"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-crew-state.sh:290",
+     "site": "bin/fm-crew-state.sh:300",
      "source": "if reason=$(fm_dod_accept_ship_done \"$KIND\" \"$mode\" \"$WT\" \"$project\" \"$LOG_LINE\" \"$STATE\" \"$ID\" \"$META\"); then",
      "template": "X:<project clone from S/<t>.meta project=>/.git (git for-each-ref --contains)"
     },
@@ -825,112 +825,112 @@
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:1269",
+     "site": "bin/fm-fleet-snapshot.sh:1272",
      "source": "file_mtime_epoch() { /usr/bin/stat -f '%m' \"$1\" 2>/dev/null || true; }",
      "template": "<arg1: path>"
     },
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:1270",
+     "site": "bin/fm-fleet-snapshot.sh:1273",
      "source": "file_mode_octal() { /usr/bin/stat -f '%Lp' \"$1\" 2>/dev/null || true; }",
      "template": "<arg1: path>"
     },
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:1273",
+     "site": "bin/fm-fleet-snapshot.sh:1276",
      "source": "file_mtime_epoch() { stat -c '%Y' \"$1\" 2>/dev/null || true; }",
      "template": "<arg1: path>"
     },
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:1274",
+     "site": "bin/fm-fleet-snapshot.sh:1277",
      "source": "file_mode_octal() { stat -c '%a' \"$1\" 2>/dev/null || true; }",
      "template": "<arg1: path>"
     },
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:135",
+     "site": "bin/fm-fleet-snapshot.sh:138",
      "source": "SCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"",
      "template": "bin/ (script dir)"
     },
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:136",
+     "site": "bin/fm-fleet-snapshot.sh:139",
      "source": "FM_ROOT=\"${FM_ROOT_OVERRIDE:-$(cd \"$SCRIPT_DIR/..\" && pwd)}\"",
      "template": "bin/.. (FM_ROOT, repo root)"
     },
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:1399",
+     "site": "bin/fm-fleet-snapshot.sh:1402",
      "source": "[ -f \"$file\" ] && [ ! -L \"$file\" ] || return 1",
      "template": "<arg1: summary file>"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:1401",
+     "site": "bin/fm-fleet-snapshot.sh:1404",
      "source": "if ! LC_ALL=C head -c \"$((FM_SNAPSHOT_SECONDMATE_MAX_BYTES + 1))\" \"$file\" > \"$captured\"; then",
      "template": "<arg1: summary file>"
     },
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:1427",
+     "site": "bin/fm-fleet-snapshot.sh:1430",
      "source": "[ -f \"$1\" ] && [ ! -L \"$1\" ] || return 1",
      "template": "<arg1: summary file>"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:1428",
+     "site": "bin/fm-fleet-snapshot.sh:1431",
      "source": "bytes=$(LC_ALL=C wc -c < \"$1\" | tr -d ' ')",
      "template": "<arg1: summary file>"
     },
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:1940",
+     "site": "bin/fm-fleet-snapshot.sh:1943",
      "source": "elif summary_file_read \"$home/state/home-summary.json\" \"$home\" \"$summary_file\"; then",
      "template": "X:<h>/state/home-summary.json"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:1940",
+     "site": "bin/fm-fleet-snapshot.sh:1943",
      "source": "elif summary_file_read \"$home/state/home-summary.json\" \"$home\" \"$summary_file\"; then",
      "template": "X:<h>/state/home-summary.json"
     },
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:1942",
+     "site": "bin/fm-fleet-snapshot.sh:1945",
      "source": "elif summary_file_oversized \"$home/state/home-summary.json\"; then",
      "template": "X:<h>/state/home-summary.json"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:1942",
+     "site": "bin/fm-fleet-snapshot.sh:1945",
      "source": "elif summary_file_oversized \"$home/state/home-summary.json\"; then",
      "template": "X:<h>/state/home-summary.json"
     },
     {
      "mode": "E",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:330",
+     "site": "bin/fm-fleet-snapshot.sh:333",
      "source": "if [ -e \"$2\" ]; then printf -v \"$1\" true; else printf -v \"$1\" false; fi",
      "template": "<arg2: path>"
     },
     {
      "mode": "E",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:911",
+     "site": "bin/fm-fleet-snapshot.sh:914",
      "source": "path_exists_json_to home_present \"$home\"",
      "template": "X:<secondmate home h> (meta home=)"
     },
@@ -1280,7 +1280,7 @@
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-wake-drain.sh:828",
+     "site": "bin/fm-wake-drain.sh:917",
      "source": "if [ -f \"$instruction\" ] && [ ! -L \"$instruction\" ]; then",
      "template": "<instruction path named by marker first line>"
     },
@@ -1789,56 +1789,56 @@
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-crew-state.sh:1014",
+     "site": "bin/fm-crew-state.sh:1024",
      "source": "nm_run runs --limit \"$FM_CREW_STATE_RUNS_LIMIT\"",
      "template": "ext:no-mistakes runs --limit"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-crew-state.sh:1045",
+     "site": "bin/fm-crew-state.sh:1055",
      "source": "RUN_OUT=$(nm_run axi status)",
      "template": "ext:no-mistakes axi status"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-crew-state.sh:1069",
+     "site": "bin/fm-crew-state.sh:1079",
      "source": "run_overview=$(fm_nm_run_checked \"$WT\" \"$NM_TIMEOUT\" axi) || overview_ok=0",
      "template": "ext:no-mistakes axi"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-crew-state.sh:1084",
+     "site": "bin/fm-crew-state.sh:1094",
      "source": "RUN_OUT=$(fm_nm_run_checked \"$WT\" \"$NM_TIMEOUT\" axi status --run \"$selected_id\") \\",
      "template": "ext:no-mistakes axi status --run"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-crew-state.sh:290",
+     "site": "bin/fm-crew-state.sh:300",
      "source": "if reason=$(fm_dod_accept_ship_done \"$KIND\" \"$mode\" \"$WT\" \"$project\" \"$LOG_LINE\" \"$STATE\" \"$ID\" \"$META\"); then",
      "template": "ext:no-mistakes axi status"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-crew-state.sh:377",
+     "site": "bin/fm-crew-state.sh:387",
      "source": "tmux) tmux display-message -p -t \"$1\" '#{pane_id}' >/dev/null 2>&1 ;;",
      "template": "ext:tmux display-message"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-crew-state.sh:909",
+     "site": "bin/fm-crew-state.sh:919",
      "source": "daemon_status=$(fm_nm_run_checked \"$WT\" \"$NM_TIMEOUT\" daemon status) || rc=$?",
      "template": "ext:no-mistakes daemon status"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-crew-state.sh:980",
+     "site": "bin/fm-crew-state.sh:990",
      "source": "ci_log=$(nm_run axi logs --step ci --run \"$run_id\" --full) || true",
      "template": "ext:no-mistakes axi logs --step ci"
     },
@@ -2520,35 +2520,35 @@
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2391",
+     "site": "bin/fm-classify-lib.sh:2463",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2420",
+     "site": "bin/fm-classify-lib.sh:2492",
      "source": "status_open_decisions_cursor_offset \"$f\"",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2424",
+     "site": "bin/fm-classify-lib.sh:2496",
      "source": "ident=$(_fm_open_decisions_file_ident \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2426",
+     "site": "bin/fm-classify-lib.sh:2498",
      "source": "cur_ident=$(_fm_open_decisions_file_ident \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2427",
+     "site": "bin/fm-classify-lib.sh:2499",
      "source": "size=$(_fm_status_file_size \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
@@ -2562,154 +2562,154 @@
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2436",
+     "site": "bin/fm-classify-lib.sh:2701",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2450",
+     "site": "bin/fm-classify-lib.sh:2715",
      "source": "current=$(_fm_open_decisions_file_ident \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2451",
+     "site": "bin/fm-classify-lib.sh:2716",
      "source": "size=$(_fm_status_file_size \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2523",
+     "site": "bin/fm-classify-lib.sh:2788",
      "source": "LC_ALL=C /usr/bin/stat -f '%HT:%p' \"$1\" 2>/dev/null",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2525",
+     "site": "bin/fm-classify-lib.sh:2790",
      "source": "LC_ALL=C stat -c '%F:%f' \"$1\" 2>/dev/null",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2546",
+     "site": "bin/fm-classify-lib.sh:2811",
      "source": "{ _sos_stat=$(LC_ALL=C exec stat -c $'%F:%f\\n%s\\n%d:%i\\n%W\\n%w' \"$_sos_f\"); } 2>/dev/null || _sos_stat=''",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2559",
+     "site": "bin/fm-classify-lib.sh:2822",
      "source": "_sos_path_state=$(_status_observed_path_state \"$_sos_f\") || _sos_path_state=stat-error",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2561",
+     "site": "bin/fm-classify-lib.sh:2824",
      "source": "if [ -L \"$_sos_f\" ]; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2562",
+     "site": "bin/fm-classify-lib.sh:2825",
      "source": "{ _sos_link_target=$(exec readlink \"$_sos_f\"); } 2>/dev/null || _sos_link_target=readlink-error",
      "template": "<arg2: status file>"
     },
     {
      "mode": "E",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2564",
+     "site": "bin/fm-classify-lib.sh:2827",
      "source": "elif [ ! -e \"$_sos_f\" ]; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2566",
+     "site": "bin/fm-classify-lib.sh:2829",
      "source": "elif [ ! -f \"$_sos_f\" ]; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2568",
+     "site": "bin/fm-classify-lib.sh:2831",
      "source": "elif [ -r \"$_sos_f\" ]; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2577",
+     "site": "bin/fm-classify-lib.sh:2840",
      "source": "_sos_size=$(_fm_status_file_size \"$_sos_f\") || _sos_size='size-error'",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2586",
+     "site": "bin/fm-classify-lib.sh:2849",
      "source": "_sos_ident=$(_fm_open_decisions_file_ident \"$_sos_f\") || _sos_ident=identity-error",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2590",
+     "site": "bin/fm-classify-lib.sh:2853",
      "source": "if [ -r \"$_sos_f\" ]; then _sos_access=readable; else _sos_access=unreadable; fi",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2693",
+     "site": "bin/fm-classify-lib.sh:3032",
      "source": "current=$(_fm_open_decisions_file_ident \"$2\") || { printf '0'; return 0; }",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2939",
+     "site": "bin/fm-classify-lib.sh:3350",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2981",
+     "site": "bin/fm-classify-lib.sh:3392",
      "source": "cur_ident=$(_fm_open_decisions_file_ident \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2983",
+     "site": "bin/fm-classify-lib.sh:3394",
      "source": "size=$(_fm_status_file_size \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3018",
+     "site": "bin/fm-classify-lib.sh:3429",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 0",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3024",
+     "site": "bin/fm-classify-lib.sh:3435",
      "source": "actual_size=$(_fm_status_file_size \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3035",
+     "site": "bin/fm-classify-lib.sh:3446",
      "source": "_fm_status_read_span \"$f\" \"$offset\" \"$((size - offset))\" > \"$chunk_file\" 2>/dev/null \\",
      "template": "<arg1: status file>"
     },
@@ -3274,28 +3274,28 @@
     {
      "mode": "clock",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:146",
+     "site": "bin/fm-fleet-snapshot.sh:149",
      "source": "SNAPSHOT_NOW=${FM_SNAPSHOT_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}",
      "template": "clock:date -u +%Y-%m-%dT%H:%M:%SZ"
     },
     {
      "mode": "clock",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:152",
+     "site": "bin/fm-fleet-snapshot.sh:155",
      "source": "|| date +%s)",
      "template": "clock:date +%s"
     },
     {
      "mode": "clock",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:154",
+     "site": "bin/fm-fleet-snapshot.sh:157",
      "source": "case \"$SNAPSHOT_EPOCH\" in ''|*[!0-9]*) SNAPSHOT_EPOCH=$(date +%s) ;; esac",
      "template": "clock:date +%s"
     },
     {
      "mode": "clock",
      "root": "X",
-     "site": "bin/fm-fleet-snapshot.sh:161",
+     "site": "bin/fm-fleet-snapshot.sh:164",
      "source": "*) SNAPSHOT_TODAY=$(date -u +%Y-%m-%d) ;;",
      "template": "clock:date -u +%Y-%m-%d"
     },
@@ -3414,28 +3414,28 @@
      "root": "T",
      "site": "bin/fm-classify-lib.sh:2152",
      "source": "chunk_size=$(_fm_chunk_size_and_tail \"$chunk_file\" 2>/dev/null) || { rm -f \"$chunk_file\"; return 1; }",
-     "template": "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX (chunk from :2044 mktemp)"
+     "template": "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX (chunk from :2136 mktemp)"
     },
     {
      "mode": "R",
      "root": "T",
      "site": "bin/fm-classify-lib.sh:2161",
      "source": "done < \"$chunk_file\"",
-     "template": "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX (chunk from :2044 mktemp)"
+     "template": "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX (chunk from :2136 mktemp)"
     },
     {
      "mode": "R",
      "root": "T",
      "site": "bin/fm-classify-lib.sh:2253",
      "source": "|| ! span_size=$(LC_ALL=C wc -c < \"$span_file\" 2>/dev/null) \\",
-     "template": "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX (span file, mktemp :2159)"
+     "template": "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX (span file, mktemp :2251)"
     },
     {
      "mode": "R",
      "root": "T",
      "site": "bin/fm-classify-lib.sh:2270",
      "source": "done < \"$span_file\"",
-     "template": "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX (span file, mktemp :2159)"
+     "template": "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX (span file, mktemp :2251)"
     },
     {
      "mode": "R",
@@ -3454,581 +3454,581 @@
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-crew-state.sh:319",
+     "site": "bin/fm-crew-state.sh:329",
      "source": "LOG_LINE=$(status_current_line \"$LOG\" \"$KIND\" \"$OPEN_DECISIONS\")",
      "template": "T:<snapshot tmp dir>/<t> open-decisions set (FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE)"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1007",
+     "site": "bin/fm-fleet-snapshot.sh:1010",
      "source": "--slurpfile backlog \"$1\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/backlog.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1008",
+     "site": "bin/fm-fleet-snapshot.sh:1011",
      "source": "--slurpfile tasks \"$2\" '",
      "template": "T:fm-fleet-snapshot.XXXXXX/tasks.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1068",
+     "site": "bin/fm-fleet-snapshot.sh:1071",
      "source": "--slurpfile backlog \"$1\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/backlog.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1069",
+     "site": "bin/fm-fleet-snapshot.sh:1072",
      "source": "--slurpfile tasks \"$2\" --slurpfile contributions \"$CONTRIBUTIONS_JSON_FILE\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/contributions.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1069",
+     "site": "bin/fm-fleet-snapshot.sh:1072",
      "source": "--slurpfile tasks \"$2\" --slurpfile contributions \"$CONTRIBUTIONS_JSON_FILE\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/tasks.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1070",
+     "site": "bin/fm-fleet-snapshot.sh:1073",
      "source": "--slurpfile supervision \"$JSON_TRANSPORT_DIR/supervision.json\" \"$FM_LANDED_JQ_DEFS\"'",
      "template": "T:fm-fleet-snapshot.XXXXXX/supervision.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1405",
+     "site": "bin/fm-fleet-snapshot.sh:1408",
      "source": "bytes=$(LC_ALL=C wc -c < \"$captured\" | tr -d ' ')",
      "template": "T:fm-fleet-ledgers.XXXXXX/<capture of summary>"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1410",
+     "site": "bin/fm-fleet-snapshot.sh:1413",
      "source": "|| ! jq -e -s --arg home \"$home\" -f \"$SNAPSHOT_SUMMARY_FILTER\" \"$captured\" >/dev/null 2>&1; then",
      "template": "T:fm-fleet-ledgers.XXXXXX/<capture of summary>"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1410",
+     "site": "bin/fm-fleet-snapshot.sh:1413",
      "source": "|| ! jq -e -s --arg home \"$home\" -f \"$SNAPSHOT_SUMMARY_FILTER\" \"$captured\" >/dev/null 2>&1; then",
      "template": "T:fm-fleet-ledgers.XXXXXX/summary-filter.jq"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1414",
+     "site": "bin/fm-fleet-snapshot.sh:1417",
      "source": "jq -c -s '.[0]' \"$captured\" > \"$output\"",
      "template": "T:fm-fleet-ledgers.XXXXXX/<capture of summary>"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1516",
+     "site": "bin/fm-fleet-snapshot.sh:1519",
      "source": "[ -s \"$manifest\" ] || return 0",
      "template": "T:fm-fleet-ledgers.XXXXXX/manifest.jsonl"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1590",
+     "site": "bin/fm-fleet-snapshot.sh:1593",
      "source": "generated=$(jq -r '.generated_epoch' \"$1\" 2>/dev/null || true)",
      "template": "T:fm-fleet-ledgers.XXXXXX/selected-summary-<n>.json"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1611",
+     "site": "bin/fm-fleet-snapshot.sh:1614",
      "source": "if [ ! -f \"$f\" ]; then",
      "template": "T:fm-fleet-tasks.XXXXXX/<id>.status"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1624",
+     "site": "bin/fm-fleet-snapshot.sh:1627",
      "source": "size=$(/usr/bin/stat -f \"%z\" \"$f\" 2>/dev/null) || exit 3",
      "template": "T:fm-fleet-tasks.XXXXXX/<id>.status"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1626",
+     "site": "bin/fm-fleet-snapshot.sh:1629",
      "source": "size=$(stat -c \"%s\" \"$f\" 2>/dev/null) || exit 3",
      "template": "T:fm-fleet-tasks.XXXXXX/<id>.status"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1628",
+     "site": "bin/fm-fleet-snapshot.sh:1631",
      "source": "content=$(LC_ALL=C tail -c \"$max_bytes\" \"$f\") || exit 3",
      "template": "T:fm-fleet-tasks.XXXXXX/<id>.status"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1715",
+     "site": "bin/fm-fleet-snapshot.sh:1718",
      "source": "if [ ! -f \"$captured_meta\" ] || ! snapshot_task_generation_is_current \"$captured_meta\" \"$id\"; then",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1762",
+     "site": "bin/fm-fleet-snapshot.sh:1765",
      "source": "jq -n --slurpfile summary \"$1\" --argjson activities \"$2\" --argjson decisions \"$3\" '",
      "template": "T:fm-fleet-ledgers.XXXXXX/selected-summary-<n>.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1833",
+     "site": "bin/fm-fleet-snapshot.sh:1836",
      "source": "jq -n --slurpfile registry \"$registry_file\" --slurpfile tasks \"$tasks_file\" '",
      "template": "T:fm-fleet-snapshot.XXXXXX/secondmate-registry.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1833",
+     "site": "bin/fm-fleet-snapshot.sh:1836",
      "source": "jq -n --slurpfile registry \"$registry_file\" --slurpfile tasks \"$tasks_file\" '",
      "template": "T:fm-fleet-snapshot.XXXXXX/tasks.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1852",
+     "site": "bin/fm-fleet-snapshot.sh:1855",
      "source": "total_registered=$(jq '[.records[] | select(.registered)] | length' \"$union_file\")",
      "template": "T:fm-fleet-snapshot.XXXXXX/secondmate-union.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1853",
+     "site": "bin/fm-fleet-snapshot.sh:1856",
      "source": "total=$(jq '.records | length' \"$union_file\")",
      "template": "T:fm-fleet-snapshot.XXXXXX/secondmate-union.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1854",
+     "site": "bin/fm-fleet-snapshot.sh:1857",
      "source": "rows=$(jq -c --argjson cap \"$FM_SNAPSHOT_SECONDMATES\" '(if $cap == 0 then .records else .records[:$cap] end)[]' \"$union_file\")",
      "template": "T:fm-fleet-snapshot.XXXXXX/secondmate-union.json"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1881",
+     "site": "bin/fm-fleet-snapshot.sh:1884",
      "source": "observed_epoch=$(file_mtime_epoch \"$status_observation_file\")",
      "template": "T:fm-fleet-tasks.XXXXXX/<id>.status"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1949",
+     "site": "bin/fm-fleet-snapshot.sh:1952",
      "source": "summary_observed=$(jq -r '.generated' \"$summary_file\")",
      "template": "T:fm-fleet-ledgers.XXXXXX/selected-summary-<n>.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1954",
+     "site": "bin/fm-fleet-snapshot.sh:1957",
      "source": "summary_valid=$(jq -r '.valid' \"$summary_file\")",
      "template": "T:fm-fleet-ledgers.XXXXXX/selected-summary-<n>.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1956",
+     "site": "bin/fm-fleet-snapshot.sh:1959",
      "source": "summary_invalidity=$(jq -r '.invalidity.kind // \"unknown\"' \"$summary_file\")",
      "template": "T:fm-fleet-ledgers.XXXXXX/selected-summary-<n>.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1965",
+     "site": "bin/fm-fleet-snapshot.sh:1968",
      "source": "state=$(jq -r '.state' \"$summary_file\")",
      "template": "T:fm-fleet-ledgers.XXXXXX/selected-summary-<n>.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:1981",
+     "site": "bin/fm-fleet-snapshot.sh:1984",
      "source": "--argjson registered \"$registered\" --slurpfile summary \"$summary_file\" --argjson summary_valid \"$summary_valid\" --argjson decisions \"$decisions\" \\",
      "template": "T:fm-fleet-ledgers.XXXXXX/selected-summary-<n>.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:2019",
+     "site": "bin/fm-fleet-snapshot.sh:2022",
      "source": "--argjson decisions \"$decisions\" --argjson terminal \"$terminal\" --slurpfile summary \"$summary_file\" --argjson summary_sampled \"$summary_sampled\" '",
      "template": "T:fm-fleet-ledgers.XXXXXX/selected-summary-<n>.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:2037",
+     "site": "bin/fm-fleet-snapshot.sh:2040",
      "source": "--slurpfile registry \"$registry_file\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/secondmate-registry.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:2043",
+     "site": "bin/fm-fleet-snapshot.sh:2046",
      "source": "\"$records_file\" > \"$output_file\"",
      "template": "T:fm-fleet-snapshot.XXXXXX/secondmate-records.jsonl"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:2047",
+     "site": "bin/fm-fleet-snapshot.sh:2050",
      "source": "jq -n --slurpfile current \"$1\" '",
      "template": "T:fm-fleet-snapshot.XXXXXX/secondmate-current.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:2132",
+     "site": "bin/fm-fleet-snapshot.sh:2149",
      "source": "jq -n --slurpfile backlog \"$BACKLOG_JSON_FILE\" --slurpfile tasks \"$JSON_TRANSPORT_DIR/contribution-tasks.json\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/backlog.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:2132",
+     "site": "bin/fm-fleet-snapshot.sh:2149",
      "source": "jq -n --slurpfile backlog \"$BACKLOG_JSON_FILE\" --slurpfile tasks \"$JSON_TRANSPORT_DIR/contribution-tasks.json\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/contribution-tasks.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:2164",
+     "site": "bin/fm-fleet-snapshot.sh:2181",
      "source": "--slurpfile backlog \"$BACKLOG_JSON_FILE\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/backlog.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:2165",
+     "site": "bin/fm-fleet-snapshot.sh:2182",
      "source": "--slurpfile tasks \"$TASKS_JSON_FILE\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/tasks.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:2166",
+     "site": "bin/fm-fleet-snapshot.sh:2183",
      "source": "--slurpfile main_inventory \"$MAIN_INVENTORY_JSON_FILE\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/main-inventory.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:2167",
+     "site": "bin/fm-fleet-snapshot.sh:2184",
      "source": "--slurpfile contributions \"$CONTRIBUTIONS_JSON_FILE\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/contributions.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:2168",
+     "site": "bin/fm-fleet-snapshot.sh:2185",
      "source": "--slurpfile scout_reports \"$SCOUT_REPORTS_JSON_FILE\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/scout-reports.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:2169",
+     "site": "bin/fm-fleet-snapshot.sh:2186",
      "source": "--slurpfile secondmate_current \"$SECONDMATE_CURRENT_JSON_FILE\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/secondmate-current.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:2170",
+     "site": "bin/fm-fleet-snapshot.sh:2187",
      "source": "--slurpfile secondmate_landed \"$SECONDMATE_LANDED_JSON_FILE\" \\",
      "template": "T:fm-fleet-snapshot.XXXXXX/secondmate-landed.json"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:342",
+     "site": "bin/fm-fleet-snapshot.sh:345",
      "source": "[ -f \"$1\" ] || return 1",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.status"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:343",
+     "site": "bin/fm-fleet-snapshot.sh:346",
      "source": "grep -v '^[[:space:]]*$' \"$1\" 2>/dev/null | tail -1",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.status"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:396",
+     "site": "bin/fm-fleet-snapshot.sh:399",
      "source": "[ -f \"$1\" ] || return 0",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.status"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:408",
+     "site": "bin/fm-fleet-snapshot.sh:411",
      "source": "[ -f \"$1\" ] || return 1",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.status"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:409",
+     "site": "bin/fm-fleet-snapshot.sh:412",
      "source": "grep -Eo 'https?://[^[:space:])\"]+/pull/[0-9]+' \"$1\" 2>/dev/null | head -1",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.status"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:645",
+     "site": "bin/fm-fleet-snapshot.sh:648",
      "source": "[ -f \"$capture\" ] || return 0",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.status"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:646",
+     "site": "bin/fm-fleet-snapshot.sh:649",
      "source": "if ! { size=$(_fm_status_file_size \"$capture\") \\",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.status"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:648",
+     "site": "bin/fm-fleet-snapshot.sh:651",
      "source": "open=$(status_open_decisions \"$capture\" \"$kind\")",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.status"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:663",
+     "site": "bin/fm-fleet-snapshot.sh:666",
      "source": "fm_meta_get_to captured_gen \"$captured_meta\" spawn_gen",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:670",
+     "site": "bin/fm-fleet-snapshot.sh:673",
      "source": "captured_contents=$(<\"$captured_meta\") || return 1",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:680",
+     "site": "bin/fm-fleet-snapshot.sh:683",
      "source": "fm_meta_get_to remote_host \"$meta\" remote_host",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:689",
+     "site": "bin/fm-fleet-snapshot.sh:692",
      "source": "fm_meta_get_to kind \"$meta\" kind",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:704",
+     "site": "bin/fm-fleet-snapshot.sh:707",
      "source": "fm_backend_of_meta_to backend \"$meta\"",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:705",
+     "site": "bin/fm-fleet-snapshot.sh:708",
      "source": "fm_backend_target_of_meta_to target \"$meta\" || true",
-     "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
-    },
-    {
-     "mode": "R",
-     "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:802",
-     "source": "fm_meta_get_to kind \"$meta\" kind",
-     "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
-    },
-    {
-     "mode": "R",
-     "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:804",
-     "source": "fm_meta_get_to harness \"$meta\" harness",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
      "site": "bin/fm-fleet-snapshot.sh:805",
-     "source": "fm_meta_get_to mode \"$meta\" mode",
-     "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
-    },
-    {
-     "mode": "R",
-     "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:806",
-     "source": "fm_meta_get_to yolo \"$meta\" yolo",
+     "source": "fm_meta_get_to kind \"$meta\" kind",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
      "site": "bin/fm-fleet-snapshot.sh:807",
-     "source": "fm_meta_get_to project \"$meta\" project",
+     "source": "fm_meta_get_to harness \"$meta\" harness",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
      "site": "bin/fm-fleet-snapshot.sh:808",
-     "source": "fm_meta_get_to worktree \"$meta\" worktree",
+     "source": "fm_meta_get_to mode \"$meta\" mode",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
      "site": "bin/fm-fleet-snapshot.sh:809",
-     "source": "fm_meta_get_to home \"$meta\" home",
+     "source": "fm_meta_get_to yolo \"$meta\" yolo",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
      "site": "bin/fm-fleet-snapshot.sh:810",
-     "source": "fm_meta_get_to projects \"$meta\" projects",
+     "source": "fm_meta_get_to project \"$meta\" project",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
      "site": "bin/fm-fleet-snapshot.sh:811",
-     "source": "fm_meta_get_to spawn_gen \"$meta\" spawn_gen",
+     "source": "fm_meta_get_to worktree \"$meta\" worktree",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
      "site": "bin/fm-fleet-snapshot.sh:812",
-     "source": "fm_meta_get_to branch \"$meta\" branch",
+     "source": "fm_meta_get_to home \"$meta\" home",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
      "site": "bin/fm-fleet-snapshot.sh:813",
-     "source": "fm_meta_get_to remote_host \"$meta\" remote_host",
+     "source": "fm_meta_get_to projects \"$meta\" projects",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
      "site": "bin/fm-fleet-snapshot.sh:814",
+     "source": "fm_meta_get_to spawn_gen \"$meta\" spawn_gen",
+     "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
+    },
+    {
+     "mode": "R",
+     "root": "T",
+     "site": "bin/fm-fleet-snapshot.sh:815",
+     "source": "fm_meta_get_to branch \"$meta\" branch",
+     "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
+    },
+    {
+     "mode": "R",
+     "root": "T",
+     "site": "bin/fm-fleet-snapshot.sh:816",
+     "source": "fm_meta_get_to remote_host \"$meta\" remote_host",
+     "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
+    },
+    {
+     "mode": "R",
+     "root": "T",
+     "site": "bin/fm-fleet-snapshot.sh:817",
      "source": "fm_meta_get_to remote_root \"$meta\" remote_root",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:820",
+     "site": "bin/fm-fleet-snapshot.sh:823",
      "source": "fm_backend_of_meta_to backend \"$meta\"",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:821",
+     "site": "bin/fm-fleet-snapshot.sh:824",
      "source": "fm_backend_target_of_meta_to target \"$meta\" || true",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:825",
+     "site": "bin/fm-fleet-snapshot.sh:828",
      "source": "fm_meta_get_to pr \"$meta\" pr",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:826",
+     "site": "bin/fm-fleet-snapshot.sh:829",
      "source": "fm_meta_get_to pr_head \"$meta\" pr_head",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:838",
+     "site": "bin/fm-fleet-snapshot.sh:841",
      "source": "current_json=$(<\"$current_file\") || {",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.json"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:844",
+     "site": "bin/fm-fleet-snapshot.sh:847",
      "source": "jq -r '[.state // \"\", .source // \"\"] | @tsv' \"$current_file\"",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.json"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:866",
+     "site": "bin/fm-fleet-snapshot.sh:869",
      "source": "if [ -f \"$open_decisions_file\" ]; then",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.open-decisions"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:867",
+     "site": "bin/fm-fleet-snapshot.sh:870",
      "source": "open_decisions_tsv=$(<\"$open_decisions_file\")",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.open-decisions"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:869",
+     "site": "bin/fm-fleet-snapshot.sh:872",
      "source": "open_decisions_tsv=$(status_open_decisions \"$status_log\" \"$kind\")",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.status"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:883",
+     "site": "bin/fm-fleet-snapshot.sh:886",
      "source": "decision_at=$(status_decision_opened_at \"$status_log\" \"${decision_line%%$'\\t'*}\") || decision_at=",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.status"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:903",
+     "site": "bin/fm-fleet-snapshot.sh:906",
      "source": "done < \"$endpoint_file\" || {",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.endpoint"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:907",
+     "site": "bin/fm-fleet-snapshot.sh:910",
      "source": "if [ -f \"$report_path\" ]; then report_present=true; else report_present=false; fi",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.report"
     },
     {
      "mode": "E",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:908",
+     "site": "bin/fm-fleet-snapshot.sh:911",
      "source": "path_exists_json_to meta_present \"$meta\"",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.meta"
     },
     {
      "mode": "E",
      "root": "T",
-     "site": "bin/fm-fleet-snapshot.sh:909",
+     "site": "bin/fm-fleet-snapshot.sh:912",
      "source": "path_exists_json_to report_file_present \"$report_path\"",
      "template": "T:fm-fleet-tasks.XXXXXX/<t>.report"
     },
@@ -4056,7 +4056,7 @@
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-wake-drain.sh:1147",
+     "site": "bin/fm-wake-drain.sh:1254",
      "source": "RAW_ROWS=$(fm_wake_print_deduped \"$DRAIN_VIEW_TMP\") || exit \"$?\"",
      "template": "S/.wake-queue.actor-view.XXXXXX (DRAIN_VIEW_TMP)"
     },
@@ -4077,7 +4077,7 @@
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-wake-drain.sh:802",
+     "site": "bin/fm-wake-drain.sh:888",
      "source": "if ! command cat \"$prepared\"; then",
      "template": "S/.status-presentation.prepared.XXXXXX"
     },
@@ -4153,35 +4153,35 @@
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2367",
+     "site": "bin/fm-classify-lib.sh:2439",
      "source": "' \"$scratch\" \"$start\" \"$skip_first\"); then :; else rm -f \"$scratch\"; return 1; fi",
      "template": "S/.<t>.open-decisions-cursor.span.<pid>.latest"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3058",
+     "site": "bin/fm-classify-lib.sh:3469",
      "source": "' \"$chunk_file\" \"$@\" || rc=$?",
      "template": "S/.<t>.open-decisions-cursor.unread.<pid>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3065",
+     "site": "bin/fm-classify-lib.sh:3476",
      "source": "done < \"$chunk_file\"",
      "template": "S/.<t>.open-decisions-cursor.unread.<pid>"
     },
     {
      "mode": "L",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:887",
+     "site": "bin/fm-wake-drain.sh:994",
      "source": "for tmp in \"$RECOVERY_MARKER\".tmp.*; do",
      "template": "S/.watcher-down.tmp.*"
     },
     {
      "mode": "E",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:888",
+     "site": "bin/fm-wake-drain.sh:995",
      "source": "[ -e \"$tmp\" ] || [ -L \"$tmp\" ] || continue",
      "template": "S/.watcher-down.tmp.<suffix>"
     },
@@ -4242,63 +4242,63 @@
     {
      "mode": "R",
      "root": "W",
-     "site": "bin/fm-crew-state.sh:1019",
+     "site": "bin/fm-crew-state.sh:1029",
      "source": "CREW_BRANCH=$(git -C \"$WT\" symbolic-ref --quiet --short HEAD 2>/dev/null || true)",
      "template": "W(t)/.git (git symbolic-ref)"
     },
     {
      "mode": "R",
      "root": "W",
-     "site": "bin/fm-crew-state.sh:1027",
+     "site": "bin/fm-crew-state.sh:1037",
      "source": "fm_nm_head_matches_worktree \"$WT\" \"$run_head\"",
      "template": "W(t)/.git (git rev-parse/merge-base)"
     },
     {
      "mode": "R",
      "root": "W",
-     "site": "bin/fm-crew-state.sh:1101",
+     "site": "bin/fm-crew-state.sh:1111",
      "source": "elif [ -z \"$(fm_nm_resolve_commit \"$WT\" \"$(strip_quotes \"$(nm_field head)\")\")\" ]; then",
      "template": "W(t)/.git (git rev-parse)"
     },
     {
      "mode": "R",
      "root": "W",
-     "site": "bin/fm-crew-state.sh:1103",
+     "site": "bin/fm-crew-state.sh:1113",
      "source": "&& [ \"$(fm_nm_runs_status_for_worktree \"$WT\" \"$CREW_BRANCH\" \"$(nm_runs_list)\" \"$(strip_quotes \"$(nm_field head)\")\")\" = running ]; then",
      "template": "W(t)/.git (git rev-parse/merge-base)"
     },
     {
      "mode": "R",
      "root": "W",
-     "site": "bin/fm-crew-state.sh:1135",
+     "site": "bin/fm-crew-state.sh:1145",
      "source": "ledger_status=$(fm_nm_runs_status_for_worktree \"$WT\" \"$CREW_BRANCH\" \"$(nm_runs_list)\")",
      "template": "W(t)/.git (git rev-parse/merge-base)"
     },
     {
      "mode": "R",
      "root": "W",
-     "site": "bin/fm-crew-state.sh:1157",
+     "site": "bin/fm-crew-state.sh:1167",
      "source": "COARSE_STATUS=$(fm_nm_runs_status_for_worktree \"$WT\" \"$CREW_BRANCH\" \"$(nm_runs_list)\")",
      "template": "W(t)/.git (git rev-parse/merge-base)"
     },
     {
      "mode": "R",
      "root": "W",
-     "site": "bin/fm-crew-state.sh:290",
+     "site": "bin/fm-crew-state.sh:300",
      "source": "if reason=$(fm_dod_accept_ship_done \"$KIND\" \"$mode\" \"$WT\" \"$project\" \"$LOG_LINE\" \"$STATE\" \"$ID\" \"$META\"); then",
      "template": "W(t)/.git (git rev-parse/for-each-ref)"
     },
     {
      "mode": "R",
      "root": "W",
-     "site": "bin/fm-crew-state.sh:292",
+     "site": "bin/fm-crew-state.sh:302",
      "source": "head=$(git -C \"$WT\" rev-parse --verify HEAD 2>/dev/null || true)",
      "template": "W(t)/.git (git rev-parse)"
     },
     {
      "mode": "R",
      "root": "W",
-     "site": "bin/fm-crew-state.sh:293",
+     "site": "bin/fm-crew-state.sh:303",
      "source": "if landed_on=$(fm_dod_head_on_origin_default \"$WT\" \"$head\"); then",
      "template": "W(t)/.git (git symbolic-ref/show-ref/merge-base)"
     },
@@ -4756,6 +4756,228 @@
     }
    ],
    "reason": "lock owner bookkeeping under a parameterised lock path; not admitted, so a replay that reaches a held, stale or contended lock reads an uncaptured place and refuses"
+  },
+  {
+   "class": "native-route",
+   "families": [
+    "crew-state",
+    "fleet-snapshot",
+    "wake-drain"
+   ],
+   "id": "excluded-native-route",
+   "reads": [
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2316",
+     "source": "[ -e \"$f\" ] || continue",
+     "template": "S/<t>.status (native stat batch inventory)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2318",
+     "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || continue",
+     "template": "S/<t>.status (native stat batch inventory)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2331",
+     "source": "{ packet=$(LC_ALL=C exec stat -c \"$format\" -- \"${snapshot_batch_files[@]}\"); } 2>/dev/null || return 1",
+     "template": "S/<t>.status (native stat batch)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2359",
+     "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
+     "template": "S/<t>.status (native stat batch recheck)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2518",
+     "source": "if [ ! -e \"$1\" ] && [ ! -L \"$1\" ]; then return 0; fi",
+     "template": "S/.status-presentation-cursor (native manifest guard)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2519",
+     "source": "[ -f \"$1\" ] && [ -r \"$1\" ] && [ ! -L \"$1\" ] || return 1",
+     "template": "S/.status-presentation-cursor (native manifest guard)"
+    },
+    {
+     "mode": "R",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2523",
+     "source": "_pmc_raw=$(LC_ALL=C perl -e '",
+     "template": "S/.status-presentation-cursor (native manifest guard)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2562",
+     "source": "if [ -e \"$manifest\" ] || [ -L \"$manifest\" ]; then",
+     "template": "S/.status-presentation-cursor (native suggestion guard)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2563",
+     "source": "[ -f \"$manifest\" ] && [ -r \"$manifest\" ] && [ ! -L \"$manifest\" ] || return 1",
+     "template": "S/.status-presentation-cursor (native suggestion guard)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2570",
+     "source": "[ ! -e \"$state/.$task.open-decisions-cursor\" ] && [ ! -L \"$state/.$task.open-decisions-cursor\" ] || return 1",
+     "template": "S/.<t>.open-decisions-cursor (native suggestion guard)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2616",
+     "source": "current=$(status_presentation_snapshot_batch \"$1\" mtime) || return 1",
+     "template": "S/<t>.status (native backstop input guard)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2648",
+     "source": "fresh=$(status_presentation_snapshot_batch \"$state\" mtime) || return 1",
+     "template": "S/<t>.status (native backstop fact guard)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2915",
+     "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
+     "template": "S/<t>.status (native signature batch)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2917",
+     "source": "{ packet=$(LC_ALL=C exec stat -c $'%F:%f\\n%s\\n%d:%i\\n%W\\n%w' -- \"$@\"); } 2>/dev/null || return 1",
+     "template": "S/<t>.status (native signature batch)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:2928",
+     "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
+     "template": "S/<t>.status (native signature batch recheck)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-classify-lib.sh:3207",
+     "source": "current=$(status_presentation_snapshot_batch \"$state\") || return 1",
+     "template": "S/<t>.status (native batch commit capture)"
+    },
+    {
+     "mode": "S",
+     "root": "X",
+     "site": "bin/fm-crew-state.sh:188",
+     "source": "if [ -n \"${FM_VIEW_SOCKET:-}\" ] && [ -n \"${1:-}\" ] && command -v python3 >/dev/null 2>&1; then",
+     "template": "X:$PATH python3 (native client route)"
+    },
+    {
+     "mode": "R",
+     "root": "X",
+     "site": "bin/fm-crew-state.sh:189",
+     "source": "if VIEW_STATE=$(FM_HOME=\"$FM_HOME\" python3 \"$SCRIPT_DIR/fm-view-client.py\" crew-state \"$1\"); then",
+     "template": "ext:fm-view-client.py crew-state"
+    },
+    {
+     "mode": "S",
+     "root": "T",
+     "site": "bin/fm-fleet-snapshot.sh:2118",
+     "source": "SNAPSHOT_TASK_DIR=$(umask 077; mktemp -d \"${TMPDIR:-/tmp}/fm-fleet-tasks.XXXXXX\") || SNAPSHOT_TASK_DIR=",
+     "template": "T/fm-fleet-tasks.<random> (native staging)"
+    },
+    {
+     "mode": "R",
+     "root": "X",
+     "site": "bin/fm-fleet-snapshot.sh:2120",
+     "source": "TASKS_JSON=$(python3 \"$SCRIPT_DIR/fm-view-client.py\" snapshot-tasks \"$SNAPSHOT_NOW\" \"$SNAPSHOT_EPOCH\" \\",
+     "template": "ext:fm-view-client.py snapshot-tasks"
+    },
+    {
+     "mode": "R",
+     "root": "X",
+     "site": "bin/fm-wake-drain.sh:392",
+     "source": "&& facts=$(FM_HOME=\"$FM_HOME\" python3 \"$SCRIPT_DIR/fm-view-client.py\" status-backstop <<< \"$request\") \\",
+     "template": "ext:fm-view-client.py status-backstop"
+    },
+    {
+     "mode": "S",
+     "root": "X",
+     "site": "bin/fm-wake-drain.sh:819",
+     "source": "command -v python3 >/dev/null 2>&1 || return 1",
+     "template": "X:$PATH python3 (native client route)"
+    },
+    {
+     "mode": "R",
+     "root": "X",
+     "site": "bin/fm-wake-drain.sh:830",
+     "source": "facts=$(FM_HOME=\"$FM_HOME\" python3 \"$SCRIPT_DIR/fm-view-client.py\" drain-presentation <<< \"$input\") || return 1",
+     "template": "ext:fm-view-client.py drain-presentation"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-wake-drain.sh:946",
+     "source": "if [ -n \"${FM_VIEW_SOCKET:-}\" ] && snapshot=$(status_presentation_snapshot_batch \"$STATE\"); then",
+     "template": "S/<t>.status (native stat batch)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-wake-lib.sh:3379",
+     "source": "[ ! -e \"$marker\" ] && [ ! -L \"$marker\" ] || return 1",
+     "template": "S/<t>.status signal-seen marker (native classification guard)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-wake-lib.sh:3381",
+     "source": "[ -f \"$marker\" ] && [ -r \"$marker\" ] && [ ! -L \"$marker\" ] || return 1",
+     "template": "S/<t>.status signal-seen marker (native classification guard)"
+    },
+    {
+     "mode": "R",
+     "root": "S",
+     "site": "bin/fm-wake-lib.sh:3382",
+     "source": "fm_file_text_to raw \"$marker\" || return 1",
+     "template": "S/<t>.status signal-seen marker (native classification guard)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-wake-lib.sh:3401",
+     "source": "current=$(status_presentation_snapshot_batch \"$state\") || return 1",
+     "template": "S/<t>.status (native annotation path guard)"
+    },
+    {
+     "mode": "S",
+     "root": "S",
+     "site": "bin/fm-wake-lib.sh:3441",
+     "source": "signatures=$(status_observed_signatures_batch \"${annotation_batch_paths[@]}\") || return 1",
+     "template": "S/<t>.status (native annotation signature batch)"
+    },
+    {
+     "mode": "R",
+     "root": "S",
+     "site": "bin/fm-wake-lib.sh:3449",
+     "source": "fm_wake_signal_reported_current \"$STATE\" \"$STATE/$key\" \"$sig\" && continue",
+     "template": "S/<t>.status signal-seen marker (native annotation replay filter)"
+    }
+   ],
+   "reason": "reads only on the opt-in native view-client route that FM_VIEW_SOCKET selects (or the batch it feeds); a recording runs the legacy route, so a replay that reaches one reads an uncaptured place and refuses"
   }
  ],
  "format": "fm-supervision-recorder-read-closure.v1",
@@ -4969,11 +5191,11 @@
      "source": "for file in \"$DATA\"/*/contributions.json; do"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:2068",
+     "site": "bin/fm-fleet-snapshot.sh:2071",
      "source": "if [ ! -d \"$DATA\" ]; then"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:2072",
+     "site": "bin/fm-fleet-snapshot.sh:2075",
      "source": "LC_ALL=C find \"$DATA\" -mindepth 2 -maxdepth 2 -type f -name report.md -print \\"
     }
    ],
@@ -5038,7 +5260,7 @@
    "root": "data",
    "sites": [
     {
-     "site": "bin/fm-fleet-snapshot.sh:655",
+     "site": "bin/fm-fleet-snapshot.sh:658",
      "source": "[ -f \"$source\" ] || return 0"
     }
    ],
@@ -5054,7 +5276,7 @@
    "root": "data",
    "sites": [
     {
-     "site": "bin/fm-crew-state.sh:255",
+     "site": "bin/fm-crew-state.sh:265",
      "source": "if fm_suspend_validate \"$META\" \"$ID\" \"$FM_HOME\" \"${FM_DATA_OVERRIDE:-$FM_HOME/data}\"; then"
     },
     {
@@ -5086,7 +5308,7 @@
    "root": "data",
    "sites": [
     {
-     "site": "bin/fm-crew-state.sh:255",
+     "site": "bin/fm-crew-state.sh:265",
      "source": "if fm_suspend_validate \"$META\" \"$ID\" \"$FM_HOME\" \"${FM_DATA_OVERRIDE:-$FM_HOME/data}\"; then"
     },
     {
@@ -5158,11 +5380,11 @@
      "source": "(cd \"$FM_BACKLOG_AXI_ROOT\" 2>/dev/null && fm_tasks_axi list \"$@\" --file \"$FM_BACKLOG_AXI_FILE\" 2>&1)"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:414",
+     "site": "bin/fm-fleet-snapshot.sh:417",
      "source": "if [ ! -f \"$backlog\" ]; then"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:602",
+     "site": "bin/fm-fleet-snapshot.sh:605",
      "source": "' < \"$backlog\" | fm_hold_reason_decode_stream json"
     }
    ],
@@ -5177,15 +5399,15 @@
    "root": "data",
    "sites": [
     {
-     "site": "bin/fm-fleet-snapshot.sh:1279",
+     "site": "bin/fm-fleet-snapshot.sh:1282",
      "source": "if [ ! -f \"$reg\" ]; then"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:1284",
+     "site": "bin/fm-fleet-snapshot.sh:1287",
      "source": "mode=$(file_mode_octal \"$reg\")"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:1300",
+     "site": "bin/fm-fleet-snapshot.sh:1303",
      "source": "content=$(LC_ALL=C head -c \"$((max_bytes + 1))\" \"$f\" || exit 3; printf \"\\036\") || exit 3"
     }
    ],
@@ -5210,31 +5432,31 @@
      "source": "for f in \"$state\"/*.status; do"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2302",
+     "site": "bin/fm-classify-lib.sh:2374",
      "source": "for f in \"$state\"/*.status; do"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3120",
+     "site": "bin/fm-classify-lib.sh:3531",
      "source": "for f in \"$state\"/*.status; do"
     },
     {
-     "site": "bin/fm-crew-state.sh:290",
+     "site": "bin/fm-crew-state.sh:300",
      "source": "if reason=$(fm_dod_accept_ship_done \"$KIND\" \"$mode\" \"$WT\" \"$project\" \"$LOG_LINE\" \"$STATE\" \"$ID\" \"$META\"); then"
     },
     {
-     "site": "bin/fm-crew-state.sh:515",
+     "site": "bin/fm-crew-state.sh:525",
      "source": "if fm_pr_poll_retirement_receipt_valid \"$STATE\" \"$ID\" \\"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:1442",
+     "site": "bin/fm-fleet-snapshot.sh:1445",
      "source": "[ -d \"$(dirname \"$FM_SNAPSHOT_CACHE_DIR\")\" ] || return 1"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:2084",
+     "site": "bin/fm-fleet-snapshot.sh:2087",
      "source": "for meta in \"$STATE\"/*.meta; do"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:748",
+     "site": "bin/fm-fleet-snapshot.sh:751",
      "source": "for meta in \"$STATE\"/*.meta; do"
     },
     {
@@ -5301,27 +5523,27 @@
      "source": "cursor_data=$(LC_ALL=C command cat \"$cf\" 2>/dev/null) || cursor_data=''"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2419",
+     "site": "bin/fm-classify-lib.sh:2491",
      "source": "if [ -e \"$legacy\" ] || [ -L \"$legacy\" ]; then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2813",
+     "site": "bin/fm-classify-lib.sh:3152",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2942",
+     "site": "bin/fm-classify-lib.sh:3353",
      "source": "if [ -e \"$cf\" ] || [ -L \"$cf\" ]; then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2943",
+     "site": "bin/fm-classify-lib.sh:3354",
      "source": "[ -f \"$cf\" ] && [ -r \"$cf\" ] && [ ! -L \"$cf\" ] || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2944",
+     "site": "bin/fm-classify-lib.sh:3355",
      "source": "if cursor_data=$(LC_ALL=C command cat \"$cf\" 2>/dev/null); then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3022",
+     "site": "bin/fm-classify-lib.sh:3433",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     }
    ],
@@ -5519,11 +5741,11 @@
      "source": "elif [ \"$GUARD_ACTOR\" != branch ] && [ \"$(fm_wake_actor_pending_count branch)\" -gt 0 ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1095",
+     "site": "bin/fm-wake-drain.sh:1202",
      "source": "if [ -e \"$ELIGIBLE_ROWS_FILE\" ] || [ -L \"$ELIGIBLE_ROWS_FILE\" ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1144",
+     "site": "bin/fm-wake-drain.sh:1251",
      "source": "BEGIN { while ((getline line < seqs) > 0) keep[line]=1 }"
     },
     {
@@ -5578,11 +5800,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:371",
+     "site": "bin/fm-wake-drain.sh:372",
      "source": "if ! outcome_index_ready_ok \"$ready\"; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:373",
+     "site": "bin/fm-wake-drain.sh:374",
      "source": "|| ! outcome_index_ready_ok \"$ready\"; then"
     }
    ],
@@ -5659,7 +5881,7 @@
      "source": "fm_lock_acquire_wait \"$LOCK\""
     },
     {
-     "site": "bin/fm-wake-drain.sh:366",
+     "site": "bin/fm-wake-drain.sh:367",
      "source": "if ! fm_lock_acquire_wait_bounded \"$lock\" \"$PRESENTATION_LOCK_TIMEOUT\"; then"
     }
    ],
@@ -5761,11 +5983,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:821",
+     "site": "bin/fm-wake-drain.sh:910",
      "source": "[ -d \"$dir\" ] && [ ! -L \"$dir\" ] || return 0"
     },
     {
-     "site": "bin/fm-wake-drain.sh:822",
+     "site": "bin/fm-wake-drain.sh:911",
      "source": "for marker in \"$dir\"/.fm-inherited-config-reread.*; do"
     }
    ],
@@ -5780,11 +6002,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:823",
+     "site": "bin/fm-wake-drain.sh:912",
      "source": "[ -f \"$marker\" ] && [ ! -L \"$marker\" ] || continue"
     },
     {
-     "site": "bin/fm-wake-drain.sh:824",
+     "site": "bin/fm-wake-drain.sh:913",
      "source": "instruction=$(head -n 1 \"$marker\" 2>/dev/null) || continue"
     }
    ],
@@ -5929,11 +6151,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:1099",
+     "site": "bin/fm-wake-drain.sh:1206",
      "source": "if [ ! -s \"$MAIN_ROWS_FILE\" ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1144",
+     "site": "bin/fm-wake-drain.sh:1251",
      "source": "BEGIN { while ((getline line < seqs) > 0) keep[line]=1 }"
     },
     {
@@ -6016,11 +6238,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-classify-lib.sh:2688",
+     "site": "bin/fm-classify-lib.sh:3027",
      "source": "raw=$(cat \"$1\" 2>/dev/null) || { printf '0'; return 0; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2847",
+     "site": "bin/fm-classify-lib.sh:3186",
      "source": "classified=$(status_presentation_marker_offset \"$(status_signal_seen_marker_path \"$state\" \"$task\")\" \"$f\")"
     },
     {
@@ -6028,8 +6250,8 @@
      "source": "fm_file_text_to text \"$marker\" || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3370",
-     "source": "if [ \"$mode\" = historical ] && fm_wake_signal_reported_current \"$STATE\" \"$path\"; then"
+     "site": "bin/fm-wake-lib.sh:3548",
+     "source": "if [ \"$historical_batch\" = 0 ] && [ \"$mode\" = historical ] && fm_wake_signal_reported_current \"$STATE\" \"$path\"; then"
     }
    ],
    "template": ".seen-<t>_status"
@@ -6043,39 +6265,39 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-classify-lib.sh:2395",
+     "site": "bin/fm-classify-lib.sh:2467",
      "source": "if [ -e \"$manifest\" ] || [ -L \"$manifest\" ]; then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2396",
+     "site": "bin/fm-classify-lib.sh:2468",
      "source": "[ -f \"$manifest\" ] && [ -r \"$manifest\" ] && [ ! -L \"$manifest\" ] || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2397",
+     "site": "bin/fm-classify-lib.sh:2469",
      "source": "data=$(LC_ALL=C command cat \"$manifest\" 2>/dev/null) || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2440",
+     "site": "bin/fm-classify-lib.sh:2705",
      "source": "[ -e \"$manifest\" ] || { printf '0'; return 0; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2441",
+     "site": "bin/fm-classify-lib.sh:2706",
      "source": "[ -f \"$manifest\" ] && [ -r \"$manifest\" ] && [ ! -L \"$manifest\" ] || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2442",
+     "site": "bin/fm-classify-lib.sh:2707",
      "source": "data=$(LC_ALL=C command cat \"$manifest\" 2>/dev/null) || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2813",
+     "site": "bin/fm-classify-lib.sh:3152",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2877",
+     "site": "bin/fm-classify-lib.sh:3287",
      "source": "backstop=$(status_outcome_backstop_cursor_offset \"$f\") || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3022",
+     "site": "bin/fm-classify-lib.sh:3433",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
@@ -6083,7 +6305,7 @@
      "source": "offset=$(status_presentation_cursor_offset \"$path\" 2>/dev/null) || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3373",
+     "site": "bin/fm-wake-lib.sh:3574",
      "source": "offset=$(fm_wake_status_cursor_offset \"$path\") || return 1"
     }
    ],
@@ -6098,7 +6320,7 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:842",
+     "site": "bin/fm-wake-drain.sh:933",
      "source": "if fm_lock_acquire_wait_bounded \"$lock\" \"$PRESENTATION_LOCK_TIMEOUT\"; then"
     }
    ],
@@ -6176,11 +6398,11 @@
      "source": "[ -s \"$state/.wake-queue\" ] && FM_SUP_QUEUE_PENDING=true"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1068",
+     "site": "bin/fm-wake-drain.sh:1175",
      "source": "if [ ! -s \"$FM_WAKE_QUEUE\" ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1146",
+     "site": "bin/fm-wake-drain.sh:1253",
      "source": "' \"$FM_WAKE_QUEUE\" > \"$DRAIN_VIEW_TMP\" || exit 1"
     },
     {
@@ -6231,7 +6453,7 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:924",
+     "site": "bin/fm-wake-drain.sh:1031",
      "source": "elif fm_lock_acquire_wait_bounded \"$FM_WAKE_QUEUE_LOCK\" \"$PRESENTATION_LOCK_TIMEOUT\"; then"
     }
    ],
@@ -6350,35 +6572,35 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:1070",
+     "site": "bin/fm-wake-drain.sh:1177",
      "source": "fm_recovery_marker_snapshot \"$RECOVERY_MARKER\" || true"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1074",
+     "site": "bin/fm-wake-drain.sh:1181",
      "source": "fm_recovery_marker_begin_handling \"$RECOVERY_MARKER\" || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1114",
+     "site": "bin/fm-wake-drain.sh:1221",
      "source": "fm_recovery_marker_snapshot \"$RECOVERY_MARKER\" || true"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1117",
+     "site": "bin/fm-wake-drain.sh:1224",
      "source": "if [ -e \"$RECOVERY_MARKER\" ] || [ -L \"$RECOVERY_MARKER\" ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1121",
+     "site": "bin/fm-wake-drain.sh:1228",
      "source": "fm_recovery_marker_publish \"$RECOVERY_MARKER\" downtime || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1126",
+     "site": "bin/fm-wake-drain.sh:1233",
      "source": "fm_recovery_marker_publish \"$RECOVERY_MARKER\" downtime || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1131",
+     "site": "bin/fm-wake-drain.sh:1238",
      "source": "fm_recovery_marker_begin_handling \"$RECOVERY_MARKER\" || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1165",
+     "site": "bin/fm-wake-drain.sh:1272",
      "source": "fm_recovery_marker_snapshot \"$RECOVERY_MARKER\" || exit 1"
     },
     {
@@ -6418,31 +6640,31 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:1070",
+     "site": "bin/fm-wake-drain.sh:1177",
      "source": "fm_recovery_marker_snapshot \"$RECOVERY_MARKER\" || true"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1074",
+     "site": "bin/fm-wake-drain.sh:1181",
      "source": "fm_recovery_marker_begin_handling \"$RECOVERY_MARKER\" || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1114",
+     "site": "bin/fm-wake-drain.sh:1221",
      "source": "fm_recovery_marker_snapshot \"$RECOVERY_MARKER\" || true"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1121",
+     "site": "bin/fm-wake-drain.sh:1228",
      "source": "fm_recovery_marker_publish \"$RECOVERY_MARKER\" downtime || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1126",
+     "site": "bin/fm-wake-drain.sh:1233",
      "source": "fm_recovery_marker_publish \"$RECOVERY_MARKER\" downtime || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1131",
+     "site": "bin/fm-wake-drain.sh:1238",
      "source": "fm_recovery_marker_begin_handling \"$RECOVERY_MARKER\" || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1165",
+     "site": "bin/fm-wake-drain.sh:1272",
      "source": "fm_recovery_marker_snapshot \"$RECOVERY_MARKER\" || exit 1"
     },
     {
@@ -6473,11 +6695,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:881",
+     "site": "bin/fm-wake-drain.sh:988",
      "source": "[ -f \"$RECOVERY_MARKER.lock/pid\" ] || return 0"
     },
     {
-     "site": "bin/fm-wake-drain.sh:882",
+     "site": "bin/fm-wake-drain.sh:989",
      "source": "fm_file_text_to owner \"$RECOVERY_MARKER.lock/pid\" || return 0"
     }
    ],
@@ -6531,7 +6753,7 @@
      "source": "IFS= read -r _fmbcgt_gen < \"$_fmbcgt_file\" 2>/dev/null || _fmbcgt_gen="
     },
     {
-     "site": "bin/fm-crew-state.sh:404",
+     "site": "bin/fm-crew-state.sh:414",
      "source": "fm_busy_classify_to \"$1\" \"$TASK_BACKEND\" \"$2\" \"$HARNESS\" \"$ID\" \"$STATE\" \"$tail40\""
     }
    ],
@@ -6555,7 +6777,7 @@
      "source": "{ IFS= read -r _fmbrrt_line && ! IFS= read -r _fmbrrt_extra; } < \"$_fmbrrt_rec\" 2>/dev/null || {"
     },
     {
-     "site": "bin/fm-crew-state.sh:404",
+     "site": "bin/fm-crew-state.sh:414",
      "source": "fm_busy_classify_to \"$1\" \"$TASK_BACKEND\" \"$2\" \"$HARNESS\" \"$ID\" \"$STATE\" \"$tail40\""
     }
    ],
@@ -6591,7 +6813,7 @@
      "source": "\"$(fm_busy_cursor_binding_path \"$1\" \"$2\")\" 2>/dev/null)"
     },
     {
-     "site": "bin/fm-crew-state.sh:404",
+     "site": "bin/fm-crew-state.sh:414",
      "source": "fm_busy_classify_to \"$1\" \"$TASK_BACKEND\" \"$2\" \"$HARNESS\" \"$ID\" \"$STATE\" \"$tail40\""
     }
    ],
@@ -6632,115 +6854,115 @@
      "source": "kind=$(_fm_status_kind \"$f\")"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2812",
+     "site": "bin/fm-classify-lib.sh:3151",
      "source": "_fm_status_kind_to kind \"$f\""
     },
     {
-     "site": "bin/fm-classify-lib.sh:2940",
+     "site": "bin/fm-classify-lib.sh:3351",
      "source": "fold_version=\"$FM_OPEN_DECISIONS_FOLD_VERSION:$(_fm_status_kind \"$f\")\""
     },
     {
-     "site": "bin/fm-classify-lib.sh:3124",
+     "site": "bin/fm-classify-lib.sh:3535",
      "source": "_fm_status_kind_to kind \"$f\""
     },
     {
-     "site": "bin/fm-classify-lib.sh:3149",
+     "site": "bin/fm-classify-lib.sh:3560",
      "source": "_fm_status_kind_to kind \"$f\""
     },
     {
-     "site": "bin/fm-crew-state.sh:247",
+     "site": "bin/fm-crew-state.sh:257",
      "source": "[ -f \"$META\" ] || emit unknown none \"no metadata for $ID\""
     },
     {
-     "site": "bin/fm-crew-state.sh:249",
+     "site": "bin/fm-crew-state.sh:259",
      "source": "fm_meta_get_to COPY_STATE \"$META\" copy_state"
     },
     {
-     "site": "bin/fm-crew-state.sh:255",
+     "site": "bin/fm-crew-state.sh:265",
      "source": "if fm_suspend_validate \"$META\" \"$ID\" \"$FM_HOME\" \"${FM_DATA_OVERRIDE:-$FM_HOME/data}\"; then"
     },
     {
-     "site": "bin/fm-crew-state.sh:261",
+     "site": "bin/fm-crew-state.sh:271",
      "source": "fm_meta_get_to WT \"$META\" worktree"
     },
     {
-     "site": "bin/fm-crew-state.sh:262",
+     "site": "bin/fm-crew-state.sh:272",
      "source": "fm_meta_get_to KIND \"$META\" kind"
     },
     {
-     "site": "bin/fm-crew-state.sh:263",
+     "site": "bin/fm-crew-state.sh:273",
      "source": "fm_meta_get_to HARNESS \"$META\" harness"
     },
     {
-     "site": "bin/fm-crew-state.sh:264",
+     "site": "bin/fm-crew-state.sh:274",
      "source": "fm_meta_get_to REMOTE_HOST \"$META\" remote_host"
     },
     {
-     "site": "bin/fm-crew-state.sh:288",
+     "site": "bin/fm-crew-state.sh:298",
      "source": "fm_meta_get_to mode \"$META\" mode"
     },
     {
-     "site": "bin/fm-crew-state.sh:289",
+     "site": "bin/fm-crew-state.sh:299",
      "source": "fm_meta_get_to project \"$META\" project"
     },
     {
-     "site": "bin/fm-crew-state.sh:290",
+     "site": "bin/fm-crew-state.sh:300",
      "source": "if reason=$(fm_dod_accept_ship_done \"$KIND\" \"$mode\" \"$WT\" \"$project\" \"$LOG_LINE\" \"$STATE\" \"$ID\" \"$META\"); then"
     },
     {
-     "site": "bin/fm-crew-state.sh:370",
+     "site": "bin/fm-crew-state.sh:380",
      "source": "fm_backend_of_meta_to TASK_BACKEND \"$META\""
     },
     {
-     "site": "bin/fm-crew-state.sh:371",
+     "site": "bin/fm-crew-state.sh:381",
      "source": "fm_backend_target_of_meta_to BACKEND_TARGET \"$META\" || true"
     },
     {
-     "site": "bin/fm-crew-state.sh:505",
+     "site": "bin/fm-crew-state.sh:515",
      "source": "elif fm_pr_metadata_identity_parse \"$META\"; then"
     },
     {
-     "site": "bin/fm-crew-state.sh:515",
+     "site": "bin/fm-crew-state.sh:525",
      "source": "if fm_pr_poll_retirement_receipt_valid \"$STATE\" \"$ID\" \\"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:2085",
+     "site": "bin/fm-fleet-snapshot.sh:2088",
      "source": "[ -f \"$meta\" ] && [ ! -L \"$meta\" ] || continue"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:2091",
+     "site": "bin/fm-fleet-snapshot.sh:2094",
      "source": "fm_meta_get_to kind \"$meta\" kind"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:2092",
+     "site": "bin/fm-fleet-snapshot.sh:2095",
      "source": "fm_meta_get_to pr \"$meta\" pr"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:2093",
+     "site": "bin/fm-fleet-snapshot.sh:2096",
      "source": "fm_meta_get_to pr_head \"$meta\" pr_head"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:662",
+     "site": "bin/fm-fleet-snapshot.sh:665",
      "source": "[ -f \"$current_meta\" ] || return 1"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:665",
+     "site": "bin/fm-fleet-snapshot.sh:668",
      "source": "fm_meta_get_to current_gen \"$current_meta\" spawn_gen"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:671",
+     "site": "bin/fm-fleet-snapshot.sh:674",
      "source": "current_contents=$(<\"$current_meta\") || return 1"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:749",
+     "site": "bin/fm-fleet-snapshot.sh:752",
      "source": "[ -e \"$meta\" ] || continue"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:752",
+     "site": "bin/fm-fleet-snapshot.sh:755",
      "source": "if ! copy_error=$(cp -- \"$meta\" \"$captured_meta\" 2>&1); then"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:756",
+     "site": "bin/fm-fleet-snapshot.sh:759",
      "source": "if [ ! -e \"$meta\" ]; then"
     },
     {
@@ -6824,7 +7046,7 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-crew-state.sh:290",
+     "site": "bin/fm-crew-state.sh:300",
      "source": "if reason=$(fm_dod_accept_ship_done \"$KIND\" \"$mode\" \"$WT\" \"$project\" \"$LOG_LINE\" \"$STATE\" \"$ID\" \"$META\"); then"
     }
    ],
@@ -6840,7 +7062,7 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-crew-state.sh:515",
+     "site": "bin/fm-crew-state.sh:525",
      "source": "if fm_pr_poll_retirement_receipt_valid \"$STATE\" \"$ID\" \\"
     }
    ],
@@ -6937,135 +7159,135 @@
      "source": "open=$(status_open_decisions_incremental \"$f\") || continue"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2303",
-     "source": "[ -e \"$f\" ] || continue"
-    },
-    {
-     "site": "bin/fm-classify-lib.sh:2305",
-     "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || continue"
-    },
-    {
-     "site": "bin/fm-classify-lib.sh:2307",
-     "source": "size=$(_fm_status_file_size \"$f\") || return 1"
-    },
-    {
-     "site": "bin/fm-classify-lib.sh:2309",
-     "source": "ident=$(_fm_open_decisions_file_ident \"$f\") || return 1"
-    },
-    {
-     "site": "bin/fm-classify-lib.sh:2337",
-     "source": "before_mtime=$(_fm_status_file_mtime \"$f\") || return 1"
-    },
-    {
-     "site": "bin/fm-classify-lib.sh:2338",
-     "source": "before_size=$(_fm_status_file_size \"$f\") || return 1"
-    },
-    {
-     "site": "bin/fm-classify-lib.sh:2340",
-     "source": "before_ident=$(_fm_open_decisions_file_ident \"$f\") || return 1"
-    },
-    {
-     "site": "bin/fm-classify-lib.sh:2352",
-     "source": "_fm_status_read_span \"$f\" \"$start\" \"$length\" > \"$scratch\" 2>/dev/null \\"
-    },
-    {
-     "site": "bin/fm-classify-lib.sh:2374",
-     "source": "after_mtime=$(_fm_status_file_mtime \"$f\") || return 1"
-    },
-    {
      "site": "bin/fm-classify-lib.sh:2375",
-     "source": "after_size=$(_fm_status_file_size \"$f\") || return 1"
+     "source": "[ -e \"$f\" ] || continue"
     },
     {
      "site": "bin/fm-classify-lib.sh:2377",
+     "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || continue"
+    },
+    {
+     "site": "bin/fm-classify-lib.sh:2379",
+     "source": "size=$(_fm_status_file_size \"$f\") || return 1"
+    },
+    {
+     "site": "bin/fm-classify-lib.sh:2381",
+     "source": "ident=$(_fm_open_decisions_file_ident \"$f\") || return 1"
+    },
+    {
+     "site": "bin/fm-classify-lib.sh:2409",
+     "source": "before_mtime=$(_fm_status_file_mtime \"$f\") || return 1"
+    },
+    {
+     "site": "bin/fm-classify-lib.sh:2410",
+     "source": "before_size=$(_fm_status_file_size \"$f\") || return 1"
+    },
+    {
+     "site": "bin/fm-classify-lib.sh:2412",
+     "source": "before_ident=$(_fm_open_decisions_file_ident \"$f\") || return 1"
+    },
+    {
+     "site": "bin/fm-classify-lib.sh:2424",
+     "source": "_fm_status_read_span \"$f\" \"$start\" \"$length\" > \"$scratch\" 2>/dev/null \\"
+    },
+    {
+     "site": "bin/fm-classify-lib.sh:2446",
+     "source": "after_mtime=$(_fm_status_file_mtime \"$f\") || return 1"
+    },
+    {
+     "site": "bin/fm-classify-lib.sh:2447",
+     "source": "after_size=$(_fm_status_file_size \"$f\") || return 1"
+    },
+    {
+     "site": "bin/fm-classify-lib.sh:2449",
      "source": "after_ident=$(_fm_open_decisions_file_ident \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2813",
+     "site": "bin/fm-classify-lib.sh:3152",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2815",
+     "site": "bin/fm-classify-lib.sh:3154",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" \"$endpoint\" note working \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2817",
+     "site": "bin/fm-classify-lib.sh:3156",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" \"$endpoint\" note \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2870",
+     "site": "bin/fm-classify-lib.sh:3280",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2871",
+     "site": "bin/fm-classify-lib.sh:3281",
      "source": "cur_ident=$(_fm_open_decisions_file_ident \"$f\") || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2872",
+     "site": "bin/fm-classify-lib.sh:3282",
      "source": "size=$(_fm_status_file_size \"$f\") || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2877",
+     "site": "bin/fm-classify-lib.sh:3287",
      "source": "backstop=$(status_outcome_backstop_cursor_offset \"$f\") || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2898",
+     "site": "bin/fm-classify-lib.sh:3309",
      "source": "open=$(status_open_decisions_incremental \"$f\" \"$endpoint\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3022",
+     "site": "bin/fm-classify-lib.sh:3433",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3121",
+     "site": "bin/fm-classify-lib.sh:3532",
      "source": "[ -e \"$f\" ] || continue"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3126",
+     "site": "bin/fm-classify-lib.sh:3537",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" '' note working \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3128",
+     "site": "bin/fm-classify-lib.sh:3539",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" '' note \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3151",
+     "site": "bin/fm-classify-lib.sh:3562",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" \"$endpoint\" note working \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3153",
+     "site": "bin/fm-classify-lib.sh:3564",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" \"$endpoint\" note \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-crew-state.sh:1324",
+     "site": "bin/fm-crew-state.sh:1334",
      "source": "LOG_LATEST=$(last_status_line \"$LOG\")"
     },
     {
-     "site": "bin/fm-crew-state.sh:319",
+     "site": "bin/fm-crew-state.sh:329",
      "source": "LOG_LINE=$(status_current_line \"$LOG\" \"$KIND\" \"$OPEN_DECISIONS\")"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:626",
+     "site": "bin/fm-fleet-snapshot.sh:629",
      "source": "[ -f \"$source\" ] || return 0"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:627",
+     "site": "bin/fm-fleet-snapshot.sh:630",
      "source": "cp -p -- \"$source\" \"$destination\" && return 0"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:629",
+     "site": "bin/fm-fleet-snapshot.sh:632",
      "source": "if [ ! -e \"$source\" ]; then"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:647",
+     "site": "bin/fm-fleet-snapshot.sh:650",
      "source": "&& open=$(status_open_decisions_incremental \"$log\" \"${size//[[:space:]]/}\" exact); }; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:384",
+     "site": "bin/fm-wake-drain.sh:408",
      "source": "receipt=$(status_outcome_backstop_cursor_offset \"$STATE/$task.status\") || { rc=1; break; }"
     },
     {
-     "site": "bin/fm-wake-drain.sh:386",
+     "site": "bin/fm-wake-drain.sh:410",
      "source": "status_snapshot_latest_event \"$STATE/$task.status\" \"$endpoint\" \"$ident\" || continue"
     },
     {
@@ -7081,11 +7303,11 @@
      "source": "' \"$path\" \"$min_offset\" \"$end_offset\" 2>/dev/null) || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3373",
+     "site": "bin/fm-wake-lib.sh:3574",
      "source": "offset=$(fm_wake_status_cursor_offset \"$path\") || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3385",
+     "site": "bin/fm-wake-lib.sh:3586",
      "source": "if ! fm_wake_unread_events \"$path\" 0 \"$offset\" \"$endpoint\"; then"
     }
    ],
@@ -7166,19 +7388,19 @@
      "source": "| if .verdict == \"captain\" then . + {recordedAgo: recorded_ago} else . end' \"$STORE\"; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:361",
+     "site": "bin/fm-wake-drain.sh:362",
      "source": "if [ -e \"$store\" ] || [ -L \"$store\" ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:362",
+     "site": "bin/fm-wake-drain.sh:363",
      "source": "if [ ! -f \"$store\" ] || [ ! -r \"$store\" ] || [ -L \"$store\" ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:432",
+     "site": "bin/fm-wake-drain.sh:457",
      "source": "if [ -e \"$store\" ] || [ -L \"$store\" ]; then fm_lock_release \"$lock\"; fi"
     },
     {
-     "site": "bin/fm-wake-drain.sh:656",
+     "site": "bin/fm-wake-drain.sh:685",
      "source": "[ -s \"$STATE/branch-outcomes.jsonl\" ] || return 0"
     }
    ],
@@ -7223,15 +7445,15 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-fleet-snapshot.sh:1436",
+     "site": "bin/fm-fleet-snapshot.sh:1439",
      "source": "if [ -e \"$FM_SNAPSHOT_CACHE_DIR\" ] || [ -L \"$FM_SNAPSHOT_CACHE_DIR\" ]; then"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:1437",
+     "site": "bin/fm-fleet-snapshot.sh:1440",
      "source": "[ -d \"$FM_SNAPSHOT_CACHE_DIR\" ] && [ ! -L \"$FM_SNAPSHOT_CACHE_DIR\" ] || return 1"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:1438",
+     "site": "bin/fm-fleet-snapshot.sh:1441",
      "source": "mode=$(file_mode_octal \"$FM_SNAPSHOT_CACHE_DIR\")"
     }
    ],
@@ -7262,35 +7484,35 @@
    "root": "worktree",
    "sites": [
     {
-     "site": "bin/fm-crew-state.sh:1069",
+     "site": "bin/fm-crew-state.sh:1079",
      "source": "run_overview=$(fm_nm_run_checked \"$WT\" \"$NM_TIMEOUT\" axi) || overview_ok=0"
     },
     {
-     "site": "bin/fm-crew-state.sh:1071",
+     "site": "bin/fm-crew-state.sh:1081",
      "source": "run_choice=$(fm_nm_select_run \"$CREW_BRANCH\" \"$run_overview\" \"$WT\" \"$NM_TIMEOUT\")"
     },
     {
-     "site": "bin/fm-crew-state.sh:1084",
+     "site": "bin/fm-crew-state.sh:1094",
      "source": "RUN_OUT=$(fm_nm_run_checked \"$WT\" \"$NM_TIMEOUT\" axi status --run \"$selected_id\") \\"
     },
     {
-     "site": "bin/fm-crew-state.sh:270",
+     "site": "bin/fm-crew-state.sh:280",
      "source": "if [ -z \"$REMOTE_HOST\" ] && { [ -z \"$WT\" ] || [ ! -d \"$WT\" ]; }; then"
     },
     {
-     "site": "bin/fm-crew-state.sh:290",
+     "site": "bin/fm-crew-state.sh:300",
      "source": "if reason=$(fm_dod_accept_ship_done \"$KIND\" \"$mode\" \"$WT\" \"$project\" \"$LOG_LINE\" \"$STATE\" \"$ID\" \"$META\"); then"
     },
     {
-     "site": "bin/fm-crew-state.sh:293",
+     "site": "bin/fm-crew-state.sh:303",
      "source": "if landed_on=$(fm_dod_head_on_origin_default \"$WT\" \"$head\"); then"
     },
     {
-     "site": "bin/fm-crew-state.sh:415",
+     "site": "bin/fm-crew-state.sh:425",
      "source": "fm_nm_run \"$WT\" \"$NM_TIMEOUT\" \"$@\""
     },
     {
-     "site": "bin/fm-crew-state.sh:909",
+     "site": "bin/fm-crew-state.sh:919",
      "source": "daemon_status=$(fm_nm_run_checked \"$WT\" \"$NM_TIMEOUT\" daemon status) || rc=$?"
     },
     {
@@ -7310,7 +7532,7 @@
      "source": "[ -n \"$repo\" ] && [ -d \"$repo\" ] && [ -n \"$sha\" ] || return 1"
     },
     {
-     "site": "bin/fm-fleet-snapshot.sh:910",
+     "site": "bin/fm-fleet-snapshot.sh:913",
      "source": "path_exists_json_to worktree_present \"$worktree\""
     },
     {

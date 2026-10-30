@@ -27,7 +27,7 @@ accounting, blob, obj, place = old.accounting, old.blob, old.obj, old.place
 CLI = ROOT / "bin/fm-supervision-recorder.py"
 HEAD = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], stdout=subprocess.PIPE,
                       check=True).stdout.decode().strip()
-CREW = "bin/fm-classify-lib.sh:3801"
+CREW = next(site for site in rec.CALLER_SITES if site.startswith("bin/fm-classify-lib.sh:"))
 DRAIN = "bin/fm-afk-return.sh:784"
 SNAPSHOT = "bin/fm-fleet-view.sh:29"
 MEM = next(site for site in rec.EXCLUDED_SITES if site.startswith("bin/fm-mem-guard.sh:"))

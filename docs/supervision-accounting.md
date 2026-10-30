@@ -636,7 +636,7 @@ Each admitted row names an id, its families, a root (`state`, `config`, `data` o
 A worktree template is relative to each admitted task's worktree.
 Each row pins every source site that reads it, as `path:line` plus the exact stripped line.
 `instrumentation` rows pin hook sites; the list is empty until the hooks land.
-`excluded` classes record every other read the audit found, each with its reason: helper-body parameters, lock internals, request scratch, dynamic paths, Git internals, the parent home, clocks, process observations, request temporaries, paths outside the roots and external tools.
+`excluded` classes record every other read the audit found, each with its reason: helper-body parameters, lock internals, request scratch, dynamic paths, Git internals, the parent home, clocks, process observations, request temporaries, paths outside the roots, external tools, and the opt-in native view-client route that `FM_VIEW_SOCKET` selects ([supervision-views.md](supervision-views.md)).
 An excluded read is not admitted, so a replay that reaches it reads an uncaptured place and refuses at bind; it is listed so the closure is complete and its pins drift-checked, not so it can be captured.
 A request may read an admitted place only if the place's row names that request's family.
 Any change to a pinned source line requires regenerating the closure and its review; the audit then refuses the stale pin.
