@@ -2977,6 +2977,60 @@ SH
   pass "bounded acquire hands ownership to the waiting caller after contention"
 }
 
+# A bounded wait that meets a live holder returns 124, and
+# fm_lock_wait_failure_to words the refusal every caller prints: the lock, the
+# holder's pid and command, and the bound. Any other outcome names only the
+# lock and the return code, and an unreadable holder command leaves the pid.
+test_bounded_lock_refusal_names_the_live_holder() {
+  local dir state lock holder_pid i out gone_pid
+  dir=$(make_case bounded-lock-refusal)
+  state="$dir/state"
+  lock="$state/.control-fixture.lock"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 10
+    printf "ready\n" > "$3"
+    while [ ! -e "$4" ]; do sleep 0.05; done
+    fm_lock_release "$2"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" "$dir/holder.ready" "$dir/release-holder" &
+  holder_pid=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$dir/holder.ready" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -s "$dir/holder.ready" ] \
+    || { kill "$holder_pid" 2>/dev/null || true; fail "refusal fixture holder never acquired its lock"; }
+
+  out=$(FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    rc=0
+    fm_lock_acquire_wait_bounded "$2" 1 || rc=$?
+    [ "$rc" -eq 124 ] || { printf "rc=%s\n" "$rc"; exit 0; }
+    fm_lock_wait_failure_to text "$2" 1 "$rc"
+    printf "%s\n" "$text"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" 2>&1)
+  : > "$dir/release-holder"
+  wait "$holder_pid" || fail "refusal fixture holder did not release cleanly"
+  assert_contains "$out" "$lock is held by pid $holder_pid (" "a live holder was not named with its pid and command"
+  assert_contains "$out" "bash" "the holder's command line was not included"
+  assert_contains "$out" ") past 1s" "the refusal did not state the bound"
+
+  out=$(bash -c '. "$1"; fm_lock_wait_failure_to text "$2" 5 1; printf "%s\n" "$text"' \
+    _ "$ROOT/bin/fm-wake-lib.sh" "$lock")
+  [ "$out" = "$lock could not be taken (rc=1)" ] || fail "a non-timeout failure was worded as: $out"
+  out=$(bash -c '. "$1"; FM_LOCK_HELD_PID=; fm_lock_wait_failure_to text "$2" 5 124; printf "%s\n" "$text"' \
+    _ "$ROOT/bin/fm-wake-lib.sh" "$lock")
+  [ "$out" = "$lock could not be taken (rc=124)" ] || fail "a timeout without a holder pid was worded as: $out"
+  bash -c 'exit 0' &
+  gone_pid=$!
+  wait "$gone_pid" || true
+  out=$(bash -c '. "$1"; FM_LOCK_HELD_PID=$3; fm_lock_wait_failure_to text "$2" 5 124; printf "%s\n" "$text"' \
+    _ "$ROOT/bin/fm-wake-lib.sh" "$lock" "$gone_pid")
+  [ "$out" = "$lock is held by pid $gone_pid past 5s" ] || fail "an unreadable holder command was worded as: $out"
+  pass "a bounded lock refusal names the lock, its live holder and the bound"
+}
+
 # A live-but-stuck presentation lock must not strand the executable drain. The
 # presentation remains retriable on the next pass, while the separate queue
 # mutation lock keeps its blocking all-or-nothing acknowledgement contract.
@@ -3949,6 +4003,7 @@ WAKE_QUEUE_CASES=(
   test_self_held_lock_reclaims_instead_of_deadlocking
   test_subshell_lock_ownership_without_bashpid
   test_bounded_lock_handoff_after_contention
+  test_bounded_lock_refusal_names_the_live_holder
   test_malformed_presentation_lock_reports_acquire_failure
   test_secondmate_declared_pause_rows_do_not_feed_stall_escalation
   test_secondmate_reprovisioned_queue_starts_a_fresh_interval

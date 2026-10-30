@@ -305,6 +305,10 @@ HEARTBEAT=${FM_HEARTBEAT:-600}        # base seconds between heartbeat scans
 HEARTBEAT_MAX=${FM_HEARTBEAT_MAX:-7200}  # heartbeat backoff cap
 CHECK_INTERVAL=${FM_CHECK_INTERVAL:-300}  # seconds between *.check.sh sweeps
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
+# Seconds a PR-poll check waits for its task's control lock before it is
+# skipped until the next check sweep (pr_poll_control_take below).
+PR_POLL_LOCK_WAIT=${FM_TEST_PR_POLL_LOCK_WAIT:-10}
+case "$PR_POLL_LOCK_WAIT" in ''|*[!0-9]*|0) PR_POLL_LOCK_WAIT=10 ;; esac
 HOME_SUMMARY_INTERVAL=${FM_HOME_SUMMARY_INTERVAL:-300}
 case "$HOME_SUMMARY_INTERVAL" in
   ''|*[!0-9]*|0) HOME_SUMMARY_INTERVAL=300 ;;
@@ -3314,6 +3318,27 @@ reconcile_requests_detached() {
 
 PR_POLL_CONTROL_LOCK=
 PR_POLL_PUBLISH_LOCK=
+PR_POLL_LOCK_SKIP=0
+
+# Takes task <id>'s control lock for one PR-poll check, waiting at most
+# PR_POLL_LOCK_WAIT seconds. A lifecycle action (a spawn, a teardown, a merge
+# helper) holds that lock while it runs, and an unbounded wait here held the
+# whole watcher cycle - every other check, wake and beat - behind it. On a
+# refusal it sets PR_POLL_LOCK_SKIP, logs one triage line naming the holder and
+# returns 1; the check runs again at the next check sweep.
+pr_poll_control_take() {  # <id>
+  local id=$1 lock rc=0 failure
+  lock="$STATE/.control-$id.lock"
+  fm_lock_acquire_wait_bounded "$lock" "$PR_POLL_LOCK_WAIT" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    PR_POLL_CONTROL_LOCK=$lock
+    return 0
+  fi
+  PR_POLL_LOCK_SKIP=1
+  fm_lock_wait_failure_to failure "$lock" "$PR_POLL_LOCK_WAIT" "$rc"
+  triage_log "PR poll for $id skipped: its control lock $failure; retrying at the next check sweep"
+  return 1
+}
 
 pr_poll_control_release() {
   [ -z "$PR_POLL_CONTROL_LOCK" ] || fm_lock_release "$PR_POLL_CONTROL_LOCK" || return 1
@@ -3534,12 +3559,12 @@ retire_merged_pr_poll() {  # <id>
 # fm_pr_poll_registration_rerecord_device owns the proof and the rewrite.
 # Returns 0 when a re-record was attempted under the control lock, so the caller
 # captures again whatever the outcome: a concurrent re-arm may have published a
-# valid poll instead, and the strict capture decides either way.
+# valid poll instead, and the strict capture decides either way. Returns 1 with
+# PR_POLL_LOCK_SKIP set when the control lock stayed held (pr_poll_control_take).
 rerecord_device_shifted_pr_poll() {  # <id>
   local id=$1
   fm_pr_poll_registration_device_shifted "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" || return 1
-  PR_POLL_CONTROL_LOCK="$STATE/.control-$id.lock"
-  fm_lock_acquire_wait "$PR_POLL_CONTROL_LOCK" || exit 1
+  pr_poll_control_take "$id" || return 1
   PR_POLL_PUBLISH_LOCK="$STATE/.pr-poll-publish-$id.lock"
   fm_lock_acquire_wait "$PR_POLL_PUBLISH_LOCK" || exit 1
   if fm_pr_poll_registration_rerecord_device "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh"; then
@@ -3839,6 +3864,7 @@ while :; do
         fi
       else
         id=$(basename "$c" .check.sh)
+        PR_POLL_LOCK_SKIP=0
         if fm_pr_poll_snapshot_capture "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" \
           || { rerecord_device_shifted_pr_poll "$id" \
             && fm_pr_poll_snapshot_capture "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh"; }; then
@@ -3848,8 +3874,7 @@ while :; do
           host=$FM_PR_POLL_SNAPSHOT_HOST
           path=$FM_PR_POLL_SNAPSHOT_PATH
           number=$FM_PR_POLL_SNAPSHOT_NUMBER
-          PR_POLL_CONTROL_LOCK="$STATE/.control-$id.lock"
-          fm_lock_acquire_wait "$PR_POLL_CONTROL_LOCK" || exit 1
+          pr_poll_control_take "$id" || continue
           if ! fm_pr_poll_snapshot_matches "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh"; then
             pr_poll_control_release || exit 1
             triage_log "PR poll for $id changed before its validated check; skipping the stale snapshot"
@@ -3858,6 +3883,10 @@ while :; do
           run_check_capture "$SCRIPT_DIR/fm-pr-poll.sh" --validated \
             "$provider" "$url" "$host" "$path" "$number" || exit 1
           out=$FM_CHECK_RESULT
+        elif [ "$PR_POLL_LOCK_SKIP" -eq 1 ]; then
+          # A held control lock is a PR poll waiting its turn, not an
+          # unauthenticated check: skip it without trying it as a custom check.
+          continue
         elif fm_custom_check_snapshot_prepare "$STATE" "$id"; then
           custom_snapshot=$FM_CUSTOM_CHECK_SNAPSHOT
           run_check_capture "$custom_snapshot" || exit 1

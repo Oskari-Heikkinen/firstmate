@@ -515,11 +515,14 @@ test_promotion_branch_command_is_shell_safe() {
   pass "fm-promote: ref-format-valid shell metacharacters stay literal in promotion branch commands"
 }
 
-test_local_merge_uses_the_recorded_ship_branch() {
-  local home proj id main fix out
-  home="$TMP_ROOT/local-merge-branch/home"
-  proj="$TMP_ROOT/local-merge-branch/proj"
-  id=local-merge-branch-e2
+# make_local_merge_fixture <name> <id>: a home and a local-only project whose
+# default branch is one commit behind the recorded ship branch fix/<id>, with
+# the task record naming both. Sets LM_HOME, LM_PROJ, LM_MAIN (the default
+# branch's name), LM_BASE (its commit) and LM_FIX (the ship branch's commit).
+make_local_merge_fixture() {
+  local name=$1 id=$2 home proj
+  home="$TMP_ROOT/$name/home"
+  proj="$TMP_ROOT/$name/proj"
   mkdir -p "$home/state" "$home/data" "$proj"
   git -C "$proj" init -q || fail "could not initialize local-merge branch fixture"
   git -C "$proj" config user.email test@example.com
@@ -527,17 +530,27 @@ test_local_merge_uses_the_recorded_ship_branch() {
   printf 'base\n' > "$proj/base"
   git -C "$proj" add base || fail "could not stage local-merge branch fixture base"
   git -C "$proj" commit -qm base || fail "could not commit local-merge branch fixture base"
-  main=$(git -C "$proj" branch --show-current)
+  LM_MAIN=$(git -C "$proj" branch --show-current)
+  LM_BASE=$(git -C "$proj" rev-parse HEAD)
   git -C "$proj" checkout -qb "fix/$id" || fail "could not create recorded branch fixture"
   printf 'change\n' > "$proj/change"
   git -C "$proj" add change || fail "could not stage recorded branch fixture"
   git -C "$proj" commit -qm change || fail "could not commit recorded branch fixture"
-  fix=$(git -C "$proj" rev-parse HEAD)
-  git -C "$proj" checkout -q "$main" || fail "could not restore fixture default branch"
+  LM_FIX=$(git -C "$proj" rev-parse HEAD)
+  git -C "$proj" checkout -q "$LM_MAIN" || fail "could not restore fixture default branch"
+  printf 'project=%s\nmode=local-only\nbranch=fix/%s\n' "$proj" "$id" > "$home/state/$id.meta"
+  LM_HOME=$home
+  LM_PROJ=$proj
+}
+
+test_local_merge_uses_the_recorded_ship_branch() {
+  local home proj id main fix out
+  id=local-merge-branch-e2
+  make_local_merge_fixture local-merge-branch "$id"
+  home=$LM_HOME proj=$LM_PROJ main=$LM_MAIN fix=$LM_FIX
   cat > "$home/data/projects.md" <<EOF
 - $(basename "$proj") [local-only branch=contrib/] - changed after task intake (added 2026-01-01)
 EOF
-  printf 'project=%s\nmode=local-only\nbranch=fix/%s\n' "$proj" "$id" > "$home/state/$id.meta"
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$MERGE_LOCAL" "$id") \
     || fail "local merge did not use the branch recorded at task intake: $out"
   [ "$(git -C "$proj" rev-parse HEAD)" = "$fix" ] \
@@ -545,6 +558,53 @@ EOF
   assert_contains "$out" "merged fix/$id into local $main" \
     "local merge did not report the immutable recorded branch"
   pass "fm-merge-local: a registry change cannot redirect an in-flight local-only task"
+}
+
+# While another lifecycle action holds the task's control lock, the local merge
+# waits only its bound and then refuses, naming the lock and its holder, with
+# the default branch untouched; once the lock is free the same merge lands.
+test_local_merge_refuses_while_the_control_lock_stays_held() {
+  local home proj id lock out rc holder i=0 started elapsed
+  id=local-merge-held-e2
+  make_local_merge_fixture local-merge-held "$id"
+  home=$LM_HOME proj=$LM_PROJ
+  printf -- '- %s [local-only] - fixture (added 2026-01-01)\n' "$(basename "$proj")" > "$home/data/projects.md"
+  lock="$home/state/.control-$id.lock"
+  bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 10
+    printf "ready\n" > "$3"
+    while [ ! -e "$4" ]; do sleep 0.05; done
+    fm_lock_release "$2"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" "$home/holder.ready" "$home/release-holder" &
+  holder=$!
+  while [ "$i" -lt 200 ] && [ ! -s "$home/holder.ready" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -s "$home/holder.ready" ] \
+    || { kill "$holder" 2>/dev/null || true; fail "local-merge-held: the fixture never took the control lock"; }
+
+  started=$SECONDS
+  rc=0
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_TEST_MERGE_CONTROL_LOCK_WAIT=1 \
+    "$MERGE_LOCAL" "$id" 2>&1) || rc=$?
+  elapsed=$((SECONDS - started))
+  : > "$home/release-holder"
+  wait "$holder" || fail "local-merge-held: the fixture holder did not release cleanly"
+  [ "$rc" -eq 1 ] || fail "local-merge-held: a held control lock must refuse with exit 1 (got $rc): $out"
+  assert_contains "$out" "local merge refused: task $id's control lock $lock is held by pid $holder" \
+    "local-merge-held: the refusal did not name the lock and its holder"
+  assert_contains "$out" "so nothing was merged" "local-merge-held: the refusal did not say nothing was merged"
+  [ "$(git -C "$proj" rev-parse "$LM_MAIN")" = "$LM_BASE" ] \
+    || fail "local-merge-held: the default branch moved without the control lock"
+  [ "$elapsed" -lt 30 ] || fail "local-merge-held: the merge waited ${elapsed}s against a 1s bound"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_TEST_MERGE_CONTROL_LOCK_WAIT=1 \
+    "$MERGE_LOCAL" "$id" 2>&1) || fail "local-merge-held: the merge failed once the lock was free: $out"
+  [ "$(git -C "$proj" rev-parse "$LM_MAIN")" = "$LM_FIX" ] \
+    || fail "local-merge-held: the freed merge did not fast-forward the default branch"
+  pass "fm-merge-local: a held control lock refuses within its bound, naming the holder, and merges nothing"
 }
 
 # A registered name may contain spaces, and the lookup must match the whole
@@ -1995,6 +2055,7 @@ test_promotion_delivers_the_real_definition_of_done
 test_promotion_persists_the_selected_ship_branch
 test_promotion_branch_command_is_shell_safe
 test_local_merge_uses_the_recorded_ship_branch
+test_local_merge_refuses_while_the_control_lock_stays_held
 test_project_mode_matches_whole_multiword_names
 test_project_mode_maps_the_conditional_policy
 test_project_mode_binds_the_forge_orthogonally

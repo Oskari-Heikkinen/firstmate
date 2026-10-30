@@ -1573,9 +1573,11 @@ _fm_lock_acquire_wait_handoff() {  # <lockdir> <caller-pid>
 # Bounded acquire variant. It preserves the ordinary wait/reclaim behavior
 # until fm-timeout-lib.sh's hard deadline, returns 124 when a live holder still
 # owns the lock, and leaves FM_LOCK_HELD_PID naming that holder.
-# Use it where a caller must refuse rather than block: wake presentation, and
-# the guarded remote link clear, whose whole contract is to return a
-# reconciliation refusal instead of wedging an unattended close.
+# Use it where a caller must refuse rather than block: wake presentation, the
+# guarded remote link clear, whose whole contract is to return a
+# reconciliation refusal instead of wedging an unattended close, the watcher's
+# PR-poll check (skipped until the next sweep), and the merge helpers' task
+# control lock (refused); fm_lock_wait_failure_to below words the refusal.
 # Mutation-critical callers that can safely block keep fm_lock_acquire_wait.
 fm_lock_acquire_wait_bounded() {
   local lockdir=$1 seconds=$2 caller_pid rc owner_pid attempts
@@ -1637,6 +1639,31 @@ fm_lock_acquire_wait_bounded() {
     return 1
   fi
   return "$rc"
+}
+
+# fm_lock_wait_failure_to <output-variable> <lockdir> <seconds> <rc>
+#
+# Describes a failed fm_lock_acquire_wait_bounded for a skip or refusal line:
+# "<lockdir> is held by pid <pid> (<command>) past <seconds>s" when it returned
+# 124 naming a live holder in FM_LOCK_HELD_PID ("pid <pid>" alone once that
+# pid's command line is unreadable, cut to 160 characters otherwise), and
+# "<lockdir> could not be taken (rc=<rc>)" for any other failure. It costs one
+# ps, so only failure paths call it.
+fm_lock_wait_failure_to() {  # <output-variable> <lockdir> <seconds> <rc>
+  local _fm_lw_pid=${FM_LOCK_HELD_PID:-} _fm_lw_cmd
+  case "$_fm_lw_pid" in ''|*[!0-9]*) _fm_lw_pid= ;; esac
+  if [ "$4" != 124 ] || [ -z "$_fm_lw_pid" ]; then
+    printf -v "$1" '%s could not be taken (rc=%s)' "$2" "$4"
+    return 0
+  fi
+  _fm_lw_cmd=$(ps -o args= -p "$_fm_lw_pid" 2>/dev/null) || _fm_lw_cmd=
+  _fm_lw_cmd=${_fm_lw_cmd#"${_fm_lw_cmd%%[![:space:]]*}"}
+  _fm_lw_cmd=${_fm_lw_cmd%%$'\n'*}
+  if [ -n "$_fm_lw_cmd" ]; then
+    printf -v "$1" '%s is held by pid %s (%s) past %ss' "$2" "$_fm_lw_pid" "${_fm_lw_cmd:0:160}" "$3"
+  else
+    printf -v "$1" '%s is held by pid %s past %ss' "$2" "$_fm_lw_pid" "$3"
+  fi
 }
 
 fm_lock_release() {

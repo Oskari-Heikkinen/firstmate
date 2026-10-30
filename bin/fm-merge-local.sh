@@ -15,6 +15,9 @@
 # merge, so a captain approval must be recorded as an `answer --release` before
 # this entrypoint is invoked. The lock ends when the fast-forward returns;
 # docs/captain-hold-lifecycle.md owns the accepted merge-to-cleanup residual.
+# The wait for that lock is bounded at 60 seconds: while another lifecycle
+# action (a spawn, a teardown, another merge) still holds it, this refuses with
+# exit 1, naming the lock and its holder, and merges nothing.
 # Usage: fm-merge-local.sh <task-id>
 set -eu
 
@@ -59,12 +62,23 @@ fi
 MERGE_EXPECTED_SPAWN_GEN=$FM_BACKLOG_META_SPAWN_GEN
 
 MERGE_CONTROL_LOCK=
+MERGE_CONTROL_LOCK_WAIT=${FM_TEST_MERGE_CONTROL_LOCK_WAIT:-60}
+case "$MERGE_CONTROL_LOCK_WAIT" in ''|*[!0-9]*|0) MERGE_CONTROL_LOCK_WAIT=60 ;; esac
 merge_control_cleanup() {
   [ -z "$MERGE_CONTROL_LOCK" ] || fm_lock_release "$MERGE_CONTROL_LOCK" || true
 }
 trap merge_control_cleanup EXIT
+merge_control_rc=0
+merge_control_failure=
+fm_lock_acquire_wait_bounded "$STATE/.control-$ID.lock" "$MERGE_CONTROL_LOCK_WAIT" \
+  || merge_control_rc=$?
+if [ "$merge_control_rc" -ne 0 ]; then
+  fm_lock_wait_failure_to merge_control_failure "$STATE/.control-$ID.lock" \
+    "$MERGE_CONTROL_LOCK_WAIT" "$merge_control_rc"
+  echo "error: local merge refused: task $ID's control lock $merge_control_failure; another lifecycle action is running on this task, so nothing was merged; retry once it finishes" >&2
+  exit 1
+fi
 MERGE_CONTROL_LOCK="$STATE/.control-$ID.lock"
-fm_lock_acquire_wait "$MERGE_CONTROL_LOCK"
 if ! fm_backlog_meta_spawn_gen_optional "$META" "$STATE"; then
   echo "error: task $ID changed while waiting to merge; refusing: $FM_BACKLOG_TRANSITION_ERROR" >&2
   exit 1

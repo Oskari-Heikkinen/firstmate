@@ -37,6 +37,7 @@ These checks exist because a passing forge reading answers a narrower question t
 - Never chain `bin/fm-teardown.sh` after `bin/fm-pr-merge.sh` in one command.
   Teardown counts a pushed branch as landed, so a refused or queued merge followed by teardown removes the task while its PR is still open.
   Tear down only after the merge prints `verified: <url> is merged`.
+- A merge refused because the task's control lock is held (`control lock ... is held by pid ...`) merged nothing: another lifecycle action is running on that task, so retry the merge once it finishes rather than tearing down or forcing the lock.
 
 Tear down a ship task only after landing is confirmed.
 A teardown refusal for uncommitted or unlanded work is a stop-and-investigate result, never an obstacle to bypass.

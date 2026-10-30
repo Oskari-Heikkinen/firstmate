@@ -239,6 +239,12 @@ case "${1:-} ${2:-}" in
     esac
     ;;
   "pr merge")
+    # github-merge-hangs makes the merge client hang, so a case can prove the
+    # bound stops it; the pid lets the case check nothing outlived that bound.
+    if [ -e "${FM_TEST_GH_LOG%/*}/github-merge-hangs" ]; then
+      printf '%s\n' "$$" > "${FM_TEST_GH_LOG%/*}/github-merge-hang.pid"
+      sleep 30
+    fi
     if [ -n "${FM_TEST_META_AT_MERGE:-}" ] && [ -f "${FM_STATE_OVERRIDE:-}/task-x1.meta" ]; then
       cat "$FM_STATE_OVERRIDE/task-x1.meta" > "$FM_TEST_META_AT_MERGE"
     fi
@@ -394,6 +400,11 @@ case "${1:-} ${2:-}" in
     fi
     [ ! -e "$case_dir/glab-merge-fails" ] || { echo "error: mr merge failed" >&2 ; exit 1 ; }
     : > "$case_dir/glab-merge-called"
+    # glab-merge-hangs lands the merge and then hangs the client.
+    if [ -e "$case_dir/glab-merge-hangs" ]; then
+      printf '%s\n' "$$" > "$case_dir/glab-merge-hang.pid"
+      sleep 30
+    fi
     exit 0
     ;;
 esac
@@ -514,6 +525,11 @@ case "$endpoint" in
   */merge)
     if [ -n "${FM_TEST_HELPER_VERSIONS_AT_MERGE:-}" ] && [ -d "${FM_HELPER_VERSIONS:-}" ]; then
       find "$FM_HELPER_VERSIONS" -name pending.json > "$FM_TEST_HELPER_VERSIONS_AT_MERGE"
+    fi
+    # tea-merge-hangs hangs the client before anything is merged.
+    if [ -e "$log_dir/tea-merge-hangs" ]; then
+      printf '%s\n' "$$" > "$log_dir/tea-merge-hang.pid"
+      sleep 30
     fi
     if [ -e "$log_dir/tea-merge-fails" ]; then
       printf '{"message":"merge failed"}\n'
@@ -4181,6 +4197,146 @@ test_merge_refuses_when_the_away_record_cannot_be_locked() {
   pass "a merge that cannot lock the away record refuses instead of merging unlocked"
 }
 
+# start_control_lock_holder <case_dir>: hold task-x1's control lock from a
+# fixture process that never releases it on its own; it lets go only once the
+# case writes release-holder, so the merge under test meets a live holder for
+# its whole bound. Sets CONTROL_HOLDER_PID.
+start_control_lock_holder() {
+  local case_dir=$1 i=0
+  FM_STATE_OVERRIDE="$case_dir/state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 10
+    printf "ready\n" > "$3"
+    while [ ! -e "$4" ]; do sleep 0.05; done
+    fm_lock_release "$2"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$case_dir/state/.control-task-x1.lock" \
+    "$case_dir/holder.ready" "$case_dir/release-holder" &
+  CONTROL_HOLDER_PID=$!
+  while [ "$i" -lt 200 ] && [ ! -s "$case_dir/holder.ready" ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -s "$case_dir/holder.ready" ] \
+    || { kill "$CONTROL_HOLDER_PID" 2>/dev/null || true; fail "${case_dir##*/}: the fixture never took the control lock"; }
+}
+
+# assert_forge_child_stopped <case_dir> <pid-file> <label>: the hung forge
+# mock really ran, is gone once the merge returned, and the merge released the
+# task's control lock.
+assert_forge_child_stopped() {
+  local case_dir=$1 pid_file=$2 label=$3 hang_pid
+  [ -s "$case_dir/$pid_file" ] || fail "$label: the hanging forge mock never ran"
+  hang_pid=$(cat "$case_dir/$pid_file")
+  if kill -0 "$hang_pid" 2>/dev/null; then
+    kill "$hang_pid" 2>/dev/null || true
+    fail "$label: the hung forge command outlived its bound"
+  fi
+  [ ! -e "$case_dir/state/.control-task-x1.lock" ] && [ ! -L "$case_dir/state/.control-task-x1.lock" ] \
+    || fail "$label: the control lock was left held after the stopped forge command"
+}
+
+test_merge_refuses_when_the_control_lock_stays_held() {
+  local case_dir rc started elapsed lock
+  case_dir=$(make_case control-lock-held)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f
+  lock="$case_dir/state/.control-task-x1.lock"
+  start_control_lock_holder "$case_dir"
+
+  export FM_TEST_MERGE_CONTROL_LOCK_WAIT=1
+  started=$SECONDS
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/75 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  elapsed=$((SECONDS - started))
+  unset FM_TEST_MERGE_CONTROL_LOCK_WAIT
+  : > "$case_dir/release-holder"
+  wait "$CONTROL_HOLDER_PID" || fail "control-lock-held: the fixture holder did not release cleanly"
+
+  expect_code 1 "$rc" "control-lock-held: a merge must refuse while another action holds the control lock"
+  assert_grep "error: PR merge refused: task task-x1's control lock $lock is held by pid $CONTROL_HOLDER_PID" \
+    "$case_dir/stderr" "control-lock-held: refusal did not name the lock and its holder"
+  assert_grep 'nothing was recorded or merged' "$case_dir/stderr" \
+    "control-lock-held: refusal did not say nothing was merged"
+  assert_no_grep 'pr merge' "$case_dir/gh.log" \
+    "control-lock-held: gh pr merge ran without the control lock"
+  assert_no_grep 'pr=https://github.com/example/repo/pull/75' "$case_dir/state/task-x1.meta" \
+    "control-lock-held: the PR was recorded without the control lock"
+  [ "$elapsed" -lt 30 ] \
+    || fail "control-lock-held: the merge waited ${elapsed}s against a 1s bound"
+  pass "a merge refuses within its bound, naming the lock and holder, while the control lock stays held"
+}
+
+test_github_merge_command_that_hangs_is_stopped_at_its_bound() {
+  local case_dir rc url=https://github.com/example/repo/pull/76
+  case_dir=$(make_case github-merge-hangs)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a
+  : > "$case_dir/github-merge-hangs"
+
+  export FM_TEST_PR_MERGE_FORGE_TIMEOUT=1
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$url" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  unset FM_TEST_PR_MERGE_FORGE_TIMEOUT
+
+  expect_code 124 "$rc" "github-merge-hangs: a stopped merge command must not report success"
+  assert_grep "error: gh pr merge for $url did not finish within 1s and was stopped" "$case_dir/stderr" \
+    "github-merge-hangs: the stopped command was not reported"
+  assert_grep "actionable: the merge command for $url failed, but the pull request reads back as state=MERGED" \
+    "$case_dir/stderr" "github-merge-hangs: a merge that landed anyway was not reported from the read-back"
+  assert_forge_child_stopped "$case_dir" github-merge-hang.pid github-merge-hangs
+  pass "a hung gh pr merge is stopped at its bound and the pull request is read back"
+}
+
+test_gitlab_merge_command_that_hangs_is_stopped_at_its_bound() {
+  local case_dir rc
+  case_dir=$(make_gitlab_case gitlab-merge-hangs)
+  : > "$case_dir/glab-merge-hangs"
+
+  export FM_TEST_PR_MERGE_FORGE_TIMEOUT=1
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  unset FM_TEST_PR_MERGE_FORGE_TIMEOUT
+
+  expect_code 124 "$rc" "gitlab-merge-hangs: a stopped merge command must not report success"
+  assert_grep "error: glab mr merge for $MR_URL did not finish within 1s and was stopped" "$case_dir/stderr" \
+    "gitlab-merge-hangs: the stopped command was not reported"
+  assert_grep "actionable: the merge command for $MR_URL was stopped, but the merge request reads back as merged" \
+    "$case_dir/stderr" "gitlab-merge-hangs: a merge that landed anyway was not reported from the read-back"
+  assert_grep "pr=$MR_URL" "$case_dir/state/task-x1.meta" \
+    "gitlab-merge-hangs: pr= must stay recorded so the merge poll observes the landed merge"
+  assert_forge_child_stopped "$case_dir" glab-merge-hang.pid gitlab-merge-hangs
+  pass "a hung glab mr merge is stopped at its bound and the merge request is read back"
+}
+
+test_forgejo_merge_call_that_hangs_is_stopped_at_its_bound() {
+  local case_dir rc
+  case_dir=$(make_forgejo_case forgejo-merge-hangs)
+  : > "$case_dir/tea-merge-hangs"
+
+  export FM_TEST_PR_MERGE_FORGE_TIMEOUT=1
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$FJ_URL" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  unset FM_TEST_PR_MERGE_FORGE_TIMEOUT
+
+  expect_code 1 "$rc" "forgejo-merge-hangs: a stopped merge call that merged nothing must fail"
+  assert_grep "error: the Forgejo merge call for $FJ_URL did not finish within 1s and was stopped" \
+    "$case_dir/stderr" "forgejo-merge-hangs: the stopped call was not reported"
+  assert_grep "Forgejo did not confirm $FJ_URL as merged" "$case_dir/stderr" \
+    "forgejo-merge-hangs: the read-back verdict was not reported"
+  [ ! -e "$case_dir/tea-merged" ] || fail "forgejo-merge-hangs: the mock recorded a merge"
+  assert_forge_child_stopped "$case_dir" tea-merge-hang.pid forgejo-merge-hangs
+  pass "a hung Forgejo merge call is stopped at its bound and judged by the read-back"
+}
+
 test_allow_red_refused_on_gitlab() {
   local case_dir rc
   case_dir=$(make_gitlab_case gitlab-allow-red)
@@ -4648,6 +4804,10 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_github_draft_or_unreadable_draft_state_refuses \
   test_unfinished_rerun_keeps_a_check_red \
   test_merge_refuses_when_the_away_record_cannot_be_locked \
+  test_merge_refuses_when_the_control_lock_stays_held \
+  test_github_merge_command_that_hangs_is_stopped_at_its_bound \
+  test_gitlab_merge_command_that_hangs_is_stopped_at_its_bound \
+  test_forgejo_merge_call_that_hangs_is_stopped_at_its_bound \
   test_away_plan_gated_403_does_not_block_the_merge \
   test_allow_red_is_refused_while_away \
   test_bundled_repo_override_args_refuse_before_recording \

@@ -3846,10 +3846,17 @@ test_device_rerecord_refuses_tampered_artifacts() {
 }
 
 start_poll_publish_holder() {  # <dir> <state> <id>
-  local dir=$1 state=$2 id=$3 i
+  start_lock_holder "$1" "$2/.pr-poll-publish-$3.lock"
+}
+
+# start_lock_holder <dir> <lock>: a fixture process that takes <lock> and holds
+# it until release_poll_publish_holder, so a case meets a live holder that
+# never lets go on its own. Sets PR_POLL_HOLDER_PID and PR_POLL_HOLDER_LOCK.
+start_lock_holder() {  # <dir> <lock>
+  local dir=$1 i
   PR_POLL_HOLDER_ACQUIRED="$dir/poll-publish-holder-acquired"
   PR_POLL_HOLDER_RELEASE="$dir/poll-publish-holder-release"
-  PR_POLL_HOLDER_LOCK="$state/.pr-poll-publish-$id.lock"
+  PR_POLL_HOLDER_LOCK=$2
   cat > "$dir/poll-publish-holder.sh" <<'SH'
 #!/usr/bin/env bash
 set -eu
@@ -3870,12 +3877,71 @@ SH
   done
   kill "$PR_POLL_HOLDER_PID" 2>/dev/null || true
   wait "$PR_POLL_HOLDER_PID" 2>/dev/null || true
-  fail "poll publication holder did not acquire its lock"
+  fail "lock holder fixture did not acquire $PR_POLL_HOLDER_LOCK"
 }
 
 release_poll_publish_holder() {
   : > "$PR_POLL_HOLDER_RELEASE"
   wait "$PR_POLL_HOLDER_PID" || fail "poll publication holder did not release its lock"
+}
+
+# held_control_poll_part <device|plain>: a PR poll whose task's control lock is
+# held by a fixture that never releases it must not stall the watcher. The
+# poll is skipped with one triage line naming the lock and its holder, the
+# cycle goes on to the next check, the poll stays armed, and once the lock is
+# free the next sweep detects the merge exactly as before.
+held_control_poll_part() {  # <device|plain>
+  local variant=$1 dir state rc out started elapsed
+  dir=$(make_case "held-control-poll-$variant")
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/1
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
+  [ "$variant" != device ] || shift_registration_device "$state" task-a
+  add_stop_custom_check "$dir"
+  start_lock_holder "$dir" "$state/.control-task-a.lock"
+
+  started=$SECONDS
+  set +e
+  FM_TEST_PR_POLL_LOCK_WAIT=1 FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GH_STATE=MERGED \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-1.out" 2> "$dir/watch-1.err"
+  rc=$?
+  set -e
+  elapsed=$((SECONDS - started))
+  [ "$rc" -eq 0 ] || { release_poll_publish_holder; fail "$variant: watcher behind a held control lock failed (rc=$rc): $(cat "$dir/watch-1.err")"; }
+  process_is_live_non_zombie "$PR_POLL_HOLDER_PID" \
+    || fail "$variant: the fixture holder let go before the watcher cycle ended"
+  out=$(cat "$dir/watch-1.out")
+  case "$out" in check:*z-stop.check.sh:*stop-cycle) ;; *) release_poll_publish_holder; fail "$variant: the cycle did not reach the next check: $out" ;; esac
+  case "$out" in
+    *'rejected unauthenticated state checks'*|*task-a.check.sh*)
+      release_poll_publish_holder
+      fail "$variant: a poll behind a held control lock was rejected or run: $out" ;;
+  esac
+  assert_no_grep 'pr view' "$dir/gh.log" "$variant: the poll queried the forge without its control lock"
+  assert_grep "PR poll for task-a skipped: its control lock $state/.control-task-a.lock is held by pid $PR_POLL_HOLDER_PID" \
+    "$state/.watch-triage.log" "$variant: the skip was not logged with the lock and its holder"
+  [ "$(grep -c 'PR poll for task-a skipped' "$state/.watch-triage.log")" -eq 1 ] \
+    || fail "$variant: one skip logged more than one line"
+  [ "$elapsed" -lt 45 ] || fail "$variant: the watcher cycle took ${elapsed}s behind a 1s lock bound"
+  [ -e "$state/task-a.check.sh" ] && [ -e "$state/task-a.pr-poll-registration" ] \
+    || fail "$variant: the skipped poll was disarmed"
+
+  release_poll_publish_holder
+  ack_watcher_cycle "$state" || fail "$variant: the first cycle's wake could not be acknowledged"
+  rm -f "$state/.last-check"
+  set +e
+  FM_TEST_PR_POLL_LOCK_WAIT=1 FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GH_STATE=MERGED \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-2.out" 2> "$dir/watch-2.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "$variant: watcher after the release failed: $(cat "$dir/watch-2.err")"
+  [ "$(grep -c '^check: .*task-a\.check\.sh: merged$' "$dir/watch-2.out")" -eq 1 ] \
+    || fail "$variant: the released poll did not surface its merge exactly once: $(cat "$dir/watch-2.out")"
+}
+
+test_held_control_lock_skips_the_poll_not_the_cycle() {
+  run_case_parts "held_control_poll_part plain" "held_control_poll_part device"
+  pass "a PR poll behind a held control lock is skipped and logged, and the watcher cycle completes"
 }
 
 test_device_rerecord_serializes_direct_rearm() {
@@ -3991,6 +4057,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_concurrent_watcher_sees_only_complete_publication \
   test_merged_poll_row_names_no_authority_when_no_record_grants_one \
   test_device_renumbered_poll_stays_armed \
+  test_held_control_lock_skips_the_poll_not_the_cycle \
   test_merged_poll_reports_upward_from_a_secondmate_home_once \
   test_merged_poll_reregistration_after_notification_is_absorbed \
   test_rejected_metacharacter_bytes_are_inert \

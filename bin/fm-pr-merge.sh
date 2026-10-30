@@ -132,7 +132,10 @@
 # a Forgejo API field yet.
 #
 # Before either forge merge, the task's existing per-task control lock
-# serializes the captain-hold check through the forge command. A still-held or
+# serializes the captain-hold check through the forge command. The wait for it
+# is bounded at 60 seconds: while another lifecycle action (a spawn, a teardown,
+# another merge) still holds it, the merge refuses with exit 1, naming the lock
+# and its holder, before any recorded state or forge call. A still-held or
 # unreadable row refuses before that command, so a captain approval must be
 # recorded as an `answer --release` before this entrypoint is invoked. While
 # an away record exists (a quiet-mode record is a present captain, so its
@@ -151,6 +154,12 @@
 # still enqueue, and killing this shell can orphan a forge child after stale-lock
 # recovery. docs/architecture.md owns those away-merge limits, while
 # docs/captain-hold-lifecycle.md owns the separate merge-to-cleanup residual.
+# Each forge merge command runs under fm_run_timed (bin/fm-timeout-lib.sh) with
+# a 120-second bound that stops its whole process group, so a hung forge client
+# cannot hold these locks indefinitely. A stopped command counts as a failed
+# one whose landed state is unknown: the pull or merge request is read back,
+# an actionable line reports a merge that landed anyway, and the merge poll
+# that recording armed stays armed to observe it.
 # A failed forge command releases the lock after it returns. A successful one
 # retains the lock until the accepted merge authority is persisted against the
 # still-matching task metadata.
@@ -435,6 +444,10 @@ META="$STATE/$ID.meta"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
+FORGE_MERGE_TIMEOUT=${FM_TEST_PR_MERGE_FORGE_TIMEOUT:-120}
+case "$FORGE_MERGE_TIMEOUT" in ''|*[!0-9]*|0) FORGE_MERGE_TIMEOUT=120 ;; esac
 # Role partition: merging is MAIN-owned while attended; the Pi supervision
 # branch reports the green PR and never merges (contract: bin/fm-lease-lib.sh;
 # no-op in homes without a branch actor). While the away-posture record exists
@@ -459,14 +472,25 @@ MERGE_EXPECTED_SPAWN_GEN=$FM_BACKLOG_META_SPAWN_GEN
 
 MERGE_CONTROL_LOCK=
 MERGE_META_LOCK=
+MERGE_CONTROL_LOCK_WAIT=${FM_TEST_MERGE_CONTROL_LOCK_WAIT:-60}
+case "$MERGE_CONTROL_LOCK_WAIT" in ''|*[!0-9]*|0) MERGE_CONTROL_LOCK_WAIT=60 ;; esac
 merge_control_cleanup() {
   [ -z "$MERGE_META_LOCK" ] || fm_lock_release "$MERGE_META_LOCK" || true
   fm_afk_contract_lock_release || true
   [ -z "$MERGE_CONTROL_LOCK" ] || fm_lock_release "$MERGE_CONTROL_LOCK" || true
 }
 trap merge_control_cleanup EXIT
+merge_control_rc=0
+merge_control_failure=
+fm_lock_acquire_wait_bounded "$STATE/.control-$ID.lock" "$MERGE_CONTROL_LOCK_WAIT" \
+  || merge_control_rc=$?
+if [ "$merge_control_rc" -ne 0 ]; then
+  fm_lock_wait_failure_to merge_control_failure "$STATE/.control-$ID.lock" \
+    "$MERGE_CONTROL_LOCK_WAIT" "$merge_control_rc"
+  echo "error: PR merge refused: task $ID's control lock $merge_control_failure; another lifecycle action is running on this task, so nothing was recorded or merged; retry once it finishes" >&2
+  exit 1
+fi
 MERGE_CONTROL_LOCK="$STATE/.control-$ID.lock"
-fm_lock_acquire_wait "$MERGE_CONTROL_LOCK"
 if ! fm_backlog_meta_spawn_gen_optional "$META" "$STATE"; then
   echo "error: task $ID changed while waiting to merge; refusing: $FM_BACKLOG_TRANSITION_ERROR" >&2
   exit 1
@@ -1677,9 +1701,13 @@ case "$PROVIDER" in
     [ "$away_status" -eq 0 ] || exit "$away_status"
     refuse_github_queue_while_away || exit 2
     merge_status=0
-    merge_output=$(gh pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
-      --match-head-commit "$FM_PR_MERGE_HEAD" \
-      "${merge_args[@]+"${merge_args[@]}"}" "$@" 2>&1) || merge_status=$?
+    merge_output=$(fm_run_timed "$FORGE_MERGE_TIMEOUT" gh pr merge "$PR_NUMBER" \
+      --repo "$PR_OWNER/$PR_REPO" --match-head-commit "$FM_PR_MERGE_HEAD" \
+      "${merge_args[@]+"${merge_args[@]}"}" "$@" 2>&1 </dev/null) || merge_status=$?
+    if fm_timed_out "$merge_status"; then
+      printf 'error: gh pr merge for %s did not finish within %ss and was stopped; reading the pull request back\n' \
+        "$URL" "$FORGE_MERGE_TIMEOUT" >&2
+    fi
     if [ "$merge_status" -eq 0 ]; then
       FM_PR_GITHUB_MERGE_ACCEPTED=true
       persist_accepted_merge_authority || exit 1
@@ -1736,12 +1764,21 @@ case "$PROVIDER" in
     if [ "$FM_PR_AWAY_POSTURE" = true ]; then
       gitlab_merge_args=(--auto-merge=false)
     fi
-    GITLAB_HOST="$FM_PR_HOST" glab mr merge "$PR_NUMBER" -R "$PROJECT_URL" \
-      --sha "$FM_PR_MERGE_HEAD" --yes "$@" "${gitlab_merge_args[@]+"${gitlab_merge_args[@]}"}" || merge_status=$?
+    fm_run_timed "$FORGE_MERGE_TIMEOUT" env "GITLAB_HOST=$FM_PR_HOST" \
+      glab mr merge "$PR_NUMBER" -R "$PROJECT_URL" --sha "$FM_PR_MERGE_HEAD" --yes \
+      "$@" "${gitlab_merge_args[@]+"${gitlab_merge_args[@]}"}" </dev/null || merge_status=$?
     if [ "$merge_status" -ne 0 ]; then
       fm_afk_contract_lock_release || true
       fm_lock_release "$MERGE_CONTROL_LOCK" || true
       MERGE_CONTROL_LOCK=
+      if fm_timed_out "$merge_status"; then
+        printf 'error: glab mr merge for %s did not finish within %ss and was stopped\n' \
+          "$URL" "$FORGE_MERGE_TIMEOUT" >&2
+        if gitlab_confirm_merged 2>/dev/null; then
+          printf 'actionable: the merge command for %s was stopped, but the merge request reads back as merged; the merge poll remains armed to record it\n' \
+            "$URL" >&2
+        fi
+      fi
       exit "$merge_status"
     fi
     persist_accepted_merge_authority || exit 1
@@ -1769,9 +1806,11 @@ case "$PROVIDER" in
     # against a real instance), matching --match-head-commit/--sha above. tea
     # exposes no such flag on its own merge subcommand, so the API is called
     # directly through "tea api" instead.
-    merge_output=$(tea api --login "$FORGEJO_LOGIN" --repo "$PR_OWNER/$PR_REPO" \
-      -X POST "/repos/{owner}/{repo}/pulls/$PR_NUMBER/merge" \
-      -f "Do=$forgejo_method" -f "head_commit_id=$FM_PR_MERGE_HEAD" 2>&1) || true
+    forgejo_merge_status=0
+    merge_output=$(fm_run_timed "$FORGE_MERGE_TIMEOUT" tea api --login "$FORGEJO_LOGIN" \
+      --repo "$PR_OWNER/$PR_REPO" -X POST "/repos/{owner}/{repo}/pulls/$PR_NUMBER/merge" \
+      -f "Do=$forgejo_method" -f "head_commit_id=$FM_PR_MERGE_HEAD" 2>&1 </dev/null) \
+      || forgejo_merge_status=$?
     # "tea api" reports an HTTP-level failure with exit status 0 (also
     # verified against a real instance), so that output is kept only for the
     # failure report below; the merge is judged solely by reading the pull
@@ -1792,6 +1831,9 @@ case "$PROVIDER" in
       fm_lock_release "$MERGE_CONTROL_LOCK" || true
       MERGE_CONTROL_LOCK=
       [ -z "$merge_output" ] || printf 'error: > %s\n' "$merge_output" >&2
+      if fm_timed_out "$forgejo_merge_status"; then
+        echo "error: the Forgejo merge call for $URL did not finish within ${FORGE_MERGE_TIMEOUT}s and was stopped" >&2
+      fi
       echo "error: Forgejo did not confirm $URL as merged" >&2
       exit 1
     fi
