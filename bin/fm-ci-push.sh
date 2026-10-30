@@ -8,13 +8,14 @@
 # Usage (inside the task's worktree, with FM_HOME naming the supervising home):
 #   fm-ci-push.sh try <task> [--repo <owner/repo>]
 #     Pushes HEAD to ci/try/<task>, a run that is never a landing proof.
-#   fm-ci-push.sh land <task> [--repo <owner/repo>]
+#   fm-ci-push.sh land <task> [--allow-helper-break <consumer>]... [--repo <owner/repo>]
 #     Pushes HEAD to ci/<task>, the landing proof. HEAD must contain the
-#     current origin/main.
+#     current origin/main, and pass the helper landing gate below.
 #   fm-ci-push.sh land <task> --full [--repo <owner/repo>]
 #     Pushes HEAD to ci/full/<task>, only when HEAD's own ci/<task> run's plan
 #     job chose the changed-area `ci` layout and that run has not gone red.
-#   fm-ci-push.sh land <task> --rebased-from <tested-sha> [--repo <owner/repo>]
+#   fm-ci-push.sh land <task> --rebased-from <tested-sha> [--allow-helper-break <consumer>]...
+#                 [--repo <owner/repo>]
 #     Pushes nothing. It checks that HEAD may fast-forward main without a new
 #     run because it is <tested-sha> rebased onto a green main unchanged:
 #       commit-list   origin/main..HEAD has the same commits as the tested
@@ -23,7 +24,10 @@
 #       patch-id      each commit's `git patch-id --verbatim` (the stable id,
 #                     without its whitespace folding) equals the tested one's;
 #       tested-run    <tested-sha> has a green CI run on ci/<task>;
-#       main-run      origin/main's own CI run is green.
+#       main-run      origin/main's own CI run is green;
+#       helper-acceptance  the helper landing gate below passes HEAD, so a
+#                     rebase that changed a declared helper's bytes needs
+#                     those bytes accepted anew.
 #     It prints "fast-forward allowed without a new run" with the tested run's
 #     URL, or refuses naming every condition that failed.
 #   fm-ci-push.sh rerun-infra <run-id> [--flaky-ok] [--repo <owner/repo>]
@@ -33,6 +37,14 @@
 #     tests). It refuses while the run is still going, so a repeat call never
 #     reruns twice, and when a failed job already is a rerun it appends a
 #     `blocked` line to the task's status file instead.
+#
+# The helper landing gate is `bin/fm-helper-consumers.sh check-land` on
+# origin/main and HEAD (docs/helper-consumers.md "The landing gate"): land
+# refuses a head that changes a declared helper's bytes some consumer has not
+# accepted, naming each helper, version and consumer and the park condition
+# that passes once they accept, and refuses any other gate failure.
+# --allow-helper-break <consumer> (repeatable) is the operator-run break for
+# that consumer, passed to the gate as --allow-break; an agent never runs it.
 #
 # try and land refuse a dirty worktree, and refuse a push whose content
 # already has a CI run: content is HEAD's tree plus the author and message of
@@ -93,9 +105,10 @@ HEAD_TREE=
 HEAD_KEY=
 MAIN_SHA=
 MATCH=
+ALLOW_HELPER_BREAK=
 
 usage() {
-  echo "usage: fm-ci-push.sh try <task> | land <task> [--full | --rebased-from <sha>] | rerun-infra <run-id> [--flaky-ok]  [--repo <owner/repo>]" >&2
+  echo "usage: fm-ci-push.sh try <task> | land <task> [--full | --rebased-from <sha>] [--allow-helper-break <consumer>]... | rerun-infra <run-id> [--flaky-ok]  [--repo <owner/repo>]" >&2
   exit 2
 }
 
@@ -303,6 +316,28 @@ read_head() {
   HEAD_SHA=$(git rev-parse --verify -q 'HEAD^{commit}') || refuse "not inside a git worktree with a commit"
 }
 
+# helper_gate: runs the helper landing gate on origin/main and HEAD. Returns 0
+# when HEAD may land, else 1 with the reason in GATE_WHY; the gate's records
+# are printed and logged either way.
+GATE_WHY=
+helper_gate() {
+  local out rc=0 c args=()
+  for c in $ALLOW_HELPER_BREAK; do args+=(--allow-break "$c"); done
+  out=$("$SCRIPT_DIR/fm-helper-consumers.sh" check-land --repo . \
+    ${args[@]+"${args[@]}"} "$MAIN_SHA" "$HEAD_SHA" 2>&1) || rc=$?
+  if [ -n "$out" ]; then
+    printf '%s\n' "$out" | sed 's/^/fm-ci-push: helper gate: /'
+    log_event "helper gate (exit $rc): $(printf '%s' "$out" | tr '\t\n' ' ;')" \
+      || printf 'fm-ci-push: warning: could not log to %s\n' "$LOG" >&2
+  fi
+  case "$rc" in
+    0) return 0 ;;
+    3) GATE_WHY="HEAD $HEAD_SHA lands declared helper bytes not every consumer has accepted (the helper gate lines above name them); wait parked until $SCRIPT_DIR/fm-helper-consumers.sh check-land --condition $MAIN_SHA $HEAD_SHA exits 0, as docs/helper-consumers.md says" ;;
+    *) GATE_WHY="the helper landing gate failed (exit $rc): $(printf '%s' "$out" | tail -n 1)" ;;
+  esac
+  return 1
+}
+
 prepare_push() {  # <scope> <target>
   local scope=$1 target=$2
   require_clean
@@ -323,6 +358,7 @@ mode_try() {
 
 mode_land() {
   prepare_push land "ci/$TASK"
+  helper_gate || refuse "$GATE_WHY"
   push_head "ci/$TASK"
 }
 
@@ -470,6 +506,16 @@ mode_land_rebased() {
     esac
   fi
 
+  if helper_gate; then
+    printf 'fm-ci-push: helper-acceptance ok: HEAD lands no declared helper bytes a consumer has not accepted\n'
+  else
+    failed+=" helper-acceptance"
+    printf 'fm-ci-push: helper-acceptance FAILED: %s\n' "$GATE_WHY" >&2
+  fi
+
+  case "$failed" in
+    ' helper-acceptance') refuse "HEAD $HEAD_SHA may not land yet; failed: helper-acceptance" ;;
+  esac
   [ -z "$failed" ] || refuse "HEAD $HEAD_SHA is not $tested rebased onto a green main unchanged; failed:$failed; push it with land for a new run"
   finish "fast-forward allowed without a new run: $(printf '%s' "$run" | cut -f 7) proved $tested, and HEAD $HEAD_SHA replays its $n_h commits unchanged onto green origin/$MAIN_BRANCH $MAIN_SHA ($(printf '%s' "$main_run" | cut -f 7)); land with git push origin HEAD:$MAIN_BRANCH"
 }
@@ -585,6 +631,12 @@ while [ "$#" -gt 0 ]; do
     --full) [ "$MODE" = land ] || usage; full=1; shift ;;
     --rebased-from) [ "$MODE" = land ] && [ "$#" -ge 2 ] && [ -n "$2" ] || usage; rebased_from=$2; shift 2 ;;
     --flaky-ok) [ "$MODE" = rerun-infra ] || usage; flaky_ok=1; shift ;;
+    --allow-helper-break)
+      [ "$MODE" = land ] && [ "$#" -ge 2 ] || usage
+      case "$2" in ''|.*|*[!A-Za-z0-9._-]*) usage ;; esac
+      ALLOW_HELPER_BREAK="$ALLOW_HELPER_BREAK $2"
+      shift 2
+      ;;
     *) usage ;;
   esac
 done

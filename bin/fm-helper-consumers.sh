@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # fm-helper-consumers.sh - declared consumers of Firstmate helpers that another
 # home runs under a pin, and the deploy-after-acceptance gate that keeps a new
-# helper version off their path until each of them accepts it.
+# helper version off their path until each of them accepts it, and the landing
+# gate that keeps it off the default branch until then.
 #
 # docs/helper-consumers.md owns the rule, the declaration format, and what each
 # consumer must do; this header owns the exact commands.
@@ -9,6 +10,8 @@
 # Usage:
 #   fm-helper-consumers.sh list
 #   fm-helper-consumers.sh check-advance [--allow-break <consumer>]... <checkout> <target-rev>
+#   fm-helper-consumers.sh check-land [--repo <dir>] [--fetch] [--if-repo <host>/<path>]
+#                                     [--condition] [--allow-break <consumer>]... [<base>] <head>
 #   fm-helper-consumers.sh pending [--repo <dir>] [--fetch] [--if-repo <host>/<path>] [<rev> | <from>..<to>]
 #
 # Declarations are read from FM_HELPER_CONSUMERS, default
@@ -44,6 +47,29 @@
 # declarations behaves exactly as before. bin/fm-ff-lib.sh's ff_target runs this
 # before every byte-changing step and treats any status but 0 as a hold.
 #
+# check-land is the landing gate. It classes each declared helper whose bytes
+# landing <head> on <base> (default: the origin default branch) would change,
+# with check-advance's classifier and outcomes: <base>'s bytes are the current
+# version and <head>'s the target. A helper counts when its own checkout is
+# the same project as --repo (default: this script's own checkout), as for
+# pending. When <base> is not an ancestor of <head>, a helper only <base>
+# changed since their merge base is left alone, and one both changed holds as
+#   diverged<TAB><helper><TAB><head-sha256><TAB><consumer>[,...]
+# because the bytes such a landing yields are unknown until <head> is rebased;
+# --allow-break does not release it. --allow-break is the operator-run break,
+# as for check-advance. --fetch fetches origin first, and <head> by its id when
+# it is missing. --if-repo exits 0 quietly unless --repo's origin is that forge
+# host and path. --condition exits 1 rather than 3 while held, as a park cmd:
+# condition needs. A declared helper that cannot be located (no such
+# directory, or not in a git checkout) is a stale declaration: it is reported
+# as `malformed`, and a head that changes any file with the helper's basename
+# holds as `unproven` with that file's bytes at <head>, because a moved helper
+# keeps its name; --allow-break naming the consumer releases it, and every
+# other head passes. Exit 0 to land, 3 to hold, 2 on a usage error, a failed
+# fetch, or an unreadable checkout or revision. With no declarations it prints
+# nothing and exits 0 before reading anything else. Every landing path runs it
+# and refuses on any status but 0.
+#
 # pending records each declared helper version at <rev> (default: the origin
 # default branch) that some declaring consumer does not accept yet, once per
 # version, under FM_HELPER_VERSIONS, default
@@ -71,7 +97,7 @@ VERSIONS_DIR="${FM_HELPER_VERSIONS:-${XDG_STATE_HOME:-${HOME:-}/.local/state}/fi
 TAB=$(printf '\t')
 
 usage() {
-  sed -n '2,64p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^set -u$/{ /^set -u$/d; s/^# \{0,1\}//; p; }' "$0"
 }
 
 die() { printf 'fm-helper-consumers: %s\n' "$*" >&2; exit 2; }
@@ -232,11 +258,178 @@ cmd_list() {
   return "$rc"
 }
 
+# ---------------------------------------------------------------- classifier
+
+# The path of declared helper <canon> relative to its checkout, in REL, when
+# this run checks it: `inside` takes a helper under <top> (check-advance's
+# checkout); `project` takes a helper whose own checkout is the same project
+# as <top> (check-land). Returns 1 for a helper it does not check, and 2 in
+# `project` mode for one it cannot locate.
+locate() {  # <mode> <top> <helper>
+  local canon htop
+  if ! canon=$(canonical_file "$3"); then
+    [ "$1" = project ] || return 1
+    return 2
+  fi
+  case "$1" in
+    inside)
+      case "$canon" in "$2"/*) REL=${canon#"$2"/}; return 0 ;; esac
+      return 1
+      ;;
+  esac
+  htop=$(git -C "$(dirname -- "$canon")" rev-parse --show-toplevel 2>/dev/null) || return 2
+  htop=$(CDPATH='' cd -- "$htop" && pwd -P) || die "cannot resolve the checkout of $3"
+  same_project "$2" "$htop" || return 1
+  REL=${canon#"$htop"/}
+}
+
+# The bytes <rel> has before (PAIR_CUR) and after (PAIR_TGT) <head> lands on
+# <base>. Returns 1 when the landing leaves them as they are, and 4 when
+# <base> and <head> both changed them since <merge-base> (empty to compare
+# <base> and <head> alone), so the bytes the landing yields are not known.
+pair() {  # <repo> <base> <head> <merge-base> <rel>
+  local mid
+  PAIR_CUR=$(blob_sha "$1" "$2" "$5") || die "cannot hash $5 at $2"
+  PAIR_TGT=$(blob_sha "$1" "$3" "$5") || die "cannot hash $5 at $3"
+  [ "$PAIR_CUR" != "$PAIR_TGT" ] || return 1
+  [ -n "$4" ] || return 0
+  mid=$(blob_sha "$1" "$4" "$5") || die "cannot hash $5 at $4"
+  [ "$mid" != "$PAIR_TGT" ] || return 1
+  [ "$mid" = "$PAIR_CUR" ] || return 4
+}
+
+# Whether <head> changes, since <merge-base>, a file with the basename of
+# declared helper <helper>, which a helper that cannot be located may have
+# become; that file's bytes at <head> are left in NAME_TGT. The changed paths
+# are read once per classify run.
+same_name() {  # <top> <head> <merge-base> <helper>
+  local name path
+  if [ "$CHANGED_READ" = 0 ]; then
+    CHANGED=$(git -C "$1" -c core.quotePath=false diff --name-only --no-renames "$3" "$2") \
+      || die "cannot list the files $2 changes in $1"
+    CHANGED_READ=1
+  fi
+  name=${4##*/}
+  while IFS= read -r path; do
+    [ "${path##*/}" = "$name" ] || continue
+    NAME_TGT=$(blob_sha "$1" "$2" "$path") || die "cannot hash $path at $2"
+    return 0
+  done <<< "$CHANGED"
+  return 1
+}
+
+# The shared classifier of check-advance and check-land: one record per
+# outcome for every declared helper whose bytes <head> changes on <base>, in
+# RECORDS, with HELD=1 when any record holds. The header owns the outcomes.
+classify() {  # <mode> <top> <base> <head> <merge-base> <allow>
+  local mode=$1 top=$2 base=$3 head=$4 mb=$5 allow=$6 file helper stem rc
+  local bad="" watched="" seen
+  RECORDS="" HELD=0 CHANGED_READ=0
+  while IFS= read -r file; do
+    if ! parse_decl "$file"; then
+      RECORDS="${RECORDS}malformed$TAB$file$TAB$DECL_ERROR$TAB-"$'\n'
+      stem=$(basename -- "$file" .conf)
+      case " $allow " in
+        *" $stem "*) ;;
+        *) bad="$bad${bad:+,}$stem" ;;
+      esac
+      watched="$watched$(salvage_helpers "$file")"$'\n'
+      continue
+    fi
+    watched="$watched$DECL_HELPERS"
+    while IFS= read -r helper; do
+      [ -n "$helper" ] || continue
+      rc=0
+      locate "$mode" "$top" "$helper" || rc=$?
+      case "$rc" in
+        0) ;;
+        2) RECORDS="${RECORDS}malformed$TAB$file${TAB}declared helper $helper cannot be located$TAB-"$'\n'
+           same_name "$top" "$head" "$mb" "$helper" || continue
+           case " $allow " in
+             *" $DECL_CONSUMER "*) RECORDS="${RECORDS}break$TAB$helper$TAB$NAME_TGT$TAB$DECL_CONSUMER"$'\n' ;;
+             *) RECORDS="${RECORDS}unproven$TAB$helper$TAB$NAME_TGT$TAB$DECL_CONSUMER"$'\n'
+                HELD=1 ;;
+           esac
+           continue ;;
+        *) continue ;;
+      esac
+      rc=0
+      pair "$top" "$base" "$head" "$mb" "$REL" || rc=$?
+      case "$rc" in
+        0) ;;
+        1) continue ;;
+        *) RECORDS="${RECORDS}diverged$TAB$helper$TAB$PAIR_TGT$TAB$DECL_CONSUMER"$'\n'
+           HELD=1
+           continue ;;
+      esac
+      if accepts "$PAIR_TGT"; then
+        continue
+      fi
+      case " $allow " in
+        *" $DECL_CONSUMER "*)
+          RECORDS="${RECORDS}break$TAB$helper$TAB$PAIR_TGT$TAB$DECL_CONSUMER"$'\n'
+          continue
+          ;;
+      esac
+      if accepts "$PAIR_CUR"; then
+        RECORDS="${RECORDS}hold$TAB$helper$TAB$PAIR_TGT$TAB$DECL_CONSUMER"$'\n'
+        HELD=1
+      else
+        RECORDS="${RECORDS}waiting$TAB$helper$TAB$PAIR_TGT$TAB$DECL_CONSUMER"$'\n'
+      fi
+    done <<< "$DECL_HELPERS"
+  done < <(declarations)
+
+  # A declaration that cannot be parsed cannot prove what its consumer accepts,
+  # so while one is malformed or unreadable, every change to a helper any
+  # declaration names holds, unless --allow-break names that file's stem.
+  [ -n "$bad" ] || return 0
+  seen=$'\n'
+  while IFS= read -r helper; do
+    [ -n "$helper" ] || continue
+    case "$seen" in *$'\n'"$helper"$'\n'*) continue ;; esac
+    seen="$seen$helper"$'\n'
+    rc=0
+    locate "$mode" "$top" "$helper" || rc=$?
+    case "$rc" in
+      0) ;;
+      2) same_name "$top" "$head" "$mb" "$helper" || continue
+         RECORDS="${RECORDS}unproven$TAB$helper$TAB$NAME_TGT$TAB$bad"$'\n'
+         HELD=1
+         continue ;;
+      *) continue ;;
+    esac
+    case "$seen" in *$'\n'"@$top/$REL"$'\n'*) continue ;; esac
+    seen="$seen@$top/$REL"$'\n'
+    rc=0
+    pair "$top" "$base" "$head" "$mb" "$REL" || rc=$?
+    case "$rc" in
+      0) RECORDS="${RECORDS}unproven$TAB$helper$TAB$PAIR_TGT$TAB$bad"$'\n' ;;
+      1) continue ;;
+      *) RECORDS="${RECORDS}diverged$TAB$helper$TAB$PAIR_TGT$TAB$bad"$'\n' ;;
+    esac
+    HELD=1
+  done <<< "$watched"
+}
+
+# Print RECORDS aggregated per kind, helper and sha.
+emit_records() {
+  local out kind a b c
+  out=$(printf '%s' "$RECORDS" | aggregate)
+  [ -n "$out" ] || return 0
+  while IFS="$TAB" read -r kind a b c; do
+    if [ "$kind" = malformed ]; then
+      printf 'malformed%s%s%s%s\n' "$TAB" "$a" "$TAB" "$b"
+    else
+      printf '%s%s%s%s%s%s%s\n' "$kind" "$TAB" "$a" "$TAB" "$b" "$TAB" "$c"
+    fi
+  done <<< "$out"
+}
+
 # ---------------------------------------------------------------- check-advance
 
 cmd_check_advance() {
-  local allow="" checkout target top file helper canon rel cur tgt records="" held=0 out
-  local bad="" stem watched="" seen
+  local allow="" checkout target top
   while [ $# -gt 0 ]; do
     case "$1" in
       --allow-break)
@@ -257,78 +450,65 @@ cmd_check_advance() {
   top=$(CDPATH='' cd -- "$top" && pwd -P) || die "cannot resolve $checkout"
   git -C "$top" rev-parse --verify --quiet "$target^{commit}" >/dev/null || die "unknown revision $target in $checkout"
 
-  while IFS= read -r file; do
-    if ! parse_decl "$file"; then
-      records="${records}malformed$TAB$file$TAB$DECL_ERROR$TAB-"$'\n'
-      stem=$(basename -- "$file" .conf)
-      case " $allow " in
-        *" $stem "*) ;;
-        *) bad="$bad${bad:+,}$stem" ;;
-      esac
-      watched="$watched$(salvage_helpers "$file")"$'\n'
-      continue
-    fi
-    watched="$watched$DECL_HELPERS"
-    while IFS= read -r helper; do
-      [ -n "$helper" ] || continue
-      canon=$(canonical_file "$helper") || continue
-      case "$canon" in
-        "$top"/*) rel=${canon#"$top"/} ;;
-        *) continue ;;
-      esac
-      cur=$(blob_sha "$top" HEAD "$rel") || die "cannot hash $rel at HEAD"
-      tgt=$(blob_sha "$top" "$target" "$rel") || die "cannot hash $rel at $target"
-      [ "$cur" != "$tgt" ] || continue
-      if accepts "$tgt"; then
-        continue
-      fi
-      case " $allow " in
-        *" $DECL_CONSUMER "*)
-          records="${records}break$TAB$helper$TAB$tgt$TAB$DECL_CONSUMER"$'\n'
-          continue
-          ;;
-      esac
-      if accepts "$cur"; then
-        records="${records}hold$TAB$helper$TAB$tgt$TAB$DECL_CONSUMER"$'\n'
-        held=1
-      else
-        records="${records}waiting$TAB$helper$TAB$tgt$TAB$DECL_CONSUMER"$'\n'
-      fi
-    done <<< "$DECL_HELPERS"
-  done < <(declarations)
-
-  # A declaration that cannot be parsed cannot prove what its consumer accepts,
-  # so while one is malformed or unreadable, every change to a helper any
-  # declaration names holds, unless --allow-break names that file's stem.
-  if [ -n "$bad" ]; then
-    seen=$'\n'
-    while IFS= read -r helper; do
-      [ -n "$helper" ] || continue
-      canon=$(canonical_file "$helper") || continue
-      case "$seen" in *$'\n'"$canon"$'\n'*) continue ;; esac
-      seen="$seen$canon"$'\n'
-      case "$canon" in
-        "$top"/*) rel=${canon#"$top"/} ;;
-        *) continue ;;
-      esac
-      cur=$(blob_sha "$top" HEAD "$rel") || die "cannot hash $rel at HEAD"
-      tgt=$(blob_sha "$top" "$target" "$rel") || die "cannot hash $rel at $target"
-      [ "$cur" != "$tgt" ] || continue
-      records="${records}unproven$TAB$helper$TAB$tgt$TAB$bad"$'\n'
-      held=1
-    done <<< "$watched"
-  fi
-
-  out=$(printf '%s' "$records" | aggregate)
-  [ -z "$out" ] || printf '%s\n' "$out" | while IFS="$TAB" read -r kind a b c; do
-    if [ "$kind" = malformed ]; then
-      printf 'malformed%s%s%s%s\n' "$TAB" "$a" "$TAB" "$b"
-    else
-      printf '%s%s%s%s%s%s%s\n' "$kind" "$TAB" "$a" "$TAB" "$b" "$TAB" "$c"
-    fi
-  done
-  [ "$held" = 0 ] || return 3
+  classify inside "$top" HEAD "$target" "" "$allow"
+  emit_records
+  [ "$HELD" = 0 ] || return 3
   return 0
+}
+
+# ---------------------------------------------------------------- check-land
+
+cmd_check_land() {
+  local repo=$FM_ROOT fetch=0 if_repo="" allow="" condition=0 base="" head top url
+  local base_c head_c mb
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) [ -n "${2:-}" ] || die "--repo needs a directory"; repo=$2; shift 2 ;;
+      --fetch) fetch=1; shift ;;
+      --if-repo) [ -n "${2:-}" ] || die "--if-repo needs <host>/<path>"; if_repo=$2; shift 2 ;;
+      --condition) condition=1; shift ;;
+      --allow-break)
+        [ -n "${2:-}" ] || die "--allow-break needs a consumer id"
+        allow="$allow $2"
+        shift 2
+        ;;
+      --) shift; break ;;
+      -*) die "unknown option $1" ;;
+      *) break ;;
+    esac
+  done
+  case $# in
+    1) head=$1 ;;
+    2) base=$1 head=$2 ;;
+    *) die "usage: check-land [--repo <dir>] [--fetch] [--if-repo <host>/<path>] [--condition] [--allow-break <consumer>]... [<base>] <head>" ;;
+  esac
+  [ -n "$(declarations)" ] || return 0
+
+  top=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) || die "not a git checkout: $repo"
+  top=$(CDPATH='' cd -- "$top" && pwd -P) || die "cannot resolve $repo"
+  if [ -n "$if_repo" ]; then
+    url=$(origin_url "$top") || return 0
+    [ "$(normalize_remote "$url")" = "$(normalize_remote "$if_repo")" ] || return 0
+  fi
+  if [ "$fetch" = 1 ]; then
+    git -C "$top" fetch --quiet origin 2>/dev/null || die "cannot fetch origin in $top"
+    git -C "$top" rev-parse --verify --quiet "$head^{commit}" >/dev/null \
+      || git -C "$top" fetch --quiet origin "$head" 2>/dev/null \
+      || die "cannot fetch $head from origin in $top"
+  fi
+  if [ -z "$base" ]; then
+    base=$(origin_default "$top") || die "no origin default branch in $top"
+  fi
+  base_c=$(git -C "$top" rev-parse --verify --quiet "$base^{commit}") || die "unknown revision $base in $top"
+  head_c=$(git -C "$top" rev-parse --verify --quiet "$head^{commit}") || die "unknown revision $head in $top"
+  mb=$(git -C "$top" merge-base "$base_c" "$head_c" 2>/dev/null) || die "$base and $head share no history in $top"
+
+  classify project "$top" "$base_c" "$head_c" "$mb" "$allow"
+  emit_records
+  [ "$HELD" = 1 ] || return 0
+  printf 'fm-helper-consumers: %s may not land on %s yet: the records above name each held helper (docs/helper-consumers.md "The landing gate")\n' "$head_c" "$base" >&2
+  [ "$condition" = 0 ] || return 1
+  return 3
 }
 
 # ---------------------------------------------------------------- pending
@@ -361,6 +541,20 @@ same_project() {  # <repo> <other-checkout>
   a=$(origin_url "$1") || return 1
   b=$(origin_url "$2") || return 1
   [ -n "$a" ] && [ "$(normalize_remote "$a")" = "$(normalize_remote "$b")" ]
+}
+
+# The origin default branch of <repo> as a revision name: origin/HEAD's
+# target, else origin/main or origin/master; returns 1 when none exists.
+origin_default() {  # <repo>
+  local default
+  default=$(git -C "$1" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || default=""
+  if [ -z "$default" ]; then
+    for default in origin/main origin/master ''; do
+      [ -n "$default" ] || return 1
+      git -C "$1" rev-parse --verify --quiet "$default^{commit}" >/dev/null && break
+    done
+  fi
+  printf '%s\n' "$default"
 }
 
 json_str() {  # <text>
@@ -403,7 +597,7 @@ file_note() {  # <record-dir> <request-id> <text>
 }
 
 cmd_pending() {
-  local repo=$FM_ROOT fetch=0 if_repo="" spec="" from="" to default url
+  local repo=$FM_ROOT fetch=0 if_repo="" spec="" from="" to url
   local file helper canon htop rel tgt from_sha lines="" line key seen=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -428,15 +622,7 @@ cmd_pending() {
     printf 'helper-pending: fetch from origin failed; checking the last fetched state\n'
   fi
   if [ -z "$spec" ]; then
-    default=$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || default=""
-    if [ -z "$default" ]; then
-      for default in origin/main origin/master ''; do
-        [ -n "$default" ] || break
-        git -C "$repo" rev-parse --verify --quiet "$default^{commit}" >/dev/null && break
-      done
-    fi
-    [ -n "$default" ] || { printf 'helper-pending: skipped: no origin default branch in %s\n' "$repo"; return 0; }
-    spec=$default
+    spec=$(origin_default "$repo") || { printf 'helper-pending: skipped: no origin default branch in %s\n' "$repo"; return 0; }
   fi
   case "$spec" in
     *..*) from=${spec%%..*}; to=${spec#*..} ;;
@@ -550,6 +736,7 @@ case "${1:-}" in
   -h|--help|help) usage; exit 0 ;;
   list) shift; cmd_list "$@" ;;
   check-advance) shift; cmd_check_advance "$@" ;;
+  check-land) shift; cmd_check_land "$@" ;;
   pending) shift; cmd_pending "$@" ;;
   *) usage >&2; exit 2 ;;
 esac

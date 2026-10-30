@@ -10,7 +10,7 @@ This page is the owner of the rule that prevents that, the declaration format a 
 A Firstmate helper that another home runs under a pin is a reviewed helper with declared consumers.
 Firstmate deploys a new version of it to the path those consumers run only after every declared consumer accepts that exact version.
 A consumer accepts a version through an independent review of those exact bytes; an interface version or self-test the helper advertises is evidence for that review, never acceptance by itself.
-Landing does not wait for acceptance: a change to the helper lands on the default branch once its own gates pass, and [the update gate](#the-update-gate) then holds every update that would deploy it until its consumers accept it.
+A change to the helper lands on the default branch only after every declared consumer accepts the exact bytes it lands, or the operator breaks a named consumer, as [the landing gate](#the-landing-gate) enforces; [the update gate](#the-update-gate) backs it by holding every update that would deploy a version that landed around it.
 Never pin a Firstmate checkout without a declaration: an undeclared pin is invisible to Firstmate, and the next update that touches the helper stops it.
 
 ## Declarations
@@ -43,6 +43,23 @@ This hold departs from the original plan, which let a malformed file count only 
 An unreadable file whose own `helper=` lines cannot be read holds only the helpers other declarations name.
 `bin/fm-helper-consumers.sh list` shows every declaration, each helper's live version, and whether the consumer accepts it, is waiting, or is missing its helper.
 
+## The landing gate
+
+`bin/fm-helper-consumers.sh check-land` keeps an unaccepted helper version off the default branch, so the fleet update never has to hold for one.
+It compares the bytes each declared helper has on the default branch and after the head lands there, using the same classifier and outcomes as the update gate below.
+A head that leaves every declared helper's bytes as they are is never held, whatever else it changes.
+A head that changes them lands only when every declaring consumer accepts the new version; a consumer that accepts the current version but not the new one holds it, and so does any malformed or unreadable declaration.
+A head that is not yet on top of the default branch holds when both it and the default branch changed the same helper, because the bytes it would land are not known until it is rebased.
+
+Every landing path runs the gate and refuses on any outcome but a pass, before it pushes or merges anything: `bin/fm-ci-push.sh land` (including `--rebased-from`), `bin/fm-pr-merge.sh` for a Firstmate pull request, and step 4 of the direct-push Definition of done.
+A gate that cannot read its declarations or revisions refuses too.
+A declared helper the gate cannot locate, because its folder is gone or is not in a git checkout, is a stale declaration: the gate names it as `malformed` at every landing and holds as `unproven` only a head that changes a file with the helper's file name, wherever that file lives, because a moved helper keeps its name.
+Every other head lands, so one stale path cannot stop unrelated landings; the consumer's owner fixes the path, or the operator's break names the consumer.
+A refused worker does not poll: it parks on `check-land --condition` and resumes when the consumers accept, as the worker guide's direct-push landing reference says.
+Each consumer's owner reviews the candidate's bytes and adds `accept=` for them in its own declaration, which is what releases the head.
+The operator, and never an agent, may land anyway by breaking a named consumer with `--allow-helper-break <consumer>` on the landing command; that consumer then waits until it accepts the new version.
+`bin/fm-merge-local.sh` is not gated, because it merges into a local default branch and never lands on a remote.
+
 ## The update gate
 
 The paths that move a Firstmate home's checkout - `/updatefirstmate`, the startup and launch secondmate sync, and remote secondmate sync - go through one fast-forward step, and the gate runs inside it.
@@ -54,6 +71,7 @@ For each declared helper inside the checkout being moved whose bytes would chang
 - if a consumer accepts neither, it is already waiting, so holding cannot help: the checkout advances and the update reports it.
 - if any declaration is malformed or unreadable, the checkout stays where it is, as described under Declarations.
 
+The landing gate above keeps unaccepted versions off the default branch, so this gate is its backstop: it holds only for a version that landed around the landing gate.
 When the main checkout is held, `/updatefirstmate` holds its whole pass, so every home stays on one Firstmate version, and prints a `held-for-helper:` line.
 The captain may still say to update anyway for a named consumer or malformed declaration; that consumer then waits until it accepts the new version, and the update records the override.
 The override covers only the homes on the machine where the update runs: a remote second mate's home is checked against its own machine's declarations, reports its hold, and catches up by itself once its own consumer accepts.

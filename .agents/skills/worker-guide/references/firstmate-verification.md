@@ -42,4 +42,5 @@ A parity test, one that checks a new implementation against an old one, enumerat
 Wait on the default branch's own checks exactly as the Definition of done says.
 Running homes follow the `green` branch, which advances to your commit only once that main run passes, so a red main reaches no home; still fix it forward or revert it at once as the Definition of done says.
 Once landed, also delete your CI branch: `git push origin --delete ci/<task-id>`.
+Your Definition of done runs the helper landing gate before the landing push, and `direct-push-landing.md` says how to park while it holds.
 Your brief's `bin/fm-helper-consumers.sh pending HEAD` line records any Firstmate helper version another home runs under a pin its consumers have not accepted yet and notes it for their review (`docs/helper-consumers.md`); it is quiet when nothing is declared.
