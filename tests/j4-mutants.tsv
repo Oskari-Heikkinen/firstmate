@@ -1,0 +1,10 @@
+tests/fm-helper-consumers.test.sh	bin/fm-helper-consumers.sh	bin/fm-helper-consumers.sh:660:andor:1	660	andor	1	ICAgIHVybD0kKG9yaWdpbl91cmwgIiR0b3AiKSAmJiBbIC1uICIkdXJsIiBdIFw=
+tests/fm-helper-consumers.test.sh	bin/fm-helper-consumers.sh	bin/fm-helper-consumers.sh:660:zn:1	660	zn	1	ICAgIHVybD0kKG9yaWdpbl91cmwgIiR0b3AiKSAmJiBbIC1uICIkdXJsIiBdIFw=
+tests/fm-helper-consumers.test.sh	bin/fm-helper-consumers.sh	bin/fm-helper-consumers.sh:625:cmp:1	625	cmp	1	ICAgICQyID09ICJicmVhayIgJiYgJDkgPT0gYnkgJiYgbGVuZ3RoKCQ2KSA9PSA2NCAmJiAkNiAhfiAvW14wLTlhLWZdLyB7
+tests/fm-helper-consumers.test.sh	bin/fm-helper-consumers.sh	bin/fm-helper-consumers.sh:519:stmt:1	519	stmt	1	ICBbICIkbW9kZSIgPSBwcm9qZWN0IF0gfHwgZnJlZWQ9IiI=
+tests/fm-helper-consumers.test.sh	bin/fm-helper-consumers.sh	bin/fm-helper-consumers.sh:625:cmp:2	625	cmp	2	ICAgICQyID09ICJicmVhayIgJiYgJDkgPT0gYnkgJiYgbGVuZ3RoKCQ2KSA9PSA2NCAmJiAkNiAhfiAvW14wLTlhLWZdLyB7
+tests/fm-helper-consumers.test.sh	bin/fm-helper-consumers.sh	bin/fm-helper-consumers.sh:625:andor:1	625	andor	1	ICAgICQyID09ICJicmVhayIgJiYgJDkgPT0gYnkgJiYgbGVuZ3RoKCQ2KSA9PSA2NCAmJiAkNiAhfiAvW14wLTlhLWZdLyB7
+tests/fm-helper-consumers.test.sh	bin/fm-helper-consumers.sh	bin/fm-helper-consumers.sh:625:cmp:3	625	cmp	3	ICAgICQyID09ICJicmVhayIgJiYgJDkgPT0gYnkgJiYgbGVuZ3RoKCQ2KSA9PSA2NCAmJiAkNiAhfiAvW14wLTlhLWZdLyB7
+tests/fm-helper-consumers.test.sh	bin/fm-helper-consumers.sh	bin/fm-helper-consumers.sh:625:andor:2	625	andor	2	ICAgICQyID09ICJicmVhayIgJiYgJDkgPT0gYnkgJiYgbGVuZ3RoKCQ2KSA9PSA2NCAmJiAkNiAhfiAvW14wLTlhLWZdLyB7
+tests/fm-helper-consumers.test.sh	bin/fm-helper-consumers.sh	bin/fm-helper-consumers.sh:625:andor:3	625	andor	3	ICAgICQyID09ICJicmVhayIgJiYgJDkgPT0gYnkgJiYgbGVuZ3RoKCQ2KSA9PSA2NCAmJiAkNiAhfiAvW14wLTlhLWZdLyB7
+tests/fm-helper-consumers.test.sh	bin/fm-helper-consumers.sh	bin/fm-helper-consumers.sh:519:cmp:1	519	cmp	1	ICBbICIkbW9kZSIgPSBwcm9qZWN0IF0gfHwgZnJlZWQ9IiI=
