@@ -12,9 +12,11 @@ export FM_ACCOUNTING_TEST_ROOT="$ROOT" FM_ACCOUNTING_TEST_TMP="$TMP"
 WORKLOAD_RC=0
 BINDINGS_RC=0
 DELTA_RC=0
+RECORDER_RC=0
 python3 "$ROOT/tests/fixtures/supervision-accounting/workload_checks.py" || WORKLOAD_RC=$?
 python3 "$ROOT/tests/fixtures/supervision-accounting/binding_checks.py" || BINDINGS_RC=$?
 python3 "$ROOT/tests/fixtures/supervision-accounting/binding_delta_checks.py" || DELTA_RC=$?
+python3 "$ROOT/tests/fixtures/supervision-accounting/recorder_checks.py" || RECORDER_RC=$?
 python3 - <<'PY'
 import base64
 import copy
@@ -1935,3 +1937,4 @@ pass 'legacy bridge is inert when disabled, fork-free, epoch-fenced and refuses 
 [ "$WORKLOAD_RC" -eq 0 ] || fail "v2 workload reader tests failed ($WORKLOAD_RC)"
 [ "$BINDINGS_RC" -eq 0 ] || fail "v3 capture binding tests failed ($BINDINGS_RC)"
 [ "$DELTA_RC" -eq 0 ] || fail "v3 High-review delta tests failed ($DELTA_RC)"
+[ "$RECORDER_RC" -eq 0 ] || fail "recorder controller tests failed ($RECORDER_RC)"

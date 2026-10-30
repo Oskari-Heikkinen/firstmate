@@ -550,6 +550,121 @@ CI extends the existing accounting entrypoint with positive six/thirty-task boun
 It retains the original v1 accounting/bridge and v2 controls in separate stages even when a new stage fails.
 These are supplied test adapters, not completed production legacy/resident replay or an authorized capture.
 
+## Recorder controller
+
+[`fm-supervision-recorder.py`](../bin/fm-supervision-recorder.py) is the P1 acquisition controller for one owner-authorized attempt, with its library in [`fm_supervision_recorder.py`](../bin/fm_supervision_recorder.py).
+It records nothing by itself: only separately reviewed default-off shell hooks may write its ticket spool, and none is wired at this revision.
+It writes no home file, switches no home's mode, sets no quota and installs nothing.
+A capture still needs its own go naming the machine, files, limits, deadline and quota command; an admission file is not that go.
+Its output is a v3 workload plus capture bindings that the readers above validate; the controller adds no replay semantics.
+
+### Verbs and live gates
+
+`audit --repo DIR --code-ref SHA --output NEW` reads the exact blobs at `SHA` through one `git cat-file --batch` reader, never a worktree file.
+It audits every caller pin through `audit_callers` and every read-closure pin (admitted, instrumentation and excluded rows) as an exact stripped-line match, then writes a sealed `fm-supervision-recorder-pin-audit.v1` receipt with `O_EXCL`.
+This is the G1 carry-forward: the capture owner audits pins against the source at the capture's recorded `code_ref` before evidence is admitted.
+A receipt counts only when it is sealed for that `code_ref` and closure and lists every caller site, every read site and every pinned path; a sealed subset is refused, and both `run` (before enabling) and every finalizer admission re-derive the audit from Git and require it to equal the receipt.
+`check-admission FILE --audit RECEIPT` validates an admission offline: [`recorder-admission-v1.schema.json`](supervision-accounting/recorder-admission-v1.schema.json), the manifest, roots, template values, selected callers, the receipt's `code_ref` and closure seal, and the projection.
+`run FILE --audit RECEIPT --trace PATH` refuses unless `FM_SUPERVISION_RECORDER_LIVE=1` and `--acknowledge-enable` are both given and `/etc/machine-id` equals the admission's machine.
+`finalize DIR --trace PATH` re-runs only the offline finalizer on retained attempt evidence, through the same memory admission, limits and priority as `run`.
+Exit 0 means published; 2 means refused, invalid, loss or timeout.
+Nothing is deleted or retried; a refused attempt keeps its private evidence.
+
+Every admitted home must name the admission's `code_ref` and machine and must not be remote.
+Each home needs its state root, which must equal the manifest's; worktree roots bind one manifest task each.
+Template values are explicit token lists (at most 32 names and 1,000 values each); task values must be manifest tasks.
+Admitted places come only from expanding closure templates with these values; nothing is discovered.
+Their ancestors are captured too, as v3 topology requires.
+
+### Filesystems and evidence
+
+The destination's parent must be canonical, local ext4 and a dedicated filesystem of at most 256 MiB.
+Every admitted root must be canonical local ext4 on a different filesystem, and no root may contain or lie inside the destination.
+The enable file must not exist and must not lie inside a root; its directory must be canonical (no symlink in its path, so the string check cannot be bypassed) and private to the running user.
+The destination is created `0700`; every evidence file is created `0600` with `O_EXCL` and never rewritten.
+It holds `admission.json`, `pin-audit.json`, `captured.json`, `projection.json`, the append-only `roles` table (and `roles.sealed` once the guard escalates), `spool/`, `initial.json`, `final.json`, `acquisition.json`, `guard.json` and, on success, `published/`.
+
+### Timing (decision A)
+
+Selected requests are those that start inside the 60-second window from T0; each is followed to its 30-second limit.
+Preparation (bank, watches, initial scan) must finish within 10 s of the attempt origin, with no change to an admitted place before T0.
+Acquisition ends at T0+90 s; a 2 s flush follows before the final reread.
+The finalizer has 10 s, so a normal attempt ends by origin+112 s.
+An independent guard process escalates at the origin+112 s normal bound: it stops every registered role with SIGTERM through identity-verified pidfds, 2 s grace, SIGKILL and 2 s observation, then writes a `guard.json` outcome per role, ending by the absolute origin+116 s deadline.
+A pid whose start time no longer matches is never signalled.
+The coordinator and finalizer act only after a go line the controller writes once their pid is registered, so a controller that dies in between leaves no role the guard cannot see; the I/O child exits on the end of the coordinator's pipe.
+The guard reads the `roles` table once, when it escalates, and under the table's lock first creates `roles.sealed`; a registration after that is refused, so a role the controller starts near the normal bound never acts unseen past the absolute deadline.
+Only the controller's completion line, written after the finalizer succeeds, stands the guard down; end of its input without that line (the controller died or was interrupted) or any other input escalates at once.
+The 116 s stop is the controller's own bound; it does not extend the request-start window or the 30 s request limit.
+
+### Roles and limits
+
+Each private role applies its own `RLIMIT_CPU`, `RLIMIT_AS` and `RLIMIT_FSIZE`, with `RLIMIT_NOFILE` 128 and never `RLIMIT_NPROC`.
+
+| Role | CPU s | Address space | File size | Job |
+| --- | --- | --- | --- | --- |
+| guard | 1 | 32 MiB | 1 MiB | deadline and escalation only |
+| io | 3 | 64 MiB | 64 MiB | the only reader of admitted places; streams one place at a time |
+| coordinator | 9 | 128 MiB | 64 MiB | watches, scans by request, writes the enable record and acquisition |
+| finalizer | 8 | 768 MiB | 64 MiB | offline build of workload, bindings and provenance |
+
+The guard and io roles never load the accounting module.
+Before the finalizer starts, `fm-mem-guard.sh admit --cost-mib 768` must print exactly `admit` with every `FM_*` variable removed from its environment, so neither the off switch nor a test seam can fake admission.
+The finalizer runs under `nice -n 19` and `ionice -c3`.
+
+### Enable record
+
+The enable file is one tab-separated ASCII line of at most 4,096 bytes, created exclusively, fsynced, made `0400` and kept as evidence:
+`fm-supervision-recorder-enable.v1`, epoch (the admission label), 32-hex nonce, boot id, `t0_cs`, `cutoff_cs`, `end_cs`, `expiry_cs`, `wall_t0_us`, spool path, tickets, ticket bytes and chain maximum.
+Times are centiseconds on the boot clock: cutoff is T0+60 s, end T0+90 s and expiry end+2 s; any other relation, ticket table or a non-canonical spool path refuses.
+The same strict parse is the contract for the hooks' builtin reader.
+
+### Ticket spool
+
+The bank is 4,096 private tickets of 32 KiB each, created before T0 with their extents reserved (`FALLOC_FL_KEEP_SIZE`) and never recycled.
+A producer claims a slot by creating `c<slot>` exclusively at the first free one of eight fixed probes: `(fold(epoch) + pid + start_ticks + sequence) mod 4096` and the seven after it, where `fold` is `33·h + byte` from seed 17.
+Eight occupied probes leave an `x<pid>-<start>-<sequence>` exhaustion marker instead; the capture is then invalid, never the original call.
+A ticket is a header line `H`, format, epoch, nonce, slot, chain head, chain index, pid, start ticks, sequence; then whole `R` records (sequence, kind, comma-separated segment sizes, then the segments); then either `N <next slot>` or the footer `F <records> <payload bytes> ok|invalid`.
+A chain is at most 128 tickets.
+Record kinds are `begin`, `end`, `read`, `observe` and `change`; any other kind refuses.
+Reconciliation refuses a foreign spool entry, an exhaustion marker, a claim without a ticket or a ticket without a claim, a torn record, header or footer, a broken or shared chain, a sequence gap, a footer count mismatch, an `invalid` footer, an orphan ticket and a duplicate producer generation.
+
+### Read closure and pin audit
+
+[`recorder-read-closure-v1.json`](supervision-accounting/recorder-read-closure-v1.json) is the G2 reviewed read closure for the crew-state, wake-drain and fleet-snapshot families at its `code_ref`.
+Each admitted row names an id, its families, a root (`state`, `config`, `data` or `worktree`), a template with `<name>` placeholders and modes: `R` read, `L` the complete immediate listing, `S` stat or exists.
+A worktree template is relative to each admitted task's worktree.
+Each row pins every source site that reads it, as `path:line` plus the exact stripped line.
+`instrumentation` rows pin hook sites; the list is empty until the hooks land.
+`excluded` classes record every other read the audit found, each with its reason: helper-body parameters, lock internals, request scratch, dynamic paths, Git internals, the parent home, clocks, process observations, request temporaries, paths outside the roots and external tools.
+An excluded read is not admitted, so a replay that reaches it reads an uncaptured place and refuses at bind; it is listed so the closure is complete and its pins drift-checked, not so it can be captured.
+A request may read an admitted place only if the place's row names that request's family.
+Any change to a pinned source line requires regenerating the closure and its review; the audit then refuses the stale pin.
+
+### Projection
+
+Before T0 the admission's projection must name exactly every captured place with its byte size (at most 4 MiB) and update count, plus producer classes and request bytes.
+Decoded bytes, `bytes × (1 + updates)` plus request bytes, must be at most 24 MiB.
+The projected JSON must be at most 64 MiB, ticket demand at most 1,024 of 4,096, and the spool plus two JSON copies plus 16 MiB at most 256 MiB.
+No producer may exceed one chain's payload; an unknown ceiling refuses.
+
+### Loss detectors
+
+Directory watches over every captured directory start before the initial scan.
+The finalizer refuses on a watch loss, queue overflow or root replacement, a kernel event outside T0..barrier, a structural event whose name no witnessed listing change carries, or an event on an admitted place no witnessed change covers.
+The final reread after the flush must equal the model built from the initial scan plus the witnessed changes.
+Coalesced events can hide repeated writes, but only by removing events, never by adding a witness, so these detectors cannot pass an unwitnessed change they observe.
+They cannot see a change to an unadmitted place, which is outside the capture by construction, or a read that bypasses the hooks; G5 remains open until the hooks and their system-call oracle are reviewed.
+
+### Finalizer outputs
+
+A request begins at or after T0 or the attempt refuses.
+Selected requests are admitted callers whose kind matches the caller registry, starting before the cutoff, each with an end record within 30 s and before acquisition end, and whose end records carry the caller-visible projection.
+Excluded and unselected callers are counted, late starts are counted, and `harness/direct-output` is reported with an unknown count.
+Reads in one request must not overlap; each read must be an admitted operation on an admitted place for the request's family and must match the witnessed version at its time.
+`published/` holds `workload.json`, `bindings.json` and `provenance.json` (`fm-supervision-recorder-provenance.v1`, scope `captured-subset-diagnostic`, G5 open, whole-workload coverage false); it is written to `.published` and renamed once.
+CI covers these through `tests/fixtures/supervision-accounting/recorder_checks.py` in the accounting test entrypoint, with synthetic fixtures only.
+
 ## Legacy capability and fencing bridge
 
 The existing [`fm-supervision-lib.sh`](../bin/fm-supervision-lib.sh) owns the shell APIs.

@@ -30,6 +30,7 @@ Load `lean-review` before judging results; High risk applies to supervision cont
 - Preserve raw evidence, losses, contradictory residuals and synthetic provenance.
 - Code never certifies B0, even from self-asserted complete inputs; review of real capture evidence is required and no P0 saving is claimed.
 - Before consuming a v2/v3 workload, its capture bindings, or requesting P1 capture supplementation, read the owning doc's versioned Replay corpus sections; supplied test-adapter equality or caller-projected subset fidelity never grants production replay, whole-workload/B0 acceptance or capture authority.
+- The P1 recorder (`bin/fm-supervision-recorder.py`) is one attempt under its own go naming machine, files, limits, deadline and quota command; an admission or green CI is not that go. The owning doc's "Recorder controller" section owns its gates, closure and limits; never set its live variable or enable file otherwise.
 - Publish only owner-attested inventory, not inferred foreign endpoint state.
 - The bridge does not activate a resident mode or assert that running readers/callbacks are already capable.
 - Keep real fleet data and traces in private task evidence; only synthetic fixtures belong in git.

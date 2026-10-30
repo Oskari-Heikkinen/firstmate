@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "One recorder attempt's owner admission; not a capture go",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "label", "machine", "code_ref", "manifest", "roots", "values", "callers", "destination", "enable_file", "projection"],
+  "properties": {
+    "format": {"const": "fm-supervision-recorder-admission.v1"},
+    "label": {"$ref": "replay-v2.schema.json#/$defs/token"},
+    "machine": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "code_ref": {"type": "string", "pattern": "[0-9a-f]{40}"},
+    "manifest": {"type": "object"},
+    "roots": {"type": "array", "minItems": 1, "maxItems": 1000, "items": {"$ref": "#/$defs/root"}},
+    "values": {"type": "object"},
+    "callers": {"type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 200}},
+    "destination": {"$ref": "#/$defs/path"},
+    "enable_file": {"$ref": "#/$defs/path"},
+    "projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["places", "producers", "request_bytes"],
+      "properties": {
+        "places": {"type": "array", "maxItems": 100000, "items": {"$ref": "#/$defs/projected-place"}},
+        "producers": {"type": "array", "maxItems": 1000, "items": {"$ref": "#/$defs/producer"}},
+        "request_bytes": {"type": "integer", "minimum": 0, "maximum": 67108864}
+      }
+    }
+  },
+  "$defs": {
+    "path": {"type": "string", "pattern": "/[^\\u0000\\n\\r\\t]+", "maxLength": 4096},
+    "root": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["home", "root", "task", "path"],
+      "properties": {
+        "home": {"type": "string", "minLength": 1, "maxLength": 64},
+        "root": {"enum": ["state", "config", "data", "worktree"]},
+        "task": {"type": "string", "maxLength": 64},
+        "path": {"$ref": "#/$defs/path"}
+      }
+    },
+    "projected-place": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["home", "root", "task", "path", "bytes", "updates"],
+      "properties": {
+        "home": {"type": "string", "minLength": 1, "maxLength": 64},
+        "root": {"enum": ["state", "config", "data", "worktree"]},
+        "task": {"type": "string", "maxLength": 64},
+        "path": {"type": "string", "maxLength": 4096},
+        "bytes": {"type": "integer", "minimum": 0, "maximum": 4194304},
+        "updates": {"type": "integer", "minimum": 0, "maximum": 10000}
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "count", "bytes"],
+      "properties": {
+        "class": {"type": "string", "minLength": 1, "maxLength": 200},
+        "count": {"type": "integer", "minimum": 0, "maximum": 4096},
+        "bytes": {"type": "integer", "minimum": 0, "maximum": 67108864}
+      }
+    }
+  }
+}
