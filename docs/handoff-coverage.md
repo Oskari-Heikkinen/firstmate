@@ -333,6 +333,7 @@ One shared check decides, and `undeclared-actor` catches what an installer that 
 
 An installer asks `fm-handoff-actors.py check --home <home> <actor>` before it installs, where the actor is named as in a stage's `actors` (`<kind>:<name>`, such as `fm-check:disk-room` or `systemd-timer:tj-sched.timer`).
 It installs only on exit 0.
+A `--home` that is not a firstmate home (a missing or empty folder, or one without `state/`) is refused with exit 2 before anything is written, by every command, so a mistyped home never becomes a fresh anchor that grandfathers whatever is running.
 The verdict is the first of these that holds:
 
 | Verdict | Holds when | Installs |
@@ -340,13 +341,15 @@ The verdict is the first of these that holds:
 | `declared` | a stage in a fragment the home sees lists the actor in `actors` | yes |
 | `none` | a `handoff-actors/v1` file declares the actor `none`: it reads and writes no handoff record | yes |
 | `grandfathered` | the actor was installed before the check existed, or is a Firstmate built-in | yes |
-| `unknown` | none of the above, and a fragment, declaration file or unit listing could not be read | no (exit 3) |
+| `unknown` | none of the above, and a fragment, declaration file, unit listing or a service's `TriggeredBy` could not be read | no (exit 3) |
 | `refused` | none of the above | no (exit 1) |
 
 The homes a home sees are the ones `fm-handoff-watch` reads: itself, its local parent, the homes they list in `data/secondmates.md`, and `config/handoff-homes`.
 A custom check runs in one home, so only a stage whose `owner` is that home, or that home's own declarations, cover a `fm-check:` actor.
 User units are machine-wide, so a stage or declaration in any home the caller sees covers a `systemd-timer:` or `systemd-service:` actor.
-A service is also covered by the timer of the same name (`systemd-service:x.service` by `systemd-timer:x.timer`), since the timer starts it.
+A service is also covered by the timers that start it: the timer of the same name (`systemd-service:x.service` by `systemd-timer:x.timer`), and every timer systemd names in the service's `TriggeredBy` (`systemd-timer:tjsvc-x.timer` for `systemd-service:tjsvc@x.service`).
+Only `.timer` triggers count, not path or socket units, and a service systemd has not loaded is covered by its same-name timer alone.
+The check reads `TriggeredBy` with one read-only `systemctl --user show` per service it decides, so a timer an installer has just enabled counts.
 A tool that reads or writes handoff records is declared in its stage's `actors`, never as `none`.
 
 `bin/fm-check-register.sh <id> [--from <staged-file>] [--no-handoff <reason>]` runs the check for `fm-check:<id>` before it binds the trust record, and refuses with exit 1 otherwise.
@@ -404,7 +407,7 @@ Every object is closed, and an unreadable or invalid file is a problem that make
 | `problems[]` | one `{subject, what}` per input that could not be read |
 
 A row's `state` is `declared`, `none`, `grandfathered`, `undeclared` (the install check would refuse it) or `unknown`.
-The installed actors are the home's registered custom checks (a `state/<id>.check.sh` with its `state/<id>.check-trust` binding) and, in the anchor home only, the active user timers and services: transient units and units whose unit file is under the user's home, from one read-only `systemctl --user list-units` and one `systemctl --user show`.
+The installed actors are the home's registered custom checks (a `state/<id>.check.sh` with its `state/<id>.check-trust` binding) and, in the anchor home only, the active user timers and services: transient units and units whose unit file is under the user's home, from one read-only `systemctl --user list-units` and one `systemctl --user show`, which also reads each service's `TriggeredBy`.
 Units shipped by the distribution are not inventoried.
 A machine without `systemctl` has no units; a `systemctl` that fails is a problem.
 The exit is 3 when `problems` is not empty, else 1 when any row is `undeclared`, else 0.

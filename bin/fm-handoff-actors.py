@@ -41,9 +41,11 @@ Every check verdict, declaration change, grandfather snapshot and change in
 the undeclared set is appended to <state>/handoff-actors/log.
 
 Exit: 0 allowed (check), written (declare, undeclare), or every actor covered
-(list); 1 refused, or list found an undeclared actor; 2 usage; 3 a fragment,
-declaration or unit listing could not be read, so nothing is decided (an
-installer refuses; list still prints what it could read).
+(list); 1 refused, or list found an undeclared actor; 2 usage, or --home is
+not a firstmate home (a missing or empty folder, or no state folder), refused
+before anything is written; 3 a fragment, declaration, unit listing or
+TriggeredBy could not be read, so nothing is decided (an installer refuses;
+list still prints what it could read).
 """
 
 import argparse
@@ -85,6 +87,17 @@ UNIT_KINDS = {".timer": "systemd-timer", ".service": "systemd-service"}
 SYSTEMCTL_TIMEOUT = 10
 
 
+def unit_blocks(shown):
+    """The property maps of systemctl show output, one per unit."""
+    return [dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+            for block in shown.split("\n\n")]
+
+
+def timers_of(props):
+    """The timer actors in one unit's TriggeredBy; a path or socket trigger is not a timer."""
+    return [f"systemd-timer:{u}" for u in props.get("TriggeredBy", "").split() if u.endswith(".timer")]
+
+
 def now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -123,6 +136,7 @@ class Home:
         self.validate = VALIDATE
         self._units = False
         self._checks = False
+        self.triggered_by = {}   # service actor -> the timer actors systemd names in its TriggeredBy
         self.schemas = {}
         try:
             self.self_id, self.homes = registry.discover(self.home, root)
@@ -296,34 +310,54 @@ class Home:
         names = sorted({line.split()[0] for line in listing.splitlines()
                         if line.split() and os.path.splitext(line.split()[0])[1] in UNIT_KINDS})
         old = self.new_cache.get("units")
-        if isinstance(old, dict) and old.get("names") == names:
+        if isinstance(old, dict) and old.get("names") == names and isinstance(old.get("triggers"), dict):
+            self.triggered_by.update(old["triggers"])
             return old["kept"]
-        kept = []
+        kept, triggers = [], {}
         if names:
-            shown = self.run([systemctl, "--user", "show", "--property=Id,FragmentPath,Transient", "--"] + names)
+            shown = self.run([systemctl, "--user", "show", "--property=Id,FragmentPath,Transient,TriggeredBy",
+                              "--"] + names)
             if shown is None:
                 return None
             user = os.path.expanduser("~").rstrip("/") + "/"
-            for block in shown.split("\n\n"):
-                props = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+            for props in unit_blocks(shown):
                 unit = props.get("Id", "")
                 if os.path.splitext(unit)[1] in UNIT_KINDS and (
                         props.get("Transient") == "yes" or props.get("FragmentPath", "").startswith(user)):
-                    kept.append(f"{UNIT_KINDS[os.path.splitext(unit)[1]]}:{unit}")
-        self.new_cache["units"] = {"names": names, "kept": sorted(kept)}
+                    actor = f"{UNIT_KINDS[os.path.splitext(unit)[1]]}:{unit}"
+                    kept.append(actor)
+                    if actor.startswith("systemd-service:"):
+                        triggers[actor] = timers_of(props)
+        self.new_cache["units"] = {"names": names, "kept": sorted(kept), "triggers": triggers}
+        self.triggered_by.update(triggers)
         return sorted(kept)
 
-    def run(self, argv):
+    def timers(self, actor):
+        """The timer actors systemd names in a service's TriggeredBy, read once per call.
+
+        The unit listing answers for the services it keeps, with the rest of its
+        show; any other service is asked on its own, so a check sees the timer
+        an installer just enabled. A systemctl that cannot be read is a problem
+        and covers nothing.
+        """
+        if actor not in self.triggered_by:
+            systemctl = os.environ.get("FM_HANDOFF_ACTORS_SYSTEMCTL", "systemctl")
+            shown = self.run([systemctl, "--user", "show", "--property=TriggeredBy", "--",
+                              actor[len("systemd-service:"):]], "read TriggeredBy of")
+            self.triggered_by[actor] = [t for props in unit_blocks(shown or "") for t in timers_of(props)]
+        return self.triggered_by[actor]
+
+    def run(self, argv, what="list"):
         try:
             done = subprocess.run(argv, capture_output=True, text=True, timeout=SYSTEMCTL_TIMEOUT)
         except FileNotFoundError:
             return ""  # no systemd on this machine, so it has no user units to list
         except (OSError, subprocess.TimeoutExpired) as exc:
-            self.problem("systemctl --user", f"cannot list user units ({exc})", True)
+            self.problem("systemctl --user", f"cannot {what} user units ({exc})", True)
             return None
         if done.returncode != 0:
             self.problem("systemctl --user",
-                         f"cannot list user units ({done.stderr.strip()[:200] or done.returncode})", True)
+                         f"cannot {what} user units ({done.stderr.strip()[:200] or done.returncode})", True)
             return None
         return done.stdout
 
@@ -385,12 +419,13 @@ class Home:
     def verdict(self, actor):
         """(verdict, why) for one actor, from what this home sees."""
         scope = machine_scope(actor)
-        for candidate in self.covering(actor):
+        candidates = self.covering(actor)
+        for candidate in candidates:
             for item, owner, where, path in self.stage_actors:
                 if item == candidate and (scope or owner == self.self_id):
                     return "declared", f"stage {where} owned by {owner} lists {candidate} ({path})"
         best = None
-        for candidate in self.covering(actor):
+        for candidate in candidates:
             for entry, hid, path in self.declarations:
                 if not matches(entry["actor"], candidate):
                     continue
@@ -411,12 +446,13 @@ class Home:
         return "refused", (f"no handoff declaration: list {actor} in {where}, or declare that it reads "
                            f"and writes no handoff (fm-handoff-actors.py declare --none --reason TEXT)")
 
-    @staticmethod
-    def covering(actor):
-        """The actor itself, and for a service the timer of the same name that starts it."""
+    def covering(self, actor):
+        """The actor itself, and for a service the timers that start it: the one of the
+        same name, and every timer systemd names in its TriggeredBy."""
         out = [actor]
         if actor.startswith("systemd-service:") and actor.endswith(".service"):
             out.append("systemd-timer:" + actor[len("systemd-service:"):-len(".service")] + ".timer")
+            out += [t for t in self.timers(actor) if t not in out]
         return out
 
     def log(self, text):
@@ -557,6 +593,21 @@ def cmd_list(args):
     return REFUSED if undeclared else OK
 
 
+def not_a_home(args):
+    """One line naming why --home is not a Firstmate home to write under, or None."""
+    try:
+        empty = not os.listdir(args.home)
+    except OSError as exc:
+        return f"--home {args.home} is not a firstmate home ({exc.strerror or exc}); nothing written"
+    if empty:
+        return f"--home {args.home} is not a firstmate home (empty folder); nothing written"
+    if not state_of(args).is_dir():
+        if args.state:
+            return f"--state {args.state} is not a folder; nothing written"
+        return f"--home {args.home} is not a firstmate home (no state/ folder); nothing written"
+    return None
+
+
 def main(argv):
     parser = argparse.ArgumentParser(prog="fm-handoff-actors.py", add_help=True)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -578,6 +629,10 @@ def main(argv):
     if getattr(args, "actor", None) is not None and not ACTOR_RE.match(args.actor):
         print(f"fm-handoff-actors: {args.actor!r} is not <kind>:<name> with kind systemd-timer, "
               "systemd-service, fm-check, cron or process", file=sys.stderr)
+        return USAGE
+    refusal = not_a_home(args)
+    if refusal:
+        print(f"fm-handoff-actors: {refusal}", file=sys.stderr)
         return USAGE
     try:
         return {"check": cmd_check, "declare": cmd_declare, "undeclare": cmd_undeclare,

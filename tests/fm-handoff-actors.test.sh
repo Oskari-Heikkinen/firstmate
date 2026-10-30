@@ -4,10 +4,12 @@
 # (a hand-written trust record, a unit started outside an installer) is listed
 # as undeclared; a fragment stage, a no-handoff declaration, the first-run
 # snapshot or the built-in list allows it; a custom check is covered only by a
-# stage its own home owns; a service is covered by its timer; re-registering a
-# grandfathered check still works; unreadable fragments and unit listings fail
-# closed; an unlisted unit table still grandfathers checks; only the anchor home
-# lists units; an unchanged pass reruns no unit query and rewrites no cache.
+# stage its own home owns; a service is covered by its same-name timer and by
+# the timers in its TriggeredBy, never by a path unit; re-registering a
+# grandfathered check still works; unreadable fragments, unit listings and
+# TriggeredBy fail closed; an unlisted unit table still grandfathers checks;
+# only the anchor home lists units; an unchanged pass reruns no unit query and
+# rewrites no cache; a --home that is not a home is refused and nothing written.
 set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -28,24 +30,36 @@ FRAGMENT = root / "docs/handoff-coverage/examples/xp-chain.fragment.json"
 CTL = tmp / "systemctl"
 UNITS = tmp / "units.txt"
 CALLS = tmp / "systemctl.calls"
+TRIGGERS = tmp / "triggers.txt"
+TRIGGERS.write_text("")
 
+# Answers list-units and show from units.txt ("<unit> <fragment path>|transient")
+# and TriggeredBy from triggers.txt ("<service> <triggering unit>..."); a
+# units.txt.fail file fails every call, a triggers.txt.fail file only a
+# TriggeredBy-only show.
 CTL.write_text("""#!/bin/sh
 printf '%s\\n' "$2" >> "$FAKE_CALLS"
 [ -e "$FAKE_UNITS.fail" ] && { echo 'Failed to connect to bus' >&2; exit 1; }
 case "$2" in
   list-units) while read -r unit _; do printf '%s loaded active waiting x\\n' "$unit"; done < "$FAKE_UNITS" ;;
   show)
+    props=$3
     shift 4
+    if [ "$props" = --property=TriggeredBy ] && [ -e "$FAKE_TRIGGERS.fail" ]; then
+      echo 'Failed to get properties: Access denied' >&2; exit 1
+    fi
     for unit in "$@"; do
-      path=$(sed -n "s/^$unit //p" "$FAKE_UNITS")
-      if [ "$path" = transient ]; then printf 'Id=%s\\nFragmentPath=\\nTransient=yes\\n\\n' "$unit"
-      else printf 'Id=%s\\nFragmentPath=%s\\nTransient=no\\n\\n' "$unit" "$path"; fi
+      by=$(awk -v u="$unit" '$1 == u { $1 = ""; sub(/^ /, ""); print }' "$FAKE_TRIGGERS")
+      if [ "$props" = --property=TriggeredBy ]; then printf 'TriggeredBy=%s\\n\\n' "$by"; continue; fi
+      path=$(awk -v u="$unit" '$1 == u { print $2 }' "$FAKE_UNITS")
+      if [ "$path" = transient ]; then printf 'Id=%s\\nFragmentPath=\\nTransient=yes\\nTriggeredBy=%s\\n\\n' "$unit" "$by"
+      else printf 'Id=%s\\nFragmentPath=%s\\nTransient=no\\nTriggeredBy=%s\\n\\n' "$unit" "$path" "$by"; fi
     done ;;
 esac
 """)
 CTL.chmod(0o755)
 ENV = dict(os.environ, FM_HANDOFF_ACTORS_SYSTEMCTL=str(CTL), FAKE_UNITS=str(UNITS), FAKE_CALLS=str(CALLS),
-           HOME=str(tmp / "user"))
+           FAKE_TRIGGERS=str(TRIGGERS), HOME=str(tmp / "user"))
 USER_UNIT = str(tmp / "user/.config/systemd/user")
 
 
@@ -66,6 +80,10 @@ def expect(cond, msg, detail=""):
 
 def units(*rows):
     UNITS.write_text("".join(f"{u} {p}\n" for u, p in rows))
+
+
+def triggers(*rows):
+    TRIGGERS.write_text("".join(" ".join(row) + "\n" for row in rows))
 
 
 def tool(*args, env=None):
@@ -214,6 +232,67 @@ before = cache.stat().st_mtime_ns
 inventory(main, "--root", drill)
 expect(CALLS.read_text().split() == ["list-units"] and cache.stat().st_mtime_ns == before,
        "an unchanged pass reruns no unit query and rewrites no cache")
+
+# ---------- a service started by a differently named timer ----------
+
+triggers(("tjsvc@pc-archive.service", "tj-new.timer"), ("tjcap@capacity-fill.service", "stray-old.timer"),
+         ("tjsvc@watch.service", "tj-new.path"))
+rc, out = tool("check", "--home", main, "--root", drill, "systemd-service:tjsvc@pc-archive.service")
+expect(rc == 0 and out.startswith("declared\t") and "systemd-timer:tj-new.timer" in out,
+       "a service is covered by the declared timer systemd names in its TriggeredBy", out)
+rc, out = tool("check", "--home", main, "--root", drill, "systemd-service:tjcap@capacity-fill.service")
+expect(rc == 0 and out.startswith("grandfathered\t"),
+       "a service is covered by the grandfathered timer systemd names in its TriggeredBy", out)
+rc, out = tool("check", "--home", main, "--root", drill, "systemd-service:tjsvc@watch.service")
+expect(rc == 1 and out.startswith("refused\t"), "a path unit in TriggeredBy covers nothing", out)
+rc, out = tool("check", "--home", main, "--root", drill, "systemd-service:tjsvc@fetch.service")
+expect(rc == 1 and out.startswith("refused\t"),
+       "counterfactual: the same service with no triggering timer is refused", out)
+
+units(("stray-old.timer", USER_UNIT + "/stray-old.timer"), ("tj-new.timer", USER_UNIT + "/tj-new.timer"),
+      ("tjsvc@pc-archive.service", USER_UNIT + "/tjsvc@.service"),
+      ("tjsvc@keeper.service", USER_UNIT + "/tjsvc@.service"))
+CALLS.write_text("")
+rc, doc, out = inventory(main, "--root", drill)
+got = states(doc)
+expect(got.get("systemd-service:tjsvc@pc-archive.service") == "declared"
+       and got.get("systemd-service:tjsvc@keeper.service") == "undeclared",
+       "the inventory credits a running service to the timer in its TriggeredBy", out)
+expect(CALLS.read_text().split() == ["list-units", "show"],
+       "the inventory reads TriggeredBy in its one unit show, with no call per service", CALLS.read_text())
+CALLS.write_text("")
+inventory(main, "--root", drill)
+expect(CALLS.read_text().split() == ["list-units"], "an unchanged pass reruns no TriggeredBy query",
+       CALLS.read_text())
+
+Path(str(TRIGGERS) + ".fail").write_text("")
+rc, out = tool("check", "--home", main, "--root", drill, "systemd-service:tjsvc@pc-archive.service")
+expect(rc == 3 and out.startswith("unknown\t") and "TriggeredBy" in out,
+       "an unreadable TriggeredBy refuses an otherwise uncovered service with exit 3", out)
+rc, out = tool("check", "--home", main, "--root", drill, "systemd-service:tj-new.service")
+expect(rc == 0 and out.startswith("declared\t"),
+       "counterfactual: a service its same-name timer covers stays allowed while TriggeredBy is unreadable", out)
+os.unlink(str(TRIGGERS) + ".fail")
+
+# ---------- a --home that is not a home ----------
+
+units(("stray-old.timer", USER_UNIT + "/stray-old.timer"))
+missing, empty, bare = tmp / "typo-home", tmp / "empty-home", tmp / "bare-home"
+empty.mkdir()
+bare.mkdir()
+(bare / "notes.txt").write_text("not a home\n")
+for path, what in ((missing, "a missing folder"), (empty, "an empty folder"), (bare, "a folder with no state/")):
+    for args in (("check", "--home", path, "systemd-timer:stray-old.timer"),
+                 ("declare", "--home", path, "--none", "--reason", "x", "fm-check:a"),
+                 ("undeclare", "--home", path, "fm-check:a"), ("list", "--home", path)):
+        rc, out = tool(*args)
+        expect(rc == 2 and str(path) in out and "not a firstmate home" in out,
+               f"{args[0]} refuses {what} as --home with exit 2", out)
+expect(not missing.exists() and not any(empty.iterdir()) and sorted(p.name for p in bare.iterdir()) == ["notes.txt"],
+       "a refused --home gets no state, snapshot or log")
+rc, out = tool("check", "--home", make_home(tmp / "real-home"), "systemd-timer:stray-old.timer")
+expect(rc == 0 and out.startswith("grandfathered\t"),
+       "counterfactual: the same check in a real home grandfathers the running unit", out)
 
 # ---------- failing closed ----------
 
