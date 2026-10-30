@@ -6,8 +6,11 @@
 #        fm-mem-guard.sh level
 #        fm-mem-guard.sh admit [--cost-mib <n>]
 #        fm-mem-guard.sh auto sync|on|off
-#   sample  prints one sample as key=value lines: Windows available memory and
-#           paging rate (win_*), Linux MemAvailable, page cache, swap, swap-out
+#   sample  prints one sample as key=value lines: Windows available memory,
+#           pages input and output per second averaged over the span between two
+#           Windows readings at least 60s and at most win_stale_max_s apart
+#           (win_paging_span_s; empty until two such readings exist), and the
+#           non-paged pool (win_*), Linux MemAvailable, page cache, swap, swap-out
 #           rate over at least the last 60s of ticks, and memory pressure
 #           (linux_*), and win_source, which is `powershell`,
 #           `cache <age>s`, or `unavailable: <reason>`. The Windows side comes
@@ -34,12 +37,19 @@
 #                      without bin/fm-park.sh it logs that park acts as warn only;
 #             refuse   also makes every new agent spawn (bin/fm-admission.sh) and
 #                      heavy-job start (`admit`) refuse, naming the memory guard;
-#             critical also prints one wake line in a primary home, again after
-#                      critical_rewake_s while still critical. Secondmate homes
-#                      never print it, so only main is woken.
+#             critical also asks main to park or finish waiting workers and
+#                      stop heavy jobs.
+#           Every level at or above one step includes the lower steps' responses.
+#           Wake: in a primary home, a level at or above wake_level (default park)
+#           or an abnormal Windows non-paged pool prints one wake line when it
+#           starts, again after rewake_s while it stays or at once when the level
+#           rises or the pool turns abnormal, and one `memory guard cleared` line
+#           when neither holds any more. The pool grades warn only, because a
+#           leaking Windows driver is its likely cause and no agent response frees
+#           it, but it always wakes main. A Windows reading that is unavailable
+#           holds the pool notice as it was. Secondmate homes never print a wake.
 #           --check is the watcher form: identical, and stdout carries only the
-#           wake line, printed before any park work. Every level at or above one
-#           step includes the lower steps' responses.
+#           wake line, printed before any park work.
 #   level   prints `<level> <epoch> <reasons>` from the recorded machine level,
 #           or `unknown` when none is recorded within state_max_age_s. It never
 #           samples, so admission can call it on every launch.
@@ -69,7 +79,11 @@
 # Machine-wide records (runtime scratch, written only here), in
 # ${FM_MEM_GUARD_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fm-mem-guard}:
 #   level        `<level> <epoch> <below-count> <reasons>`
-#   windows      `<epoch> <total_kib> <free_kib> <avail_mib> <pages_in/s> <pages_out/s>`
+#   windows      `<epoch> <total_kib> <free_kib> <avail_mib> <pages_in> <pages_out>
+#                <perf_time> <perf_freq> <pool_bytes> <base_in> <base_out> <base_perf>
+#                <in/s> <out/s> <span_s>`: the raw Windows counters (pages are
+#                cumulative 32-bit counts), the earlier reading the rates are
+#                measured from, and the rates; `-` where none
 #   swapout      `<epoch> <pswpout> [<epoch> <pswpout>]` from /proc/vmstat, newest
 #                first; a tick adds a pair only once the newest is 60s old, so
 #                the swap-out rate always spans at least 60s
@@ -78,7 +92,9 @@
 #   lock/        mkdir lock around record writes; win.lock/ around the powershell call
 # Per-home records, written only here: state/.mem-guard-park (`<last park epoch>
 # [<id where the next pass starts after an unfinished one>]`),
-# state/.mem-guard-wake (last critical wake epoch), state/mem-guard.check.sh.
+# state/.mem-guard-wake (`<last wake epoch> <level index woken for, 0 when only the
+# pool> <pool notice 0|1>`, present while main has an open memory notice),
+# state/mem-guard.check.sh.
 #
 # Test seams: FM_PROC_ROOT_OVERRIDE (default /proc), FM_MEM_GUARD_POWERSHELL
 # (the powershell executable; default powershell.exe on PATH, then the standard
@@ -111,7 +127,7 @@ LEVELS="ok warn park refuse critical"
 # file sets win_available_mib: with WSL capped, its memory is resident and low
 # Windows available memory is expected, so host paging is the Windows signal.
 T_win_available_mib=""                         # Windows available memory at or below
-T_win_paging_mibps="30 60 90 120"              # Windows paging (pages in + out) at or above
+T_win_pages_in_ps="100 250 500 1000"           # Windows pages input/s, sustained, at or above
 T_linux_available_mib="4096 3584 3072 1536"    # Linux MemAvailable at or below
 T_linux_swap_used_mib="4096 5120 6144"         # Linux swap in use at or above, while swap grows
 T_linux_psi_full_avg10="2 5 10 25"             # Linux memory pressure full avg10 at or above
@@ -121,13 +137,16 @@ R_win_stale_max_s=600
 R_state_max_age_s=900
 R_clear_samples=2
 R_park_interval_s=900
-R_critical_rewake_s=1800
+R_rewake_s=1800
 R_log_max_lines=5000
 R_linux_swapout_mibps_min=1
-SWAPOUT_WINDOW_S=60
+R_win_nonpaged_pool_mib=2048                   # abnormal Windows non-paged pool at or above; 0 grades none
+R_wake_level=park
+RATE_WINDOW_S=60
+PAGE_COUNTER_WRAP=4294967296
 
-THRESHOLD_KEYS="win_available_mib win_paging_mibps linux_available_mib linux_swap_used_mib linux_psi_full_avg10"
-RULE_KEYS="win_timeout_s win_cache_s win_stale_max_s state_max_age_s clear_samples park_interval_s critical_rewake_s log_max_lines linux_swapout_mibps_min"
+THRESHOLD_KEYS="win_available_mib win_pages_in_ps linux_available_mib linux_swap_used_mib linux_psi_full_avg10"
+RULE_KEYS="win_timeout_s win_cache_s win_stale_max_s state_max_age_s clear_samples park_interval_s rewake_s log_max_lines linux_swapout_mibps_min win_nonpaged_pool_mib"
 
 now() { printf '%s' "${FM_MEM_GUARD_NOW:-$(date +%s)}"; }
 
@@ -155,6 +174,18 @@ load_rules() {
       continue
     fi
     printf -v "R_$key" '%s' "$val"
+  done
+  if jq -e '.memory_guard | has("wake_level")' "$RULES_FILE" >/dev/null 2>&1; then
+    val=$(jq -r '.memory_guard.wake_level | select(type == "string")' "$RULES_FILE" 2>/dev/null) || val=
+    case "$val" in
+    warn | park | refuse | critical) R_wake_level=$val ;;
+    *) echo "warning: fm-mem-guard: memory_guard.wake_level in $RULES_FILE is not one of warn, park, refuse, critical; using the default" >&2 ;;
+    esac
+  fi
+  names=$(jq -r '.memory_guard | keys[] | select(. == "win_paging_mibps" or . == "critical_rewake_s")' "$RULES_FILE" 2>/dev/null) || names=
+  for key in $names; do
+    case "$key" in win_paging_mibps) val=win_pages_in_ps ;; *) val=rewake_s ;; esac
+    echo "warning: fm-mem-guard: memory_guard.$key in $RULES_FILE is retired and ignored; set memory_guard.$val instead" >&2
   done
 }
 
@@ -220,9 +251,49 @@ powershell_bin() {
   return 1
 }
 
-# Windows reading: one line "<total_kib> <free_kib> <avail_mib> <pages_in/s> <pages_out/s>".
+# Windows reading: one line "<total_kib> <free_kib> <avail_mib> <pages_in> <pages_out>
+# <perf_time> <perf_freq> <pool_bytes>". The raw class gives cumulative page counts, so
+# a rate is an average between two readings rather than the last second's spike.
 # shellcheck disable=SC2016 # PowerShell variables, expanded by powershell.exe
-PS_QUERY='$o = Get-CimInstance Win32_OperatingSystem; $p = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory; "{0} {1} {2} {3} {4}" -f $o.TotalVisibleMemorySize, $o.FreePhysicalMemory, $p.AvailableMBytes, $p.PagesInputPersec, $p.PagesOutputPersec'
+PS_QUERY='$o = Get-CimInstance Win32_OperatingSystem; $p = Get-CimInstance Win32_PerfRawData_PerfOS_Memory; "{0} {1} {2} {3} {4} {5} {6} {7}" -f $o.TotalVisibleMemorySize, $o.FreePhysicalMemory, $p.AvailableMBytes, $p.PagesInputPersec, $p.PagesOutputPersec, $p.Timestamp_PerfTime, $p.Frequency_PerfTime, $p.PoolNonpagedBytes'
+
+is_uint() { case "$1" in '' | *[!0-9]*) return 1 ;; esac; }
+
+# win_cache_line <epoch> <reading>: prints the cache line for a new reading, measuring
+# its rates from the previous cache line's reading once that is at least
+# RATE_WINDOW_S old, else from the previous line's own baseline while that is
+# within win_stale_max_s. A perf clock that went back (a Windows restart) or a
+# changed frequency leaves no baseline; a page count that went back wrapped.
+win_cache_line() {
+  local epoch=$1 b_in=- b_out=- b_perf=- in_ps=- out_ps=- span=- d_in d_out d_perf
+  local -a cur prev=()
+  read -ra cur <<<"$2"
+  { read -ra prev <"$WIN_FILE"; } 2>/dev/null
+  if [ "${#prev[@]}" = 15 ] && [ "${prev[7]}" = "${cur[6]}" ] && is_uint "${prev[4]}" && is_uint "${prev[5]}" && is_uint "${prev[6]}"; then
+    b_in=${prev[4]} b_out=${prev[5]} b_perf=${prev[6]}
+    if [ $((cur[5] - prev[6])) -lt $((RATE_WINDOW_S * cur[6])) ] && is_uint "${prev[9]}" && is_uint "${prev[10]}" && is_uint "${prev[11]}" \
+      && [ $((cur[5] - prev[11])) -le $((R_win_stale_max_s * cur[6])) ]; then
+      b_in=${prev[9]} b_out=${prev[10]} b_perf=${prev[11]}
+    fi
+    if [ "${cur[5]}" -le "$b_perf" ]; then
+      b_in=- b_out=- b_perf=-
+    else
+      d_perf=$((cur[5] - b_perf))
+      span=$((d_perf / cur[6]))
+      if [ "$span" -ge "$RATE_WINDOW_S" ] && [ "$span" -le "$R_win_stale_max_s" ]; then
+        d_in=$((cur[3] - b_in)) d_out=$((cur[4] - b_out))
+        [ "$d_in" -ge 0 ] || d_in=$((d_in + PAGE_COUNTER_WRAP))
+        [ "$d_out" -ge 0 ] || d_out=$((d_out + PAGE_COUNTER_WRAP))
+        # Milliseconds, so a perf frequency in GHz cannot overflow the product.
+        d_perf=$((d_perf / (cur[6] / 1000)))
+        in_ps=$((d_in * 1000 / d_perf)) out_ps=$((d_out * 1000 / d_perf))
+      else
+        span=-
+      fi
+    fi
+  fi
+  printf '%s %s %s %s %s %s %s %s\n' "$epoch" "$2" "$b_in" "$b_out" "$b_perf" "$in_ps" "$out_ps" "$span"
+}
 
 # win_refresh: run powershell once (bounded) and write the cache. Sets WIN_ERR on failure.
 win_refresh() {
@@ -239,22 +310,28 @@ win_refresh() {
     WIN_ERR="powershell.exe timed out after ${R_win_timeout_s}s"
     return 1
   fi
-  out=$(printf '%s\n' "$out" | awk 'NF == 5 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9.]+$/ && $5 ~ /^[0-9.]+$/ { print; exit }')
+  out=$(printf '%s\n' "$out" | awk 'NF == 8 { for (i = 1; i <= 8; i++) if ($i !~ /^[0-9]+$/ || length($i) > 18) next; if ($7 + 0 >= 1000) { print; exit } }')
   if [ -z "$out" ]; then
     WIN_ERR="powershell.exe gave no memory reading (exit $rc)"
     return 1
   fi
-  printf '%s %s\n' "$(now)" "$out" >"$WIN_FILE.tmp.$$" && mv -f "$WIN_FILE.tmp.$$" "$WIN_FILE"
+  win_cache_line "$(now)" "$out" >"$WIN_FILE.tmp.$$" && mv -f "$WIN_FILE.tmp.$$" "$WIN_FILE"
+}
+
+# win_line_epoch <line>: the line's epoch, or 0 unless it is a complete cache line.
+win_line_epoch() {
+  local -a f
+  read -ra f <<<"$1"
+  if [ "${#f[@]}" = 15 ] && is_uint "${f[0]}"; then printf '%s' "${f[0]}"; else printf 0; fi
 }
 
 # win_read <fresh>: sets WIN_* values and WIN_SOURCE.
 win_read() {
   local fresh=$1 line epoch age t
-  WIN_TOTAL_KIB='' WIN_FREE_KIB='' WIN_AVAIL_MIB='' WIN_PAGING_MIBPS='' WIN_SOURCE=''
+  WIN_TOTAL_KIB='' WIN_FREE_KIB='' WIN_AVAIL_MIB='' WIN_PAGES_IN_PS='' WIN_PAGES_OUT_PS='' WIN_RATE_SPAN_S='' WIN_POOL_MIB='' WIN_SOURCE=''
   t=$(now)
   line=$(cat "$WIN_FILE" 2>/dev/null) || line=
-  epoch=${line%% *}
-  case "$epoch" in '' | *[!0-9]*) epoch=0 ;; esac
+  epoch=$(win_line_epoch "$line")
   age=$((t - epoch))
   if [ "$fresh" = 1 ] || [ "$age" -ge "$R_win_cache_s" ]; then
     # One powershell call machine-wide at a time; others read the cache.
@@ -269,15 +346,14 @@ win_read() {
       rmdir "$WIN_LOCK" 2>/dev/null
     fi
     line=$(cat "$WIN_FILE" 2>/dev/null) || line=
-    epoch=${line%% *}
-    case "$epoch" in '' | *[!0-9]*) epoch=0 ;; esac
+    epoch=$(win_line_epoch "$line")
     age=$((t - epoch))
   fi
   if [ "$epoch" -gt 0 ] && [ "$age" -le "$R_win_stale_max_s" ]; then
-    # shellcheck disable=SC2086 # the cache line is five space-separated numbers
+    # shellcheck disable=SC2086 # the cache line is fifteen space-separated fields
     set -- $line
-    WIN_TOTAL_KIB=$2 WIN_FREE_KIB=$3 WIN_AVAIL_MIB=$4
-    WIN_PAGING_MIBPS=$(awk -v i="$5" -v o="$6" 'BEGIN { printf "%.1f", (i + o) * 4 / 1024 }')
+    WIN_TOTAL_KIB=$2 WIN_FREE_KIB=$3 WIN_AVAIL_MIB=$4 WIN_POOL_MIB=$(($9 / 1048576))
+    if [ "${15}" != - ]; then WIN_PAGES_IN_PS=${13} WIN_PAGES_OUT_PS=${14} WIN_RATE_SPAN_S=${15}; fi
     case "$WIN_SOURCE" in
     powershell) ;;
     unavailable:*) WIN_SOURCE="cache ${age}s (refresh failed: ${WIN_SOURCE#unavailable: })" ;;
@@ -293,7 +369,7 @@ meminfo_kib() { # <field>
 }
 
 # linux_read: sets LINUX_* values; LINUX_SWAPOUT_MIBPS is the swap-out rate since
-# the newest swapout pair at least SWAPOUT_WINDOW_S old, empty without one.
+# the newest swapout pair at least RATE_WINDOW_S old, empty without one.
 # SWAPOUT_NEWEST is the record's newest pair, for the tick to rotate.
 linux_read() {
   local v c b st sf sc t e1 o1 e0 o0 base_e='' base_o=''
@@ -313,10 +389,10 @@ linux_read() {
     '' | *[!0-9]*) ;;
     *)
       SWAPOUT_NEWEST="$e1 $o1"
-      if [ $((t - e1)) -ge "$SWAPOUT_WINDOW_S" ]; then
+      if [ $((t - e1)) -ge "$RATE_WINDOW_S" ]; then
         base_e=$e1 base_o=$o1
       else
-        case "$e0$o0" in '' | *[!0-9]*) ;; *) [ $((t - e0)) -lt "$SWAPOUT_WINDOW_S" ] || base_e=$e0 base_o=$o0 ;; esac
+        case "$e0$o0" in '' | *[!0-9]*) ;; *) [ $((t - e0)) -lt "$RATE_WINDOW_S" ] || base_e=$e0 base_o=$o0 ;; esac
       fi
       ;;
     esac
@@ -337,7 +413,10 @@ print_sample() {
   printf 'win_total_mib=%s\n' "${WIN_TOTAL_KIB:+$((WIN_TOTAL_KIB / 1024))}"
   printf 'win_free_mib=%s\n' "${WIN_FREE_KIB:+$((WIN_FREE_KIB / 1024))}"
   printf 'win_available_mib=%s\n' "$WIN_AVAIL_MIB"
-  printf 'win_paging_mibps=%s\n' "$WIN_PAGING_MIBPS"
+  printf 'win_pages_in_ps=%s\n' "$WIN_PAGES_IN_PS"
+  printf 'win_pages_out_ps=%s\n' "$WIN_PAGES_OUT_PS"
+  printf 'win_paging_span_s=%s\n' "$WIN_RATE_SPAN_S"
+  printf 'win_nonpaged_pool_mib=%s\n' "$WIN_POOL_MIB"
   printf 'win_source=%s\n' "$WIN_SOURCE"
   printf 'linux_total_mib=%s\n' "$LINUX_TOTAL_MIB"
   printf 'linux_available_mib=%s\n' "$LINUX_AVAIL_MIB"
@@ -358,16 +437,22 @@ grade_signal() {
     printf "%d", lvl }'
 }
 
-# grade: sets GRADE (index) and GRADE_REASONS from the current sample.
+# grade: sets GRADE (index), GRADE_REASONS, and POOL_ABNORMAL (1 when the Windows
+# non-paged pool is at or above win_nonpaged_pool_mib) from the current sample.
 grade() {
   local g
-  GRADE=0 GRADE_REASONS=
+  GRADE=0 GRADE_REASONS='' POOL_ABNORMAL=0
   g=$(grade_signal "$WIN_AVAIL_MIB" below "$T_win_available_mib")
   [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Windows available ${WIN_AVAIL_MIB} MiB ($(level_name "$g"))"
   [ "$g" -le "$GRADE" ] || GRADE=$g
-  g=$(grade_signal "$WIN_PAGING_MIBPS" above "$T_win_paging_mibps")
-  [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Windows paging ${WIN_PAGING_MIBPS} MiB/s ($(level_name "$g"))"
+  g=$(grade_signal "$WIN_PAGES_IN_PS" above "$T_win_pages_in_ps")
+  [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Windows pages input ${WIN_PAGES_IN_PS}/s averaged over ${WIN_RATE_SPAN_S}s ($(level_name "$g"))"
   [ "$g" -le "$GRADE" ] || GRADE=$g
+  if [ -n "$WIN_POOL_MIB" ] && [ "$R_win_nonpaged_pool_mib" -gt 0 ] && [ "$WIN_POOL_MIB" -ge "$R_win_nonpaged_pool_mib" ]; then
+    POOL_ABNORMAL=1
+    GRADE_REASONS="$GRADE_REASONS; Windows non-paged pool ${WIN_POOL_MIB} MiB, normal is under 1024 MiB (warn: a leaking Windows driver is the likely cause, which no agent response frees; a Windows restart frees it and poolmon names the driver's pool tag)"
+    [ "$GRADE" -ge 1 ] || GRADE=1
+  fi
   g=$(grade_signal "$LINUX_AVAIL_MIB" below "$T_linux_available_mib")
   [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Linux available ${LINUX_AVAIL_MIB} MiB ($(level_name "$g"))"
   [ "$g" -le "$GRADE" ] || GRADE=$g
@@ -526,8 +611,42 @@ is_secondmate_home() {
   [ -e "$FM_HOME/.fm-secondmate-home" ] || [ -L "$FM_HOME/.fm-secondmate-home" ]
 }
 
+# wake_decide <level-index> <epoch> <reasons>: sets wake to the line main gets now, or
+# empty, and keeps state/.mem-guard-wake as the notice main holds open.
+wake_decide() {
+  local i=$1 t=$2 reasons=$3 rec=0 last=0 last_i=0 last_pool=0 pool=$POOL_ABNORMAL wake_i lvl=0 response
+  { read -r last last_i last_pool <"$STATE/.mem-guard-wake"; } 2>/dev/null && rec=1
+  is_uint "$last" || last=0
+  # A record with only an epoch predates the wake level and was written at critical.
+  is_uint "$last_i" || last_i=4
+  [ "$last_pool" = 1 ] || last_pool=0
+  # An unavailable Windows reading is not a healthy pool: hold the notice as it was.
+  [ -n "$WIN_POOL_MIB" ] || pool=$last_pool
+  wake_i=$(level_index "$R_wake_level")
+  [ "$i" -lt "$wake_i" ] || lvl=$i
+  if [ "$lvl" -gt 0 ] || [ "$pool" = 1 ]; then
+    if [ "$rec" = 0 ] || [ $((t - last)) -ge "$R_rewake_s" ] || [ "$lvl" -gt "$last_i" ] || [ "$pool" -gt "$last_pool" ]; then
+      printf '%s %s %s\n' "$t" "$lvl" "$pool" >"$STATE/.mem-guard-wake" 2>/dev/null
+      case "$lvl" in
+      4) response="new agents and heavy jobs are refused; park or finish waiting workers and stop heavy jobs" ;;
+      3) response="new agents and heavy jobs are refused and idle workers on a declared wait are parked" ;;
+      2) response="idle workers on a declared wait are parked" ;;
+      1) response="this level takes no agent action" ;;
+      *) response="no agent action frees the non-paged pool; it needs the operator" ;;
+      esac
+      wake="memory guard $(level_name "$i"): $reasons; $response (bin/fm-mem-guard.sh status)"
+    elif [ "$lvl" != "$last_i" ] || [ "$pool" != "$last_pool" ]; then
+      # A fall that still needs a notice is told at the next repeat; a later rise wakes again.
+      printf '%s %s %s\n' "$last" "$lvl" "$pool" >"$STATE/.mem-guard-wake" 2>/dev/null
+    fi
+  elif [ "$rec" = 1 ]; then
+    rm -f "$STATE/.mem-guard-wake"
+    wake="memory guard cleared: level $(level_name "$i"): $reasons (bin/fm-mem-guard.sh status)"
+  fi
+}
+
 cmd_tick() {
-  local check=0 t prev_i new_i below reasons wake last
+  local check=0 t prev_i new_i below reasons wake
   [ "${1:-}" = --check ] && check=1
   TICK_START=$(date +%s)
   guard_dir_ready || { echo "error: cannot create $GUARD_DIR" >&2; exit 1; }
@@ -549,22 +668,17 @@ cmd_tick() {
   fi
   reasons=${GRADE_REASONS:-all signals within limits}
   printf '%s %s %s %s\n' "$(level_name "$new_i")" "$t" "$below" "$reasons" >"$LEVEL_FILE.tmp.$$" && mv -f "$LEVEL_FILE.tmp.$$" "$LEVEL_FILE"
-  append_bounded "$SAMPLES_LOG" "$t level=$(level_name "$new_i") graded=$(level_name "$GRADE") win_avail_mib=${WIN_AVAIL_MIB:--} win_paging_mibps=${WIN_PAGING_MIBPS:--} linux_avail_mib=${LINUX_AVAIL_MIB:--} linux_cache_mib=${LINUX_CACHE_MIB:--} linux_swap_used_mib=${LINUX_SWAP_USED_MIB:--} swapout_mibps=${LINUX_SWAPOUT_MIBPS:--} psi_full=${LINUX_PSI_FULL:--} win_source=${WIN_SOURCE// /_}"
+  append_bounded "$SAMPLES_LOG" "$t level=$(level_name "$new_i") graded=$(level_name "$GRADE") win_avail_mib=${WIN_AVAIL_MIB:--} win_pages_in_ps=${WIN_PAGES_IN_PS:--} win_pages_out_ps=${WIN_PAGES_OUT_PS:--} win_paging_span_s=${WIN_RATE_SPAN_S:--} win_pool_mib=${WIN_POOL_MIB:--} linux_avail_mib=${LINUX_AVAIL_MIB:--} linux_cache_mib=${LINUX_CACHE_MIB:--} linux_swap_used_mib=${LINUX_SWAP_USED_MIB:--} swapout_mibps=${LINUX_SWAPOUT_MIBPS:--} psi_full=${LINUX_PSI_FULL:--} win_source=${WIN_SOURCE// /_}"
   [ "$new_i" = "$prev_i" ] || event "level $(level_name "$prev_i") -> $(level_name "$new_i"): $reasons"
-  if [ -n "$LINUX_PSWPOUT" ] && { [ -z "$SWAPOUT_NEWEST" ] || [ $((t - ${SWAPOUT_NEWEST%% *})) -ge "$SWAPOUT_WINDOW_S" ] || [ "$t" -lt "${SWAPOUT_NEWEST%% *}" ]; }; then
+  if [ -n "$LINUX_PSWPOUT" ] && { [ -z "$SWAPOUT_NEWEST" ] || [ $((t - ${SWAPOUT_NEWEST%% *})) -ge "$RATE_WINDOW_S" ] || [ "$t" -lt "${SWAPOUT_NEWEST%% *}" ]; }; then
     printf '%s %s %s\n' "$t" "$LINUX_PSWPOUT" "$SWAPOUT_NEWEST" >"$SWAPOUT_FILE.tmp.$$" && mv -f "$SWAPOUT_FILE.tmp.$$" "$SWAPOUT_FILE"
   fi
   case "$WIN_SOURCE" in unavailable:*) event "sample degraded to Linux-only: Windows ${WIN_SOURCE}" ;; esac
   lock_release "$LOCK"
 
   wake=
-  if [ "$new_i" -ge 4 ] && [ -d "$STATE" ] && ! is_secondmate_home; then
-    last=$(cat "$STATE/.mem-guard-wake" 2>/dev/null) || last=0
-    case "$last" in '' | *[!0-9]*) last=0 ;; esac
-    if [ $((t - last)) -ge "$R_critical_rewake_s" ]; then
-      printf '%s\n' "$t" >"$STATE/.mem-guard-wake" 2>/dev/null
-      wake="memory guard critical: $reasons; new agents and heavy jobs are refused; park or finish waiting workers and stop heavy jobs (bin/fm-mem-guard.sh status)"
-    fi
+  if [ -d "$STATE" ] && ! is_secondmate_home; then
+    wake_decide "$new_i" "$t" "$reasons"
   elif [ -d "$STATE" ] && [ -e "$STATE/.mem-guard-wake" ]; then
     rm -f "$STATE/.mem-guard-wake"
   fi

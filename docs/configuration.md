@@ -1152,7 +1152,7 @@ The gate also holds every launch while the memory guard below records `refuse` o
 
 ## Memory guard
 
-`bin/fm-mem-guard.sh` watches memory on both sides of a WSL machine - Windows available memory and paging rate through one bounded, cached `powershell.exe` reading shared by every home, and Linux `MemAvailable`, page cache, swap, swap-out rate, and memory pressure - and grades the machine `ok`, `warn`, `park`, `refuse`, or `critical`.
+`bin/fm-mem-guard.sh` watches memory on both sides of a WSL machine - Windows available memory, page-in rate and non-paged pool through one bounded, cached `powershell.exe` reading shared by every home, and Linux `MemAvailable`, page cache, swap, swap-out rate, and memory pressure - and grades the machine `ok`, `warn`, `park`, `refuse`, or `critical`.
 Each home's watcher runs it as the generated `mem-guard.check.sh` check, which bootstrap arms unless `config/mem-guard` says `off`; any home's tick updates the one machine-wide level.
 When `powershell.exe` is missing or slow the guard grades on Linux signals alone and logs why, so a native Linux host works the same without the Windows half.
 
@@ -1161,9 +1161,15 @@ The response is graded, and each level includes the ones below it:
 - `warn` records the sample and the level change in the guard's logs.
 - `park` passes over this home's idle workers - ship and scout tasks not already parked whose current state is a declared wait - at most once per `park_interval_s`: one whose `data/<id>/handoff.md` passes `bin/fm-park.sh validate` and was written after the task's last park or resume is parked with `bin/fm-park.sh <id> --handoff data/<id>/handoff.md`, and any other gets one steer through `bin/fm-send.sh` asking it to write that handoff and park itself; the pass stays inside the watcher's check timeout, never starts a park it lacks the time to finish, and the next pass starts where an unfinished one stopped, past a worker whose park it could not afford, and while `bin/fm-park.sh` is absent it logs that park acts as warn only.
 - `refuse` makes every new agent spawn (the machine admission gate above) and every heavy-job start (`fm-mem-guard.sh admit`) wait and then refuse, naming the memory guard.
-- `critical` also wakes the primary home's supervisor once per `critical_rewake_s`, before any park work; secondmate homes never raise this wake.
+- `critical` also asks that waiting workers be parked or finished and heavy jobs stopped.
 
 A level rises at once and falls only after `clear_samples` consecutive better samples.
+The page-in rate is the average between the current Windows reading and one at least 60 s and at most `win_stale_max_s` older, so one second's spike does not grade and a gap longer than that leaves paging ungraded until the next reading.
+A non-paged pool at or above `win_nonpaged_pool_mib` grades `warn` only, because it points at a leaking Windows driver that parking agents does not free, but it always wakes the supervisor and names the likely cause.
+
+The guard wakes the primary home's supervisor, before any park work, when the level is at or above `wake_level` or the pool is abnormal: once when that starts, again every `rewake_s` while it lasts, at once when the level rises or the pool turns abnormal, and with one `memory guard cleared` line on the tick it ends.
+Each wake names every graded signal and what the level does to agents.
+A Windows reading that is unavailable holds the pool notice as it was, and secondmate homes never wake.
 The fleet-wide agent budget is the admission gate's `max_agents`, counted across every home on the machine.
 
 Heavy jobs run through `bin/fm-job-cap.sh`, which puts one job in a systemd user scope with disk-speed caps plus `MemoryHigh`, `MemoryMax`, and `MemorySwapMax`, so a runaway job is throttled or killed inside its own scope instead of starving the machine; `--admit` asks the guard first.
@@ -1175,7 +1181,8 @@ Each `memory_guard` threshold is four numbers, one per level from `warn` to `cri
 | `memory_guard` key | Default | Meaning |
 | --- | --- | --- |
 | `win_available_mib` | unset | Windows available memory at or below each value; always sampled and logged, but graded only when set, because a capped WSL VM keeps its memory resident and low Windows available memory is then expected |
-| `win_paging_mibps` | `[30, 60, 90, 120]` | Windows paging (pages in plus out) in MiB/s at or above each value |
+| `win_pages_in_ps` | `[100, 250, 500, 1000]` | Windows pages input per second (hard faults read from disk), averaged over at least 60 s, at or above each value; pages output is logged but not graded |
+| `win_nonpaged_pool_mib` | 2048 | Windows non-paged pool in MiB at or above which the pool grades `warn` and wakes the supervisor; 0 turns the signal off |
 | `linux_available_mib` | `[4096, 3584, 3072, 1536]` | Linux `MemAvailable` at or below each value; the third is also the heavy-job refuse line after the job's cost |
 | `linux_swap_used_mib` | `[4096, 5120, 6144]` | Linux swap in use (`SwapTotal` minus `SwapFree` minus `SwapCached`) at or above each value, counted only on a tick where swap is growing; on any other tick swap grades `ok`, so swap left behind after pressure ends does not hold a level |
 | `linux_swapout_mibps_min` | 1 | whole MiB/s of swap-out (`pswpout` in `/proc/vmstat`, measured over at least the last 60 s of ticks across every home) above which swap counts as growing |
@@ -1186,8 +1193,11 @@ Each `memory_guard` threshold is four numbers, one per level from `warn` to `cri
 | `state_max_age_s` | 900 | age after which the recorded level reads `unknown` and holds nothing |
 | `clear_samples` | 2 | consecutive better samples before the level falls |
 | `park_interval_s` | 900 | least time between park passes in one home |
-| `critical_rewake_s` | 1800 | least time between critical wakes in one home |
+| `wake_level` | `park` | lowest level that wakes the supervisor: `warn`, `park`, `refuse`, or `critical` |
+| `rewake_s` | 1800 | least time between repeat wakes for one continuing state in one home |
 | `log_max_lines` | 5000 | lines kept in each guard log |
+
+The retired keys `win_paging_mibps` and `critical_rewake_s` are ignored with a warning naming their replacements.
 
 | `job_cap` key | Default | Meaning |
 | --- | --- | --- |

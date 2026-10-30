@@ -37,7 +37,7 @@ CALLER_SITES = {
     "bin/fm-bearings-snapshot.sh:241": ("fleet-snapshot", "value-stderr", "status", 'SNAP=$(FM_SNAPSHOT_NOW="$NOW" "$FLEET" --json) || exit $?'),
 }
 EXCLUDED_SITES = {
-    "bin/fm-mem-guard.sh:490": 'st=$(FM_CREW_STATE_NO_FORGE=1 bounded "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null | head -1)',
+    "bin/fm-mem-guard.sh:575": 'st=$(FM_CREW_STATE_NO_FORGE=1 bounded "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null | head -1)',
     "bin/fm-account.sh:303": 'line=$(FM_CREW_STATE_NO_FORGE=1 FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-crew-state.sh" "$1" 2>/dev/null | head -1)',
     "bin/fm-supervise-daemon.sh:1584": '"$FM_DAEMON_DIR/fm-wake-drain.sh" --ack-through "$ack_through" \\\n--recovery-generation "$ack_generation"',
     "bin/fm-fleet-view.sh:22": '--json) "$SCRIPT_DIR/fm-fleet-snapshot.sh" --json; exit $? ;;',

@@ -23,13 +23,21 @@ write_proc() {
   printf 'some avg10=1.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=%s avg60=0.00 avg300=0.00 total=0\n' "$2" > "$C/proc/pressure/memory"
 }
 
-# fake_ps <available-mib> <pages-in/s> [delay-seconds]: a powershell.exe stub that counts its calls.
+# fake_ps <available-mib> <pages-in/s> [delay-seconds] [non-paged-pool-mib]: a powershell.exe
+# stub that counts its calls and prints raw counters on FM_MEM_GUARD_NOW's clock: a
+# cumulative page-in count that grows at the given rate since the previous call and
+# starts just below the 32-bit wrap, a 2 pages/s page-out count, a 10 MHz perf
+# clock, and the non-paged pool (default 600 MiB).
 fake_ps() {
   cat > "$C/powershell.exe" <<SH
 #!/usr/bin/env bash
 echo call >> "$C/ps-calls"
 sleep ${3:-0}
-printf '32817692 %s %s %s 0\r\n' "\$(( $1 * 1024 ))" "$1" "$2"
+now=\${FM_MEM_GUARD_NOW:-0}
+{ read -r last total < "$C/ps-pages"; } 2>/dev/null || { last=\$now; total=4294967000; }
+total=\$(( (total + (now - last) * $2) % 4294967296 ))
+printf '%s %s\n' "\$now" "\$total" > "$C/ps-pages"
+printf '32817692 %s %s %s %s %s 10000000 %s\r\n' "\$(( $1 * 1024 ))" "$1" "\$total" "\$(( now * 2 % 4294967296 ))" "\$(( now * 10000000 ))" "\$(( ${4:-600} * 1048576 ))"
 SH
   chmod +x "$C/powershell.exe"
 }
@@ -60,7 +68,8 @@ test_sample_reads_both_sides_and_caches_windows() {
   new_case sample
   out=$(guard sample)
   assert_contains "$out" "win_available_mib=12000" "Windows available memory is read"
-  assert_contains "$out" "win_paging_mibps=0.0" "Windows paging is read in MiB/s"
+  assert_contains "$out" "win_pages_in_ps="$'\n' "one reading has no paging rate yet"
+  assert_contains "$out" "win_nonpaged_pool_mib=600" "the non-paged pool is read"
   assert_contains "$out" "win_source=powershell" "a fresh reading names powershell"
   assert_contains "$out" "linux_available_mib=15625" "Linux MemAvailable is read"
   assert_contains "$out" "linux_cache_mib=2560" "page cache counts Cached plus Buffers"
@@ -69,7 +78,13 @@ test_sample_reads_both_sides_and_caches_windows() {
   FM_MEM_GUARD_NOW=1000030 guard sample > "$C/out2"
   assert_grep "win_source=cache 30s" "$C/out2" "a reading inside win_cache_s comes from the cache"
   assert_equals 1 "$(wc -l < "$C/ps-calls" | tr -d ' ')" "the cache saves a second powershell call"
-  pass "sample reads Windows and Linux memory and shares one cached powershell reading"
+  out=$(FM_MEM_GUARD_NOW=1000040 guard sample --fresh)
+  assert_contains "$out" "win_paging_span_s="$'\n' "readings under 60s apart give no rate"
+  out=$(FM_MEM_GUARD_NOW=1000090 guard sample --fresh)
+  assert_contains "$out" "win_pages_in_ps=10"$'\n' "pages input is averaged across the 32-bit counter wrap"
+  assert_contains "$out" "win_pages_out_ps=2"$'\n' "pages output is read for the log"
+  assert_contains "$out" "win_paging_span_s=90"$'\n' "a reading under 60s after the last keeps measuring from the older baseline"
+  pass "sample reads Windows and Linux memory, averages paging between readings, and shares one cached powershell reading"
 }
 
 test_sample_degrades_to_linux_only() {
@@ -95,12 +110,12 @@ test_grading_levels_and_hysteresis() {
   new_case grade
   out=$(guard tick)
   assert_contains "$out" "level=ok" "a healthy machine is ok"
-  fake_ps 1800 12000
+  fake_ps 1800 300
   FM_MEM_GUARD_NOW=1000100 guard sample --fresh >/dev/null
   out=$(FM_MEM_GUARD_NOW=1000100 guard tick)
   assert_contains "$out" "level=refuse" "Windows available 1800 MiB grades refuse"
-  assert_contains "$out" "Windows paging 46.9 MiB/s (warn)" "paging is graded on its own ladder"
-  assert_equals "refuse 1000100 Windows available 1800 MiB (refuse); Windows paging 46.9 MiB/s (warn)" "$(FM_MEM_GUARD_NOW=1000100 guard level)" "level prints the recorded level"
+  assert_contains "$out" "Windows pages input 300/s averaged over 100s (park)" "paging is graded on its own ladder"
+  assert_equals "refuse 1000100 Windows available 1800 MiB (refuse); Windows pages input 300/s averaged over 100s (park)" "$(FM_MEM_GUARD_NOW=1000100 guard level)" "level prints the recorded level"
   fake_ps 12000 10
   FM_MEM_GUARD_NOW=1000200 guard sample --fresh >/dev/null
   out=$(FM_MEM_GUARD_NOW=1000200 guard tick)
@@ -175,22 +190,102 @@ test_admit_refuses_heavy_jobs() {
   pass "admit refuses heavy jobs at refuse or critical and charges the job's memory"
 }
 
-test_critical_wakes_only_main_once_per_window() {
+# The starved laptop's readings: page-ins sustained in the hundreds and a 4.4 GiB
+# non-paged pool, while Windows available memory (1.6 GiB) is left ungraded.
+test_starved_windows_host_tells_main_start_repeat_and_clear() {
+  local out t
+  new_case starved
+  printf '{}\n' > "$C/rules.json"
+  fake_ps 1600 700 0 4506
+  guard sample >/dev/null
+  out=$(FM_MEM_GUARD_NOW=1000300 guard tick --check)
+  assert_contains "$out" "memory guard refuse: Windows pages input 700/s averaged over 300s (refuse)" "sustained page-ins grade above ok and name the rate"
+  assert_contains "$out" "Windows non-paged pool 4506 MiB, normal is under 1024 MiB (warn: a leaking Windows driver is the likely cause" "the abnormal pool is named with its likely cause"
+  assert_contains "$out" "new agents and heavy jobs are refused" "the wake names the response"
+  assert_equals 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "the state's start is told in one line"
+  fake_ps 1600 1250 0 4506
+  out=$(FM_MEM_GUARD_NOW=1000600 guard tick --check)
+  assert_contains "$out" "memory guard critical: Windows pages input 1250/s" "a rise inside the repeat window is told at once"
+  fake_ps 1600 600 0 4506
+  for t in 1000900 1001200 1001500 1001800 1002100; do
+    out=$(FM_MEM_GUARD_NOW=$t guard tick --check)
+    assert_equals "" "$out" "a steady or falling state inside rewake_s stays silent at $t"
+  done
+  out=$(FM_MEM_GUARD_NOW=1002400 guard tick --check)
+  assert_contains "$out" "memory guard refuse: Windows pages input 600/s averaged over 300s (refuse)" "the state is told again after rewake_s"
+  fake_ps 6000 50 0 600
+  out=$(FM_MEM_GUARD_NOW=1002700 guard tick --check)
+  assert_equals "" "$out" "one healthy sample holds the level without a notice"
+  out=$(FM_MEM_GUARD_NOW=1003000 guard tick --check)
+  assert_equals "memory guard cleared: level ok: all signals within limits (bin/fm-mem-guard.sh status)" "$out" "the clear is told once, the tick the level falls"
+  out=$(FM_MEM_GUARD_NOW=1003300 guard tick --check)
+  assert_equals "" "$out" "a healthy machine after the clear stays silent"
+  pass "a starved Windows host grades above ok naming paging and the pool, and main is told at the start, on a rise, on the repeat cadence and once at the clear"
+}
+
+test_healthy_windows_host_stays_ok_and_silent() {
+  local out t
+  new_case healthy
+  printf '{}\n' > "$C/rules.json"
+  fake_ps 1600 90 0 600
+  for t in 1000000 1000300 1000600; do
+    out=$(FM_MEM_GUARD_NOW=$t guard tick --check)
+    assert_equals "" "$out" "a healthy host prints nothing at $t"
+  done
+  out=$(FM_MEM_GUARD_NOW=1000600 guard status)
+  assert_contains "$out" "win_pages_in_ps=90"$'\n' "the healthy rate was measured"
+  assert_contains "$out" "graded=ok" "paging under 100/s and a 600 MiB pool grade ok"
+  assert_absent "$C/home/state/.mem-guard-wake" "no notice is held open"
+  pass "paging under 100/s and a normal non-paged pool stay ok and silent"
+}
+
+test_pool_notice_holds_through_an_unavailable_reading() {
   local out
+  new_case poolhold
+  printf '{}\n' > "$C/rules.json"
+  fake_ps 6000 10 0 4506
+  out=$(guard tick --check)
+  assert_contains "$out" "memory guard warn: Windows non-paged pool 4506 MiB" "the pool alone wakes main though it grades only warn"
+  assert_contains "$out" "no agent action frees the non-paged pool; it needs the operator" "the wake says no agent response helps"
+  assert_absent "$C/home/state/.mem-guard-park" "the pool alone starts no park pass"
+  export FM_MEM_GUARD_POWERSHELL="$C/absent/powershell.exe"
+  out=$(FM_MEM_GUARD_NOW=1000700 guard tick --check)
+  assert_equals "" "$out" "an unavailable Windows reading neither clears nor repeats the pool notice"
+  assert_contains "$(FM_MEM_GUARD_NOW=1000700 guard level)" "Linux-only (Windows unavailable: powershell.exe not found)" "the degraded sample says so"
+  export FM_MEM_GUARD_POWERSHELL="$C/powershell.exe"
+  fake_ps 6000 10 0 600
+  out=$(FM_MEM_GUARD_NOW=1001000 guard tick --check)
+  assert_contains "$out" "memory guard cleared" "a readable normal pool clears the notice once the level falls"
+  pass "the non-paged pool wakes main with no agent response and its notice holds through an unavailable reading"
+}
+
+test_critical_wakes_only_main_once_per_window() {
+  local out t
   new_case critical
   fake_ps 900 10
   out=$(guard tick --check)
   assert_contains "$out" "memory guard critical: Windows available 900 MiB (critical)" "critical prints one wake line"
   assert_equals 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "the watcher form prints only the wake line"
   out=$(FM_MEM_GUARD_NOW=1000100 guard tick --check)
-  assert_equals "" "$out" "no repeat wake inside critical_rewake_s"
+  assert_equals "" "$out" "no repeat wake inside rewake_s"
   out=$(FM_MEM_GUARD_NOW=1002000 guard tick --check)
-  assert_contains "$out" "memory guard critical" "the wake repeats after critical_rewake_s"
+  assert_contains "$out" "memory guard critical" "the wake repeats after rewake_s"
   touch "$C/home/.fm-secondmate-home"
   rm -f "$C/home/state/.mem-guard-wake"
   out=$(FM_MEM_GUARD_NOW=1004000 guard tick --check)
   assert_equals "" "$out" "a secondmate home never prints the critical wake"
-  pass "critical wakes a primary home once per critical_rewake_s and never a secondmate home"
+  printf '{}\n' > "$C/rules.json"
+  fake_ps 1600 700 0 4506
+  for t in 1004300 1004600; do
+    out=$(FM_MEM_GUARD_NOW=$t guard tick --check)
+    assert_equals "" "$out" "a secondmate home never prints the starved-host wake at $t"
+  done
+  fake_ps 12000 10
+  for t in 1004900 1005200 1005500; do
+    out=$(FM_MEM_GUARD_NOW=$t guard tick --check)
+    assert_equals "" "$out" "a secondmate home never prints a clear at $t"
+  done
+  pass "critical wakes a primary home once per rewake_s and no guard notice ever reaches a secondmate home"
 }
 
 # fake_park_tools: an fm-park.sh whose validate accepts a handoff with a "Waiting for"
@@ -320,7 +415,19 @@ test_rules_override_and_malformed_values_warn() {
   printf '{"memory_guard": {"linux_available_mib": [1, 2]}}\n' > "$C/rules.json"
   out=$(guard status)
   assert_contains "$out" "is not four numbers" "a short threshold list warns"
-  pass "rules override thresholds and malformed values warn and keep defaults"
+  printf '{"memory_guard": {"win_paging_mibps": [1, 2, 3, 4], "critical_rewake_s": 5, "wake_level": "loud"}}\n' > "$C/rules.json"
+  out=$(guard status)
+  assert_contains "$out" "memory_guard.win_paging_mibps in $C/rules.json is retired and ignored; set memory_guard.win_pages_in_ps instead" "a retired paging key is named with its replacement"
+  assert_contains "$out" "memory_guard.critical_rewake_s in $C/rules.json is retired and ignored; set memory_guard.rewake_s instead" "a retired repeat key is named with its replacement"
+  assert_contains "$out" "memory_guard.wake_level in $C/rules.json is not one of warn, park, refuse, critical" "a bad wake level warns"
+  printf '{"memory_guard": {"wake_level": "critical", "win_pages_in_ps": [10, 20, 30, 40], "win_nonpaged_pool_mib": 0}}\n' > "$C/rules.json"
+  fake_ps 12000 35 0 4506
+  FM_MEM_GUARD_NOW=1000100 guard tick >/dev/null
+  rm -f "$C/home/state/.mem-guard-wake"
+  out=$(FM_MEM_GUARD_NOW=1000200 guard tick --check)
+  assert_equals "" "$out" "a raised wake level and a disabled pool signal keep a refuse level from main"
+  assert_contains "$(FM_MEM_GUARD_NOW=1000200 guard level)" "Windows pages input 35/s averaged over 100s (refuse)" "configured page-in thresholds apply"
+  pass "rules override thresholds and malformed or retired values warn and keep defaults"
 }
 
 test_auto_sync_arms_and_retires_the_check() {
@@ -397,6 +504,9 @@ test_grading_levels_and_hysteresis
 test_defaults_grade_linux_and_only_sample_windows_available
 test_swap_grades_only_while_growing
 test_admit_refuses_heavy_jobs
+test_starved_windows_host_tells_main_start_repeat_and_clear
+test_healthy_windows_host_stays_ok_and_silent
+test_pool_notice_holds_through_an_unavailable_reading
 test_critical_wakes_only_main_once_per_window
 test_park_level_parks_or_steers_idle_workers
 test_park_pass_resumes_where_it_stopped_and_needs_time_to_park
