@@ -1606,6 +1606,27 @@ require_recorded_pr_identity || exit 1
 record_pr_metadata || exit 1
 require_released_captain_hold || exit 1
 
+# The candidate-time consumer notice (docs/helper-consumers.md): before the
+# merge, a verified head that changes a Firstmate helper another home runs
+# under a pin gets its pending record and its owner's note. It is quiet for
+# any other repository and when nothing is declared, and whatever it reports,
+# the merge goes ahead exactly as it would without it. It fetches from origin
+# while the task's control lock is held, so it is bounded; FM_TEST_HELPER_NOTICE_TIMEOUT
+# shortens the bound for tests only.
+HELPER_NOTICE_TIMEOUT=${FM_TEST_HELPER_NOTICE_TIMEOUT:-60}
+helper_candidate_notice() {
+  local rc=0
+  fm_run_timed "$HELPER_NOTICE_TIMEOUT" env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-helper-consumers.sh" pending \
+    --repo "$FM_ROOT" --if-repo "$PR_HOST/$PR_PATH" --fetch --candidate "$FM_PR_MERGE_HEAD" >&2 || rc=$?
+  if fm_timed_out "$rc"; then
+    printf 'helper-candidate: notice stopped after %ss; the merge goes ahead, and the post-merge record still runs\n' \
+      "$HELPER_NOTICE_TIMEOUT" >&2
+  elif [ "$rc" -ne 0 ]; then
+    printf 'helper-candidate: notice failed (exit %s); the merge goes ahead, and the post-merge record still runs\n' "$rc" >&2
+  fi
+  return 0
+}
+
 # Accepted confused-agent-grade limitation, as in bin/fm-lease-lib.sh, not an
 # oversight: if this lock-owning shell dies while its gh or glab child lives,
 # stale-owner recovery can release the record for archive or replacement and
@@ -1647,6 +1668,7 @@ case "$PROVIDER" in
       fi
       exit 1
     fi
+    helper_candidate_notice
     # The away record is locked first, so this last presence and authority read
     # and the forge command below share one live-owner critical section.
     hold_away_record_for_merge || exit 1
@@ -1698,6 +1720,7 @@ case "$PROVIDER" in
     ;;
   gitlab)
     gitlab_verify_mergeable || exit 1
+    helper_candidate_notice
     # --sha binds the merge to the head this run verified, so a push that lands
     # in between is refused by GitLab instead of merged unverified. --yes only
     # skips the interactive confirmation, which no supervised run can answer;
@@ -1734,6 +1757,7 @@ case "$PROVIDER" in
     forgejo_method=$(caller_merge_method "$@")
     [ -n "$forgejo_method" ] || forgejo_method=$(forgejo_default_merge_style) || exit 1
     forgejo_verify_mergeable || exit 1
+    helper_candidate_notice
     # The away record is locked first, so this last presence and authority
     # read and the forge command below share one live-owner critical section.
     hold_away_record_for_merge || exit 1

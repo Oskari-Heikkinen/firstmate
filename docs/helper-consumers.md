@@ -61,10 +61,28 @@ With no declarations, nothing changes: every update and sync behaves exactly as 
 
 ## Pending versions
 
-As soon as a change to a declared helper lands - when a Firstmate pull request merges, when a Firstmate direct push lands, and at the latest when `/updatefirstmate` fetches - Firstmate records that version for review if any consumer has not accepted it yet.
+Firstmate records a declared helper version for review, if any consumer has not accepted it yet, at the earliest of these moments:
+
+- before it lands, when a landing candidate changes the helper's bytes: `bin/fm-ci-push.sh land` and a Firstmate direct push's landing steps run the candidate-time notice before the push, and `bin/fm-pr-merge.sh` runs it right before it merges a Firstmate pull request;
+- as soon as it lands - when a Firstmate pull request merges, when a Firstmate direct push lands, and at the latest when `/updatefirstmate` fetches.
+
 The record lives in `${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/helper-versions/<helper name>/<sha256>/` and carries the commit, the consumers' currently accepted versions, the change since them, and a read-only copy of the exact bytes as the review artefact.
 A reviewer therefore reviews precisely what will deploy, before it deploys; consumers never run that copy.
 Firstmate also files one note per pending version to the main firstmate, which routes it to the declared owner.
+
+The candidate-time notice prints one `helper-candidate:` line per unaccepted version, naming the consumers that have not accepted it and warning that its landing holds every home's update until they do.
+It never refuses or delays a landing, and its output never changes whether the head lands.
+A candidate record names its candidate commit and has no landing time yet.
+When that version lands, the post-landing run fills in the landing commit and time in the same directory and files no second note, so the review that started at the candidate carries on.
+A candidate record whose version has not reached the default branch 14 days after it was recorded is withdrawn: it moves to `retired/` beside the helper's other records, and the owner gets a "candidate withdrawn" note.
+If the same bytes come back later, they get a new record and a new note.
+
+### Note evidence
+
+Evidence prepared before the review starts, such as a call-equivalence report, travels in the note's optional evidence field.
+A producer writes each evidence file into the record's `evidence/` directory, `<helper name>/<sha256>/evidence/` under the records directory above, before the note is filed, which for a candidate means before the candidate-time notice runs; the directory may be made before the record exists, and a file written after the note is not in it.
+The field is the last part of the note, ` Evidence: <path>[; <path>]...`, with the absolute path of each regular file directly in `evidence/` whose name uses only letters, digits, `.`, `_` and `-`, in byte order of their names.
+A note with no such file has no field, and any other entry is left out and reported by name.
 
 ## The hold log
 
