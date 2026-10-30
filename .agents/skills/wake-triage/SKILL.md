@@ -53,16 +53,17 @@ These never pass through the assistant at all, because the thing that may be bro
 
 | Class | The probe passes when | Live reading |
 |---|---|---|
-| `stale:stuck-busy-inbox` | the target is busy, its pane has changed since the doorbell, and the oldest inbox message has been handled or taken | `bin/fm-crew-state.sh`, `bin/fm-peek.sh`, and the inbox's `handled/` folder |
+| `stale:stuck-busy-inbox` | the target is busy, its pane has changed since the doorbell, and the oldest inbox message has been handled or taken; status output alone never passes it | `bin/fm-crew-state.sh`, `bin/fm-peek.sh`, and the inbox's `handled/` folder |
 | `check:loop-alerts` | the alert's level reads clear or acknowledged on a fresh read | `bin/fm-loop.sh alerts`, and the alert's record under `state/loop-alerts/` |
 | `check:rearm-resurface` | every row the wake re-announces was already presented or settled | `state/branch-outcomes.jsonl` and the wake drain |
 
 - Settle only on a passing probe, and cite it in the answer.
+- A listed row may be held and re-probed until the relay deadline; relay it at the deadline if the probe still does not pass.
 - A probe that fails, cannot be read or gives an unknown answer is a relay, with the probe result as the note.
 - When in doubt, relay.
 - A finished result of requested work, or anything the operator should see, is a relay or a captain outcome, never a settle.
-- In a replay the turn has no tools: the replay tool reads each probe from recorded state as of the row time plus a lag and puts the result in the message; judge on that result as given, and never assume a reading it does not show.
-- The replay's `stale:stuck-busy-inbox` reading is a proxy for the live probe, because pane changes and a taken message are not recorded: it passes when the message was handled by then or, as the proxy, when the target wrote a status line after the message was queued.
+- A stuck message that carries the operator's own words - an answer, ruling, question, ask or go, quoted or relayed in their words - is a relay even when its probe passes, because the operator is waiting on it to land; the note says it is the operator's and whether it was handled.
+- In a replay the turn has no tools: the replay tool reads each probe from recorded state as of the row time plus a lag, which stands for the re-probe at the relay deadline, and puts the result in the message, with the stuck message's first line for a stuck-busy row; judge on what it gives, and never assume a reading it does not show.
 
 ## Relay note
 
@@ -92,7 +93,6 @@ Optional fields follow in any order, and a reader ignores keys it does not use:
 - `route=` `code` or `engine`;
 - `run=` a fingerprint of the settings that wrote the line, so lines from different settings are never mixed;
 - `evidence=` `pass`, `fail`, `unknown` or `none`, the probe result as the writer read it;
-- `proxy=yes` when that pass rests on a replay proxy rather than the live probe's own reading;
 - `audit=` the action a model gave for a code-routed row when asked for audit only;
 - `cost=` the engine turn's cost in USD;
 - `error=` why an engine turn fell back to relay;
