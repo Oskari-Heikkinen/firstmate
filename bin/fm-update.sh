@@ -88,6 +88,14 @@
 # primary updated or already current appends `cleared` for each of this home's
 # holds still open. A line that cannot be written prints
 # `hold-log: not written: ...` and changes nothing else.
+# The primary's hold is bounded: check-advance --hold-bound lets it advance once
+# every version holding it has been held for the hold limit (config/helper-hold-max,
+# 1h by default), counted from that version's first held line. That pass prints a
+# `helper-consumers:` line per version it deploys unaccepted, appends one
+# `expired` line for each before its `cleared` lines, and leaves the consumers'
+# owners to the armed helper-unaccepted alarm, saying so when it is not armed.
+# A held pass names in held-for-helper when the limit lets a pass proceed, or why
+# no limit applies (a malformed declaration, or an unreadable limit file or log).
 # With no declarations none of this prints anything.
 #
 # Usage: fm-update.sh [--allow-helper-break <consumer>]... [--help]
@@ -128,7 +136,10 @@ done
 # --- main firstmate repo ---------------------------------------------------
 
 reread_firstmate="no"
+# Only the primary's holds are logged, so only they take the hold limit.
+FF_HELPER_HOLD_HOME=$FM_HOME
 ff_target "$FM_ROOT" "firstmate" origin no no
+FF_HELPER_HOLD_HOME=""
 if [ "$FF_STATUS" = "updated" ]; then
   if [ -n "$FF_INSTR" ]; then
     reread_firstmate="yes"
@@ -168,14 +179,21 @@ if [ -n "$FF_HELD" ]; then
   [ "$logged" = yes ] || hold_log held - - - "held-for-helper: $FF_HELD"
 elif [ "$FF_STATUS" = "updated" ] || [ "$FF_STATUS" = "current" ]; then
   breaks=$(printf '%s' "$FF_HELPER_RECORDS" | awk -F '\t' '$1 == "break" { s = s (s == "" ? "" : ", ") $4 }  END { print s }')
+  expired=$(printf '%s' "$FF_HELPER_RECORDS" | awk -F '\t' '$1 == "expired" { s = s (s == "" ? "" : ", ") $4 }  END { print s }')
+  how=""
+  [ -z "$breaks" ] || how=" with --allow-helper-break for $breaks"
+  [ -z "$expired" ] || how="$how${how:+ and} past the hold limit for $expired"
+  while IFS=$'\t' read -r kind helper sha consumers since; do
+    [ "$kind" = expired ] || continue
+    hold_log expired "$helper" "$sha" "$consumers" "deployed unaccepted by $consumers: held since $since, past the hold limit; they wait until they accept it"
+  done <<< "$FF_HELPER_RECORDS"
+  if [ -n "$expired" ] && [ ! -e "$STATE/helper-unaccepted.check.sh" ]; then
+    echo "helper-consumers: the helper-unaccepted alarm is not armed in $STATE, so the owners of $expired get no alarm; arm it with bin/fm-helper-consumers.sh alarm --arm"
+  fi
   if open_holds=$("$SCRIPT_DIR/fm-helper-consumers.sh" holds --open --home "$FM_HOME" 2>/dev/null); then
     while IFS=$'\t' read -r _ helper sha consumers _; do
       [ -n "$helper" ] || continue
-      if [ -n "$breaks" ]; then
-        hold_log cleared "$helper" "$sha" "$consumers" "pass $FF_STATUS at the target with --allow-helper-break for $breaks"
-      else
-        hold_log cleared "$helper" "$sha" "$consumers" "pass $FF_STATUS at the target"
-      fi
+      hold_log cleared "$helper" "$sha" "$consumers" "pass $FF_STATUS at the target$how"
     done <<< "$open_holds"
   else
     echo "hold-log: not written: cannot read this home's open holds, so none is cleared"

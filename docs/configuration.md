@@ -13,6 +13,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
+| Updates waiting on a helper's pinned consumers | [Helper consumers](#helper-consumers-helper-consumersd) and [helper hold limit](#helper-hold-limit-confighelper-hold-max) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
 
 ## FM_HOME
@@ -628,6 +629,13 @@ See [`fleet-ledger.md`](fleet-ledger.md) for the opt-in setup, record contract, 
 ## Helper consumers (helper-consumers.d)
 
 See [`helper-consumers.md`](helper-consumers.md) for the machine-level declarations through which a service that runs a Firstmate helper under a pin makes updates wait for its acceptance.
+
+## Helper hold limit (config/helper-hold-max)
+
+The optional local, gitignored `config/helper-hold-max` file sets how long `/updatefirstmate` holds for a pinned consumer's acceptance of a helper version before it deploys that version anyway and alarms the consumer's owner: one whole number of seconds, or of minutes or hours with an `m` or `h` suffix, read on every pass.
+Without the file the limit is 1 hour, counted from the version's first `held` line in the hold log.
+An empty, unreadable or malformed file is a failed reading that keeps the pass held and raises an alarm naming the file.
+[The hold limit](helper-consumers.md#the-hold-limit) owns the rule.
 
 ## Waiting worker spends no turns (config/wait-no-turns)
 
