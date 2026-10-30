@@ -50,11 +50,35 @@
 #   fm-storage.sh uninstall-timer
 #       Disable and remove that timer; the config and results-root stay.
 #
+# fm-storage/v2 (a draft contract; docs/storage.md "fm-storage/v2" owns it):
+#   fm-storage.sh --interface
+#       Print fm-storage/v2. Reads no configuration and writes nothing.
+#   fm-storage.sh reserve --volume linux|host-c|d --class CLASS TASK
+#                         --name NAME --bytes N --pid PID
+#       Resolve CLASS to its root through site-config for this host
+#       (uname -n), refuse a root that is not on VOLUME, then admit N bytes
+#       for the life of PID through fm-disk-room.sh reserve-token, which
+#       checks every other argument. Prints one token (0). A wait exits 75 and
+#       a refusal 2 (1 for owner-state), each with one stderr line
+#       "fm-storage: wait|refused: CODE: VOLUME:CLASS: DETAIL".
+#   fm-storage.sh release TASK --token TOKEN
+#       fm-disk-room.sh release-token: drop that one admission (0, repeatable).
+#   fm-storage.sh status --json
+#       One fm-storage/v2 status line: the class map digest, fm-disk-room.sh
+#       admission-status's reading of every pool, and a site-config wait as a
+#       reason. 0 ok, 75 waiting (one stderr wait line), 2 refused (1 for
+#       owner-state). Takes no lock and writes, prunes and probes nothing.
+#   fm-storage.sh site-config --here HOST
+#   fm-storage.sh health --volume d
+#       fm-storage-roots.py, whose header owns both.
+#
 # Files (config dir ${XDG_CONFIG_HOME:-~/.config}/lattice-storage):
 #   results-root   the published file (docs/storage.md)
 #   storage.conf   key=value: notify, min_free, min_size (a leftover fallback=
 #                  line is ignored)
 #   ssd-identity   key=value: uniqueid, letter, fs, label, setup_at, write_mib_s
+#   class-map.json the storage class map (fm-storage-class-map/v1), read only
+#                  by fm-storage-roots.py
 # State dir ${XDG_STATE_HOME:-~/.local/state}/fm-storage: last-state, lock,
 #   unreadable-runs (consecutive checks whose listing failed; removed on success).
 #
@@ -74,7 +98,9 @@
 #   FM_STORAGE_PS_BACKOFF  seconds slept before each listing retry (default "5 15")
 #   FM_STORAGE_POWERSHELL  powershell.exe to use (default: the one on PATH, else
 #                        /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)
-#   FM_STORAGE_NOW       epoch override for tests
+#   FM_STORAGE_MACHINE_ID  machine id file site-config proves the host by
+#                        (default /etc/machine-id)
+#   FM_STORAGE_NOW       epoch override for tests (and status --json's sampled_at)
 set -u
 
 GIB=1073741824
@@ -618,6 +644,122 @@ cmd_bulk_root() {
   printf '%s\n' "$out"
 }
 
+# fm-storage/v2 ---------------------------------------------------------------
+# The v2 verbs read the class map only through fm-storage-roots.py and admit
+# only through fm-disk-room.sh's token admissions. docs/storage.md
+# "fm-storage/v2" owns the contract.
+
+V2_INTERFACE=fm-storage/v2
+
+v2_say() {
+  local detail=${3//[^[:print:]]/?}
+  printf 'fm-storage: %s: %s: %s\n' "$1" "$2" "${detail:0:300}" >&2
+  [ "$1" = wait ] && return 75
+  [ "$2" = owner-state ] && return 1
+  return 2
+}
+
+cmd_interface() {
+  [ "$#" -eq 0 ] || { v2_say refused invalid-argument "--interface takes no operand"; return; }
+  printf '%s\n' "$V2_INTERFACE"
+}
+
+# v2_site: run site-config for this host (uname -n, which the class map names
+# as a host id or alias). On 0 V2_SITE holds the roots object; on a wait (75)
+# or refusal (2) V2_KIND, V2_CODE and V2_DETAIL hold its line, unprinted.
+v2_site() {
+  local here out rc line
+  V2_SITE='' V2_KIND='' V2_CODE='' V2_DETAIL=''
+  here=$(uname -n 2>/dev/null) || here=''
+  out=$(python3 -I "$(dirname "${BASH_SOURCE[0]}")/fm-storage-roots.py" site-config --here "$here" 2>&1)
+  rc=$?
+  if [ "$rc" -eq 0 ]; then V2_SITE=$out; return 0; fi
+  line=${out%%$'\n'*}
+  case "$rc:$line" in
+    '75:fm-storage: wait: '*?': '*) V2_KIND='wait' ;;
+    '2:fm-storage: refused: '*?': '*) V2_KIND='refused' ;;
+    *) V2_KIND=refused V2_CODE=owner-state V2_DETAIL="site-config failed with exit $rc: $line"; return 1 ;;
+  esac
+  line=${line#fm-storage: "$V2_KIND": }
+  V2_CODE=${line%%: *} V2_DETAIL=${line#*: }
+  return "$rc"
+}
+
+# reserve: resolve --class to its root through the class map, check the root's
+# volume is --volume, then admit through fm-disk-room.sh reserve-token, which
+# validates every other argument and owns the charge.
+cmd_reserve() {
+  local volume='' class='' where root rc
+  local -a args=("$@")
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --root) v2_say refused invalid-argument "--root is not a reserve option: the class map chooses the root"; return ;;
+      --volume|--class|--name|--bytes|--pid) [ "$#" -ge 2 ] || break
+        case "$1" in --volume) volume=$2 ;; --class) class=$2 ;; esac
+        shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  case "$volume" in linux|host-c|d) ;; *) v2_say refused invalid-argument "--volume must be linux, host-c or d"; return ;; esac
+  where="$volume:$class"
+  v2_site; rc=$?
+  [ "$rc" -eq 0 ] || { v2_say "$V2_KIND" "$V2_CODE" "$where: $V2_DETAIL"; return; }
+  root=$(printf '%s\n' "$V2_SITE" | jq -r --arg c "$class" --arg v "$volume" '
+    .classes[$c] as $r | if $r == null then "unknown-class"
+    else .roots[$r] | if .transport != "local" then "remote" elif .volume != $v then "volume \(.volume)"
+      else "ok \(.path)" end end' 2>/dev/null)
+  case "$root" in
+    'ok /'*) root=${root#ok } ;;
+    unknown-class) v2_say refused unknown-class "$where: the class map binds no class $class"; return ;;
+    'volume '*) v2_say refused wrong-volume "$where: class $class is bound to a root on ${root#volume }"; return ;;
+    remote) v2_say refused remote-unproven "$where: class $class is bound to a root on another host"; return ;;
+    *) v2_say refused owner-state "$where: cannot read the site roots"; return ;;
+  esac
+  exec "$(dirname "${BASH_SOURCE[0]}")/fm-disk-room.sh" reserve-token --root "$root" "${args[@]}"
+}
+
+# status --json: the class map digest, fm-disk-room.sh admission-status's
+# reading of every pool, and any site-config wait as one more reason. The
+# owner's wait or refusal line passes through on stderr; status writes nothing.
+cmd_status_json() {
+  local map sha t out rc state reason=''
+  [ "$#" -eq 0 ] || { v2_say refused invalid-argument "status --json takes no operand"; return; }
+  command -v jq >/dev/null 2>&1 || { v2_say refused owner-state "jq is not installed"; return; }
+  t=$(now)
+  case "$t" in ''|*[!0-9]*|????????????????*) v2_say refused owner-state "bad clock reading $t"; return ;; esac
+  v2_site; rc=$?
+  case "$rc" in
+    0) ;;
+    75) reason=$(jq -cn --arg c "$V2_CODE" --arg d "$V2_DETAIL" '[{code: $c, volume: null, term: null, detail: $d}]') ;;
+    *) v2_say "$V2_KIND" "$V2_CODE" "$V2_DETAIL"; return ;;
+  esac
+  map="$(config_dir)/class-map.json"
+  if command -v sha256sum >/dev/null 2>&1; then sha=$(sha256sum <"$map" 2>/dev/null)
+  else sha=$(shasum -a 256 <"$map" 2>/dev/null); fi
+  sha=${sha%% *}
+  case "$sha" in *[!0-9a-f]*|'') v2_say refused owner-state "cannot hash $map"; return ;; esac
+  [ "${#sha}" -eq 64 ] || { v2_say refused owner-state "cannot hash $map"; return; }
+  out=$("$(dirname "${BASH_SOURCE[0]}")/fm-disk-room.sh" admission-status --json)
+  rc=$?
+  case "$rc" in
+    0) state=ok; [ -z "$reason" ] || state=waiting ;;
+    75) state=waiting ;;
+    1|2) state=refused ;;
+    *) v2_say refused owner-state "admission-status failed with exit $rc"; return ;;
+  esac
+  [ -n "$out" ] && out=$(printf '%s\n' "$out" | jq -c --argjson t "$t" --arg sha "$sha" --arg state "$state" --argjson extra "${reason:-[]}" '
+    select(.schema == "fm-disk-room-admission-status/v1")
+    | {interface: "fm-storage/v2", sampled_at: $t, state: $state, class_map_sha256: $sha,
+       volumes: .volumes, c_terms: .c_terms, reasons: (.reasons + $extra)}' 2>/dev/null)
+  if [ -z "$out" ]; then
+    [ "$rc" -eq 0 ] || return "$rc"
+    v2_say refused owner-state "admission-status printed no readable object"; return
+  fi
+  printf '%s\n' "$out"
+  [ "$rc" -eq 0 ] && [ -n "$reason" ] && { v2_say wait "$V2_CODE" "$V2_DETAIL"; return; }
+  return "$rc"
+}
+
 UNIT=fm-storage
 
 cmd_install_timer() {
@@ -664,10 +806,14 @@ case "${1:-}" in
   detect) cmd_detect ;;
   check) run_check ;;
   setup) run_check && cmd_status ;;
-  status) cmd_status ;;
+  status) if [ "${2:-}" = --json ]; then shift 2; cmd_status_json "$@"; else cmd_status; fi ;;
   root) shift; cmd_root "$@" ;;
   verify-bulk-root) shift; cmd_verify_bulk_root "$@" ;;
   bulk-root) shift; cmd_bulk_root "$@" ;;
+  --interface) shift; cmd_interface "$@" ;;
+  reserve) shift; cmd_reserve "$@" ;;
+  release) shift; exec "$(dirname "${BASH_SOURCE[0]}")/fm-disk-room.sh" release-token "$@" ;;
+  site-config|health) exec python3 -I "$(dirname "${BASH_SOURCE[0]}")/fm-storage-roots.py" "$@" ;;
   install-timer) shift; cmd_install_timer "$@" ;;
   uninstall-timer) cmd_uninstall_timer ;;
   -h|--help|help) usage ;;

@@ -184,14 +184,15 @@ adm_record_read() {
   R_KIND=v2
 }
 
-# adm_collect DIR EXCLUDE POOL: strict read of every record in DIR (POOL c:
-# the Linux and C: pool, which holds linux, host-c and legacy records; POOL d:
-# a D: pool, which holds d and legacy D records). Prunes lapsed records and
-# sets ADM_SUM (charged to Linux and C:, or to the D: pool), ADM_HOSTC (C:
+# adm_collect DIR EXCLUDE POOL [keep]: strict read of every record in DIR
+# (POOL c: the Linux and C: pool, which holds linux, host-c and legacy records;
+# POOL d: a D: pool, which holds d and legacy D records). Prunes lapsed records
+# (with keep, a read-only caller, it skips them and deletes nothing) and sets
+# ADM_SUM (charged to Linux and C:, or to the D: pool), ADM_HOSTC (C:
 # only), ADM_LIST (for people) and ADM_KEYS (" volume:task:name " of live
 # token records). Returns 1 with ADM_ERR when a record cannot be trusted.
 adm_collect() {
-  local dir=$1 exclude=$2 pool=$3 f name t=''
+  local dir=$1 exclude=$2 pool=$3 keep=${4:-} f name t=''
   ADM_SUM=0 ADM_HOSTC=0 ADM_LIST='' ADM_KEYS=' ' ADM_ERR=''
   if [ ! -d "$dir" ]; then
     if [ -e "$dir" ] || [ -L "$dir" ]; then ADM_ERR="reservation pool $dir is not a directory"; return 1; fi
@@ -208,14 +209,14 @@ adm_collect() {
         [ "$name" = "token@$R_TOKEN" ] || { ADM_ERR="reservation $f does not match its token"; return 1; }
         [ -n "${ADM_BOOT:-}" ] || adm_boot || { ADM_ERR="cannot read the boot id"; return 1; }
         if [ "$R_BOOT" != "$ADM_BOOT" ] || ! adm_start_of "$R_PID" || [ "$ADM_START" != "$R_START" ]; then
-          rm -f -- "$f"; continue
+          [ -n "$keep" ] || rm -f -- "$f"; continue
         fi
         ADM_KEYS="$ADM_KEYS$R_VOLUME:$R_TASK:$R_NAME " ;;
       v2:*) ADM_ERR="reservation $f is in the wrong pool"; return 1 ;;
-      pid:*:*) pid_alive "$R_PID" "$R_START" || { rm -f -- "$f"; continue; } ;;
+      pid:*:*) pid_alive "$R_PID" "$R_START" || { [ -n "$keep" ] || rm -f -- "$f"; continue; } ;;
       ttl:*:*)
         [ -n "$t" ] || t=$(now)
-        [ "$t" -lt "$R_EXPIRES" ] || { rm -f -- "$f"; continue; } ;;
+        [ "$t" -lt "$R_EXPIRES" ] || { [ -n "$keep" ] || rm -f -- "$f"; continue; } ;;
     esac
     [ "$name" = "$exclude" ] && continue
     if [ "$R_VOLUME" = host-c ]; then

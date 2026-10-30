@@ -10,10 +10,12 @@
 # passes against the integrated implementation.
 #
 # Every case runs in a hermetic world: a PATH-shimmed df and stat answer fixture
-# sizes and the D: device, a fake powershell answers fixture CIM readings, sudo,
-# mount and the mount probe only log, and plain directories stand in for the
-# Linux disk, C: and D:. Nothing touches a real drive, a real reservation or a
-# Windows binary, and no Windows setting is read or written.
+# sizes and the D: device, uname -n answers the class map's host, fake
+# powershells answer fixture CIM readings, the C: terms measurer reads fixture
+# mount, swap, statfs and boot tables, sudo, mount and the mount probe only log,
+# and plain directories stand in for the Linux disk, C: and D:. Nothing touches
+# a real drive, a real reservation or a Windows binary, and no Windows setting is
+# read or written.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -129,6 +131,19 @@ case "$*" in
 esac
 SH
 cp "$FAKEBIN/powershell-stub" "$FAKEBIN/powershell.exe"
+# The C: terms measurer's PowerShell answers the fixture CIM reply.
+cat >"$FAKEBIN/ps-cterms" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${0##*/}" >>"$FAKE_CALLS/win.calls"
+[ "${FAKE_WIN_UP:-1}" = 1 ] || exit 1
+cat "$FAKE_WIN/reply"
+SH
+# uname -n is the host the facade asks site-config about.
+cat >"$FAKEBIN/uname" <<SH
+#!/usr/bin/env bash
+[ "\$*" = -n ] && { echo laptop; exit 0; }
+exec $(command -v uname) "\$@"
+SH
 cat >"$FAKEBIN/wevtutil-stub" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "${0##*/}" >>"$FAKE_CALLS/win.calls"
@@ -156,14 +171,16 @@ in_world() {
     FAKE_WIN_UP="${FAKE_WIN_UP-1}" FAKE_CALLS="$OBS" \
     FM_STORAGE_CONFIG="$CFG" FM_STORAGE_STATE="$SST" FM_STORAGE_MNT="$MNT" FM_STORAGE_MOUNTINFO="$IN/mountinfo" \
     FM_STORAGE_NOTIFY="$OBS/notify" FM_STORAGE_MOUNT_PROBE="$FAKEBIN/mount-probe" FM_STORAGE_NOW="$NOW" \
-    FM_STORAGE_PS_BACKOFF='0 0' \
-    FM_STORAGE_CLASS_MAP="$CLASS_MAP" FM_STORAGE_SITE_POLICY="$SITE_POLICY" \
+    FM_STORAGE_PS_BACKOFF='0 0' FM_STORAGE_MACHINE_ID="$IN/machine-id" \
+    FM_STORAGE_C_HOST="$HOSTC" FM_STORAGE_C_LINUX_ROOT="$LNX" FM_STORAGE_C_PROC="$IN/proc" \
+    FM_STORAGE_C_STATFS="$IN/statfs" FM_STORAGE_C_NOW="$NOW" FM_STORAGE_C_POWERSHELL="$FAKEBIN/ps-cterms" \
+    FM_DISK_ROOM_POLICY="$SITE_POLICY" FM_DISK_ROOM_LOCK_WAIT="${FM_DISK_ROOM_LOCK_WAIT-30}" \
     FM_DISK_ROOM_HOST="$HOSTC" FM_DISK_ROOM_ROOT="$LNX" FM_DISK_ROOM_STATE="$RST" \
     FM_DISK_ROOM_MB_GROUPS="$IN/mb_groups" FM_DISK_ROOM_DEV_SIZE=$(( 500 * GIB )) \
     FM_DISK_ROOM_WEVTUTIL=wevtutil-stub FM_DISK_ROOM_POWERSHELL=powershell-stub \
     FM_DISK_ROOM_RESULTS_ROOT="$CFG/results-root" FM_DISK_ROOM_SAMPLES="$IN/no-samples" \
     FM_DISK_ROOM_C_FREE_MIN=off FM_DISK_ROOM_D_FREE_MIN=off FM_DISK_ROOM_GROWTH_MAX=off \
-    FM_DISK_ROOM_WSLCONFIG="$IN/wslconfig" FM_DISK_ROOM_MEMINFO="$IN/meminfo" FM_DISK_ROOM_BOOT_ID="$IN/boot_id" \
+    FM_DISK_ROOM_WSLCONFIG="$WSLCONFIG" FM_DISK_ROOM_MEMINFO="$IN/meminfo" FM_DISK_ROOM_BOOT_ID="$IN/boot_id" \
     FM_DISK_ROOM_NOW="$NOW" FM_DISK_ROOM_MARGIN=20G FM_DISK_ROOM_BULK_MARGIN=50G \
     "$@"
 }
@@ -171,14 +188,20 @@ s() { in_world "$S" "$@"; }
 room() { in_world "$ROOM" "$@"; }
 
 # --- integration ports --------------------------------------------------------
-# The class map, the site policy and the Windows CIM reply are formats the
-# roots and c-terms pieces own; these functions are the only place this suite
-# writes them, so binding the suite to the landed formats edits this block alone.
+# The class map, the site policies and the Windows CIM reply are formats the
+# roots, admission and c-terms pieces own; these functions are the only place
+# this suite writes them.
 # Every expectation below is built from the world, never read back from these.
 CLASS_MAP="$CFG/class-map.json"
-SITE_POLICY="$CFG/site-policy.json"
+SITE_POLICY="$CFG/storage-admission"
+C_POLICY="$CFG/c-policy.json"
+WSLCONFIG="$HOSTC/Users/u/.wslconfig"
 POLICY_ID=fm-storage-v2-test-policy
 PF_BUDGET=$(( 2 * GIB ))
+MIB=1048576
+MID=0f1e2d3c4b5a69788796a5b4c3d2e1f0
+DEV=$(python3 -I -c 'import os, sys; s = os.stat(sys.argv[1]); print("%d:%d" % (os.major(s.st_dev), os.minor(s.st_dev)))' "$TMP_ROOT") \
+  || fail "read the temp root's device"
 
 root_json() { printf '"%s":{"host":"%s","path":"%s","transport":"local","volume":"%s"}' "$1" "$2" "$3" "$4"; }
 
@@ -205,26 +228,43 @@ port_class_map() {
     malformed) printf '{"schema":"fm-storage-class-map/v1","roots":\n' >"$CLASS_MAP"; return ;;
     *) fail "unknown class-map variant $1" ;;
   esac
-  printf '{"schema":"fm-storage-class-map/v1","hosts":{"laptop":{"aliases":["localhost"]}},"metadata":"xp-meta","roots":{%s},"classes":{%s}}\n' \
-    "$roots" "$classes" >"$CLASS_MAP"
+  printf '{"schema":"fm-storage-class-map/v1","hosts":{"laptop":{"machine_id":"%s","aliases":["localhost"]}},"roots":{%s},"classes":{%s}}\n' \
+    "$MID" "$roots" "$classes" >"$CLASS_MAP"
 }
 
-# port_site_policy VARIANT: the approved site policy that activates v2 C: terms.
+# port_site_policy VARIANT: the admission policy that turns on strict C: terms
+# through the landed measurer, and its C: policy with the approved pagefile
+# growth budget (fm-storage-c-policy/v1).
 port_site_policy() {
+  local budget=",\"pagefile_system_managed_growth_bytes\":$PF_BUDGET"
   case "$1" in
-    default) printf '{"schema":"fm-storage-site-policy/v1","policy_id":"%s","pagefile":{"operator_growth_reservation_bytes":%s}}\n' \
-      "$POLICY_ID" "$PF_BUDGET" >"$SITE_POLICY" ;;
-    no-pagefile-budget) printf '{"schema":"fm-storage-site-policy/v1","policy_id":"%s"}\n' "$POLICY_ID" >"$SITE_POLICY" ;;
-    none) rm -f "$SITE_POLICY" ;;
+    default) ;;
+    no-pagefile-budget) budget='' ;;
+    none) rm -f "$SITE_POLICY" "$C_POLICY"; return ;;
     *) fail "unknown site-policy variant $1" ;;
   esac
+  printf '%s\n' fm-storage-admission-policy/v1 admission=on c-terms=strict \
+    "c-terms-command=$ROOT/bin/fm-storage-c-terms.py" c-terms-arg=measure c-terms-arg=--linux-pending \
+    c-terms-arg=0 c-terms-arg=--policy "c-terms-arg=$C_POLICY" c-terms-bounded=accept >"$SITE_POLICY"
+  printf '{"schema":"fm-storage-c-policy/v1","policy_id":"%s","approval":"fixture approval"%s}\n' \
+    "$POLICY_ID" "$budget" >"$C_POLICY"
 }
 
-# port_windows: the fixture CIM replies from the VSS_* and PF_* settings.
+# port_windows: the fixture CIM replies from the VSS_* and PF_* settings, in
+# MiB for the pagefile as Win32_PageFileSetting and Win32_PageFileUsage give.
 port_windows() {
   mkdir -p "$IN/win"
+  {
+    printf '%s\n' "VOLUME|\\\\?\\Volume{1}\\" "SHADOW|$VSS_CAP|$VSS_ALLOC|$VSS_USED" VSS-END
+    if [ "$PF_MODE" = system-managed ]; then
+      printf '%s\n' 'PAGEFILE-AUTO|True' "PAGEFILE-USAGE|C:\\pagefile.sys|$(( PF_ALLOC / MIB ))"
+    else
+      printf '%s\n' 'PAGEFILE-AUTO|False' "PAGEFILE-SETTING|C:\\pagefile.sys|$(( PF_ALLOC / MIB ))|$(( PF_MAX / MIB ))" \
+        "PAGEFILE-USAGE|C:\\pagefile.sys|$(( PF_ALLOC / MIB ))"
+    fi
+    printf '%s\n' PAGEFILE-END END
+  } >"$IN/win/reply"
   printf 'SHADOW|%s|%s|%s\r\nEND\r\n' "$VSS_CAP" "$VSS_ALLOC" "$VSS_USED" >"$IN/win/shadow"
-  printf 'PAGEFILE|%s|%s|%s|C:\\pagefile.sys\r\nEND\r\n' "$PF_MODE" "$PF_ALLOC" "$PF_MAX" >"$IN/win/pagefile"
   : >"$IN/win/events"
 }
 
@@ -242,12 +282,22 @@ world() {
   mkdir -p "$W/home/config" "$W/tmp" "$CFG" "$SST" "$RST" "$IN/df" "$OBS" \
     "$LNX/xp-meta" "$DL/tetjet-results" "$DL/xp-units" "$(dirname "$VHDX")" "$(dirname "$SWAPF")"
   NOW=$T0
+  printf 'vhdxfile' >"$VHDX"
   truncate -s $(( 300 * GIB )) "$VHDX"
   truncate -s $(( 1 * GIB )) "$SWAPF"
+  # The measurer's view of this VM boot: the Linux ext4 root, the 9p C: mount,
+  # a 4 GiB swap disk and a boot after every fixture file's mtime.
+  mkdir -p "$IN/proc/self"
+  printf '170 155 8:64 / %s rw,relatime - ext4 /dev/sde rw\n' "$LNX" >"$IN/proc/self/mountinfo"
+  printf '220 170 0:100 / %s rw,noatime - 9p C:\\134 rw,aname=drvfs;path=C:\\134;uid=1000\n' "$HOSTC" >>"$IN/proc/self/mountinfo"
+  printf '%s 8:64 %s\n%s 0:100 %s\n' "$LNX" $(( 400 * GIB )) "$HOSTC" $(( 200 * GIB )) >"$IN/statfs"
+  printf 'Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/sdc                                partition\t4194304\t\t0\t\t-2\n' >"$IN/proc/swaps"
+  printf 'cpu  1 2 3\nbtime 4000000000\nprocesses 10\n' >"$IN/proc/stat"
+  printf '%s\n' "$MID" >"$IN/machine-id"
   set_df "$LNX" avail $(( 400 * GIB )); set_df "$LNX" used $(( 100 * GIB )); set_df "$LNX" size $(( 500 * GIB ))
   set_df "$HOSTC" avail $(( 200 * GIB )); set_df "$HOSTC" size $(( 1000 * GIB ))
   set_df "$MNT/d" avail $(( 500 * GIB )); set_df "$MNT/d" size $(( 2000 * GIB ))
-  printf '[wsl2]\nmemory=16GB\nswap=4GB\n' >"$IN/wslconfig"
+  printf '[wsl2]\nmemory=16GB\nswap=4GB\nswapFile=C:\\\\Users\\\\u\\\\AppData\\\\Local\\\\Temp\\\\{s}\\\\swap.vhdx\n' >"$WSLCONFIG"
   printf 'MemTotal:       16777216 kB\n' >"$IN/meminfo"
   printf 'boot-one\n' >"$IN/boot_id"
   # A proven D: publication, its remembered identity and its 9p mount.
@@ -255,7 +305,7 @@ world() {
   printf 'uniqueid=volume-d\n' >"$CFG/ssd-identity"
   printf '%s/tetjet-results/{task}\nformat=lattice-storage-results-root/v1\nactive=ssd\nstate=ok\nssd_letter=D\nssd_fs=exFAT\nssd_id=volume-d\nssd_marker=%s/.lattice-storage-id\nssd_device=999\nssd_free_bytes=%s\nchecked_at=%s\n' \
     "$DL" "$DL" $(( 500 * GIB )) $(( T0 - 10 )) >"$CFG/results-root"
-  printf '1 2 0:1 / %s rw - 9p D: rw\n' "$MNT/d" >"$IN/mountinfo"
+  printf '%s\n' "1 0 $DEV / / rw - ext4 /dev/sdc rw" "2 1 $DEV / $MNT/d rw - 9p D:\\134 rw" >"$IN/mountinfo"
   port_marker "$LNX/xp-meta" xp-meta
   port_marker "$DL/xp-units" xp-units
   VSS_CAP=$(( 20 * GIB )) VSS_ALLOC=$(( 5 * GIB )) VSS_USED=$(( 3 * GIB ))
@@ -673,24 +723,28 @@ test_reserve_offline_and_owner_state() {
 test_reserve_owner_busy() {
   world
   holder
-  local locker i
+  local locker
   reserve d result-class job held 5
   admitted "a booking released while the lock is busy"
   printf '%s\n' "$TOKEN" >"$OBS/held.token"
-  flock "$RST/.lock" sleep 600 &
+  # One process holds the lock, so killing it frees the lock and leaves nothing.
+  ( exec 9>"$RST/.lock" && flock 9 && exec sleep 600 ) </dev/null >/dev/null 2>&1 &
   locker=$!
   HOLDERS+=("$locker")
-  for i in $(seq 1 600); do
+  for _ in $(seq 1 600); do
     flock -n "$RST/.lock" true || break
     sleep 0.1
   done
   ! flock -n "$RST/.lock" true || fail "the fixture holds the owner lock"
+  # The owner gives up on a busy lock after FM_DISK_ROOM_LOCK_WAIT seconds.
+  local FM_DISK_ROOM_LOCK_WAIT=1
   ( s reserve --volume d --class result-class job --name u --bytes 1 --pid "$HOLD" \
       >"$OBS/busy.out" 2>"$OBS/busy.err"; echo $? >"$OBS/busy.rc" ) &
   local pr=$!
   ( s release job --token "$(cat "$OBS/held.token")" >"$OBS/rbusy.out" 2>"$OBS/rbusy.err"; echo $? >"$OBS/rbusy.rc" ) &
   local pl=$!
   wait "$pr"; wait "$pl"
+  unset FM_DISK_ROOM_LOCK_WAIT
   expect_code 75 "$(cat "$OBS/busy.rc")" "a booking while the owner lock stays busy"
   assert_equals "" "$(cat "$OBS/busy.out")" "a busy-lock booking prints no token"
   one_line "$OBS/busy.err" "busy-lock booking"
@@ -907,13 +961,13 @@ test_c_terms_fail_closed() {
   # and an unreadable configuration is unknown rather than zero.
   world
   holder
-  chmod a-r "$IN/wslconfig"
+  chmod a-r "$WSLCONFIG"
   if [ "$(id -u)" != 0 ]; then
     status
     expect_code 75 "$SRC" "status with an unreadable .wslconfig"
     assert_equals unknown "$(j .c_terms.swap_vhdx.state)" "an unreadable swap configuration is unknown"
   fi
-  chmod a+r "$IN/wslconfig"
+  chmod a+r "$WSLCONFIG"
   # Missing C: mount in WSL mode is not Linux-only room.
   world
   rm -f "$IN/df/$(key "$HOSTC").avail"
@@ -1170,7 +1224,7 @@ test_legacy_unchanged_without_policy() {
 test_inert_without_configuration() {
   world
   holder
-  rm -f "$CLASS_MAP" "$SITE_POLICY"
+  rm -f "$CLASS_MAP" "$SITE_POLICY" "$C_POLICY"
   local before
   before=$(snap)
   cap s reserve --volume d --class result-class job --name unit --bytes 1 --pid "$HOLD"

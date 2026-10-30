@@ -6,9 +6,9 @@ metadata:
   internal: true
   sources:
     - path: docs/storage.md
-      sha256: bbca8ec180d14d614c1f0f54224fc62b09ce3a3e21a769aa9db0721590be66b4
+      sha256: 353429ef953423c0e49b32393e83a113d3f3eb3c1da8f917d53ba72459d7a52a
     - path: bin/fm-storage.sh
-      sha256: 7a2a13928bbc6c4848e25702b0663def23e0d55e455eb7312ecfb6434fd64d27
+      sha256: 035a87a5a19fb7521ce5a5b757bd89232a3c1fb24d2010feb9800bc0eaaaf86d
     - path: bin/fm-pack.sh
       sha256: 0802fc4a710b69123c12aea1971479ce568fd483a6b61a47dcb4a5f3779151fb
     - path: bin/fm-pack-retry.c
@@ -32,11 +32,12 @@ Each rule has one owner: `docs/storage.md` for formats, states, reader rules and
 
 ## Where each rule lives
 
-- `docs/storage.md`: the results-root file `lattice-storage-results-root/v1`, the states, the reader rules, mandatory bulk admission, named roots, when to pack, and retention rule R2.
+- `docs/storage.md`: the results-root file `lattice-storage-results-root/v1`, the states, the reader rules, mandatory bulk admission, named roots, the class map and site roots, D: health, the draft `fm-storage/v2` consumer contract with its C: terms, when to pack, and retention rule R2.
 - `bin/fm-storage.sh` header: commands, files, environment.
 - `bin/fm-spawn.sh` header: when a worker launch carries `LATTICE_STORAGE_TOOL`, the absolute path workers resolve `fm-storage.sh` from, since it is not on their `PATH`.
 - `bin/fm-pack.sh` header: pack, verify, verify-tar (the G5-equivalent tar/image parity check), restore and release steps, the read-only candidates report and its pack states, sidecar fields, the release guards' exact checks, exit codes, the ENOMEM retry shim (`bin/fm-pack-retry.c`) and the machine-wide pack slot another heavy D: tool shares.
-- `docs/disk-room.md` and `bin/fm-disk-room.sh`: the reservation pools and the runway alerts this component admits through.
+- `bin/fm-storage-roots.py` header: `site-config` and `health`, their ordered checks, codes and environment.
+- `docs/disk-room.md` and `bin/fm-disk-room.sh`: the reservation pools, the token admissions and `admission-status` behind `fm-storage/v2`, and the runway alerts this component admits through.
 
 ## Long-term-correct patterns
 
@@ -58,6 +59,8 @@ Each rule has one owner: `docs/storage.md` for formats, states, reader rules and
 - Silently replacing a live reservation name (`docs/storage.md`: "A live reservation name is never silently replaced").
 - Deleting a packed source anywhere but `fm-pack.sh release`, skipping or weakening an R2 guard, or deleting before `verify --against` passes (`docs/storage.md` "Retention rule R2"; `bin/fm-pack.sh` header).
 - Reading a `verify-tar` pass as authority to delete a tar or a source, building its expectation from the tar or image it checks rather than from committed records, or weakening the whole-tar digest or the member comparison in either direction (`bin/fm-pack.sh` header, verify-tar).
+- Making `--interface` claim `fm-storage/v2` from a build whose `tests/fm-storage-v2.test.sh` has not passed, calling the contract final before the reviewed phase-D design, or letting a v2 command act before its class map and site policy exist (`docs/storage.md` "fm-storage/v2 (draft)").
+- Resolving a v2 class to a root anywhere but `site-config`, or a v2 admission with a caller-chosen `--root` (`docs/storage.md` "Class map and site roots").
 - Changing the release window default without a recorded decision (`docs/storage.md`: "The default window is zero; changing it requires a new recorded decision").
 - Overwriting a committed unit, reusing stale staging, or reading an unknown unit format leniently (`bin/fm-pack.sh` header exit 2 cases).
 - Adding an index, catalog or second manifest beside the sidecars (`docs/storage.md`: "They are the whole manifest; there is no index").
