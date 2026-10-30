@@ -274,9 +274,8 @@ These properties must hold:
 - Wedge detection is bounded-latency, not lossy.
 - Declared external waits are rechecked on a separate, bounded, condition-aware cadence rather than being mislabeled as wedges; items held for the captain are not rechecked while the posture record exists.
 - The catch-all scan backs up the keyword classifier.
-- The daemon preserves a single-instance portable lock, crash-loop backoff,
-  a pane-gone guard, and a signal-trapped shutdown that flushes buffered
-  escalations before exit.
+- The daemon preserves a single-instance portable lock, crash-loop backoff, a pane-gone guard, and a signal-trapped shutdown that flushes buffered escalations before exit.
+  Every wait in its loop is interruptible, so a stop takes effect at once even while it idles in a backoff or housekeeping tick, well inside the stop path's 10 s budget, and leaves no sleep child behind.
 
 `FM_INJECT_SKIP` (default `heartbeat`) force-self-handles matching kinds,
 overriding classification.
