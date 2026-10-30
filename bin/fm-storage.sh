@@ -660,7 +660,7 @@ v2_say() {
 }
 
 cmd_interface() {
-  [ "$#" -eq 0 ] || { v2_say refused invalid-argument "--interface takes no operand"; return; }
+  :
   printf '%s\n' "$V2_INTERFACE"
 }
 
