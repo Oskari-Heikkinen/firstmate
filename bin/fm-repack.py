@@ -57,6 +57,8 @@ RENAME_EXCHANGE = 2
 AT_FDCWD = -100
 TMP_RE = re.compile(r"^\.fm-repack-[0-9]+-[0-9]+\.tmp$")
 EXIT_FAILED, EXIT_USAGE, EXIT_WAIT = 1, 2, 75
+SLOT_POLL = 0.5   # seconds between tries while another holds the pack slot
+STOP_GRACE = 20   # seconds a stopped batch gets to reach a file boundary before SIGKILL
 SKIP_ORDER = ("young", "baseline", "repacked", "empty", "hard-linked", "not-owned", "sqlite",
               "name", "other-device", "open", "changed", "inode-flags", "metadata",
               "directory", "opened-during-swap", "vanished", "interrupted")
@@ -71,6 +73,10 @@ class FileSkip(Exception):
     def __init__(self, reason, detail=""):
         Exception.__init__(self, reason)
         self.reason, self.detail = reason, detail
+
+
+class Stopped(Exception):
+    """A SIGTERM or SIGINT before the batch started: nothing was written."""
 
 
 class FileFailed(Exception):
@@ -512,28 +518,131 @@ def recover(st):
     return removed
 
 
-def take_pack_slot(st):
-    """Hold the one machine-wide pack slot fm-pack.sh shares; wait while another pack or repack holds it.
+class RunStop:
+    """SIGTERM and SIGINT during 'run', installed once the home's lock is held.
 
-    -> the fd that holds it. The slot is a flock on one file under the user's
-    cache, the pattern of the ShellCheck guard; it is taken after the home's
-    lock, never before it.
+    Before the batch starts, a signal ends the run at once (Stopped), except in a
+    held section, which finishes first. Once the batch runs, it is forwarded as
+    SIGTERM to the batch's own process group, so the batch stops at its next file
+    boundary; STOP_GRACE seconds later the group is killed, which the per-file
+    protocol survives like any crash.
     """
+
+    def __init__(self):
+        self.signum, self.at, self.held, self.child = 0, 0.0, False, None
+        self.saved = [(n, signal.signal(n, self.on_signal)) for n in (signal.SIGTERM, signal.SIGINT)]
+
+    def name(self):
+        return signal.Signals(self.signum).name
+
+    def on_signal(self, signum, _frame):
+        if not self.signum:
+            self.signum, self.at = signum, time.monotonic()
+        if self.child is not None:
+            self.forward(signal.SIGTERM)
+        elif not self.held:
+            raise Stopped(self.name())
+
+    def forward(self, sig):
+        try:
+            os.killpg(self.child.pid, sig)
+        except ProcessLookupError:
+            pass
+
+    def hold(self):
+        self.held = True
+
+    def unhold(self):
+        self.held = False
+        if self.signum and self.child is None:
+            raise Stopped(self.name())
+
+    def start(self, child):
+        self.child = child
+        if self.signum:
+            self.forward(signal.SIGTERM)
+
+    def overdue(self):
+        return self.signum and time.monotonic() - self.at > STOP_GRACE
+
+    def restore(self):
+        for n, h in self.saved:
+            signal.signal(n, h)
+
+
+def slot_wait():
+    raw = env("FM_PACK_SLOT_WAIT", "900")
+    if not re.match(r"^[0-9]{1,7}$", raw):
+        raise Refusal("FM_PACK_SLOT_WAIT must be whole seconds, not %r" % raw)
+    return int(raw)
+
+
+def slot_holder(fd):
+    """Line 1 of the slot file, read through the open fd and bounded."""
+    try:
+        line = os.pread(fd, 4096, 0).split(b"\n", 1)[0].decode("utf-8", "replace")
+    except OSError:
+        line = ""
+    return line or "a holder that has not named itself"
+
+
+def proc_start(pid):
+    """Field 22 of /proc/PID/stat, the start time that makes pid reuse visible."""
+    try:
+        with open("/proc/%d/stat" % pid, "rb") as f:
+            fields = f.read(4096).rsplit(b") ", 1)[1].split()
+        return fields[19].decode("ascii") if fields[19].isdigit() else ""
+    except (OSError, IndexError):
+        return ""
+
+
+def take_pack_slot(st, home):
+    """Hold the one machine-wide pack slot fm-pack.sh shares, waiting at most FM_PACK_SLOT_WAIT seconds.
+
+    -> the fd that holds it, or None when another holder kept it that long. The
+    slot is a flock on one file under the user's cache, taken after the home's
+    lock, never before it; line 1 names its holder in fm-pack.sh's format, so
+    'fm-pack.sh stop' can stop this run too.
+    """
+    wait = slot_wait()
     path = env("FM_PACK_SLOT_LOCK") or os.path.join(os.path.expanduser("~"), ".cache", "fm-pack", "slot.lock")
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        if os.path.lexists(path) and not stat.S_ISREG(os.stat(path).st_mode):
+            raise Refusal("the machine-wide pack slot %s is not a regular file" % path)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NONBLOCK, 0o600)
     except OSError as e:
         raise Refusal("cannot open the machine-wide pack slot %s: %s" % (path, e.strerror))
+    deadline, said = time.monotonic() + wait, False
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            pass
+        if not said:
+            text = "another pack or repack holds the machine-wide pack slot %s (at most %d s), held by %s" % (
+                path, wait, slot_holder(fd))
+            st.log("waiting: %s; the run starts when it is free" % text)
+            say("waiting: " + text)
+            said = True
+        left = deadline - time.monotonic()
+        if left <= 0:
+            text = "the machine-wide pack slot %s is still held after %d s by %s" % (path, wait, slot_holder(fd))
+            st.log("held: %s; nothing was written" % text)
+            say("held: %s; nothing was written" % text)
+            os.close(fd)
+            return None
+        time.sleep(min(SLOT_POLL, left))
+    if said:
+        st.log("pack slot %s is free; the run goes on" % path)
+    line = "pid=%d start=%s started=%d command=fm-repack run --home %s\n" % (
+        os.getpid(), proc_start(os.getpid()), int(time.time()), home.replace("\n", " "))
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return fd
-    except BlockingIOError:
-        pass
-    st.log("waiting: another pack or repack holds the machine-wide pack slot %s; the run starts when it is free" % path)
-    say("waiting: another pack or repack holds the machine-wide pack slot %s" % path)
-    fcntl.flock(fd, fcntl.LOCK_EX)
-    st.log("pack slot %s is free; the run goes on" % path)
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, line.encode("utf-8", "surrogateescape"), 0)
+    except OSError as e:
+        st.log("cannot name this holder in the pack slot %s: %s" % (path, e.strerror))
     return fd
 
 
@@ -560,14 +669,33 @@ def cmd_run(home, max_bytes, script_dir):
             say("held: another fm-repack run for this home is active")
             return EXIT_WAIT
         raise
-    slotfd = take_pack_slot(st)
+    stop = RunStop()
+    try:
+        return run_held(st, home, trees, max_bytes, script_dir, stop)
+    except Stopped as e:
+        st.log("stopped by %s before the batch started; nothing was written" % e)
+        say("stopped by %s before the batch started; nothing was written" % e)
+        return EXIT_FAILED
+    finally:
+        stop.restore()
+
+
+def run_held(st, home, trees, max_bytes, script_dir, stop):
+    """cmd_run once the home's lock is held."""
+    slotfd = take_pack_slot(st, home)
+    if slotfd is None:
+        return EXIT_WAIT
+    stop.hold()  # recovery finishes before a stop takes effect
     removed = recover(st)
+    stop.unhold()
     if removed:
         say("recovered %d temporary file(s) an interrupted run left" % removed)
     at = now()
     baseline = st.read_baseline()
     ledger = st.read_ledger()
     scan = Scan(trees, at, baseline, set(ledger)).run()
+    # Past the scan, a stop waits for the ledger or goes to the batch, which ends at a file boundary.
+    stop.hold()
     batch = scan.candidates
     if max_bytes is not None:
         total, cut = 0, 0
@@ -606,9 +734,20 @@ def cmd_run(home, max_bytes, script_dir):
            io_cap, "--strict", "--", sys.executable, "-I", os.path.abspath(__file__),
            "exec", "--home", home, "--run-dir", rundir]
     child_env = dict(os.environ, FM_HOME=home)
-    # The batch inherits the slot, so it stays held while any copy runs.
-    proc = subprocess.run(cmd, stderr=subprocess.PIPE, env=child_env, pass_fds=(slotfd,))
-    err = proc.stderr.decode("utf-8", "replace").strip()
+    # The batch inherits the slot, so it stays held while any copy runs, and gets its
+    # own process group, so a stop reaches all of it and nothing else.
+    proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, env=child_env, pass_fds=(slotfd,),
+                            start_new_session=True)
+    stop.start(proc)
+    while True:
+        try:
+            errb = proc.communicate(timeout=1)[1]
+            break
+        except subprocess.TimeoutExpired:
+            if stop.overdue():
+                st.log("stop: the batch did not reach a file boundary within %d s; killed" % STOP_GRACE)
+                stop.forward(signal.SIGKILL)
+    err = errb.decode("utf-8", "replace").strip()
     result = read_result(rundir)
     if proc.returncode == EXIT_WAIT and result is None:
         line = err.splitlines()[-1] if err else "fm-disk-room exited 75"
@@ -618,6 +757,12 @@ def cmd_run(home, max_bytes, script_dir):
         return EXIT_WAIT
     if err:
         sys.stderr.write(err + "\n")
+    if result is None and stop.signum:
+        st.log("stopped by %s: the batch ended before it reported (exit %d)" % (stop.name(), proc.returncode))
+        say("stopped by %s: the batch ended before it reported (exit %d); every path holds its original "
+            "or its verified copy, and the next run removes any temporary file" % (stop.name(), proc.returncode))
+        remove_rundir(rundir)
+        return EXIT_FAILED
     if result is None:
         st.log("failed: the batch did not start or died before it reported (exit %d): %s" % (
             proc.returncode, err.splitlines()[-1] if err else "no message"))
@@ -736,6 +881,8 @@ class Batch:
         finally:
             lf.close()
             jf.close()
+        if self.stop and outcome == "done":  # a stop that ended the last file still reports interrupted
+            outcome, detail = "interrupted", "stopped by a signal; a rerun continues"
         write_atomic(os.path.join(self.rundir, "result.json"), json.dumps(dict(
             outcome=outcome, detail=detail, repacked=self.repacked, bytes=self.bytes, skips=self.skips)))
         return 0 if outcome == "done" else EXIT_FAILED
@@ -864,6 +1011,8 @@ class Batch:
             while True:
                 if not self.lease_ok(fd):
                     raise FileSkip("open", "opened during the compare")
+                if self.stop:
+                    raise FileSkip("interrupted")
                 a, b = os.pread(fd, CHUNK, off), os.pread(rfd, CHUNK, off)
                 if a != b:
                     raise FileFailed("the copy differs from the original at byte %d" % off)

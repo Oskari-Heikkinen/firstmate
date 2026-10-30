@@ -15,7 +15,8 @@ if [ "$(uname -s)" != Linux ] || ! command -v python3 >/dev/null 2>&1; then
   exit 0
 fi
 
-unset FM_REPACK_NOW FM_REPACK_DISK_ROOM FM_IO_CAP FM_REPACK_TEST_CRASH FM_REPACK_TEST_DURING_COPY FM_PACK_SLOT_LOCK
+unset FM_REPACK_NOW FM_REPACK_DISK_ROOM FM_IO_CAP FM_REPACK_TEST_CRASH FM_REPACK_TEST_DURING_COPY FM_PACK_SLOT_LOCK \
+  FM_PACK_SLOT_WAIT
 TMP_ROOT=$(fm_test_tmproot fm-repack)
 REPACK="$ROOT/bin/fm-repack.sh"
 NOW=1793000000 # 2026-10-26 09:33 UTC
@@ -358,6 +359,110 @@ SH
   pass "a run waits for the machine-wide pack slot and holds it through its batch"
 }
 
+# repack_bg OUT ARGS...: a run in the background whose $! is the run itself
+# (fm-repack.sh execs python), so a test can signal it directly.
+repack_bg() {
+  local out=$1; shift
+  (exec env FAKE_LOG="$H.log" FM_REPACK_NOW=$NOW FM_REPACK_DISK_ROOM="$TMP_ROOT/disk-room" FM_IO_CAP="$TMP_ROOT/io-cap" \
+    FM_PACK_SLOT_LOCK="$H.slot" "$REPACK" "$@" --home "$H") </dev/null >"$out" 2>&1 5>&- &
+}
+
+# wait_out FILE TEXT: wait until FILE holds TEXT; 60 s only bounds a hang.
+wait_out() {
+  local start=$SECONDS
+  until grep -qF -- "$2" "$1" 2>/dev/null; do
+    [ $((SECONDS - start)) -lt 60 ] || return 1
+    sleep 0.1
+  done
+}
+
+test_pack_slot_wait_is_bounded() {
+  local a out rc=0 pid start
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "skip: no flock"
+    return 0
+  fi
+  H=$(new_home slotbusy)
+  cold "$H/data/a"
+  printf 'data\n' >"$H/config/repack-trees"
+  a=$(ino "$H/data/a")
+  exec 5>"$H.slot"
+  flock 5
+  start=$SECONDS
+  out=$(FM_PACK_SLOT_WAIT=1 repack run 2>&1 5>&-) || rc=$?
+  expect_code 75 "$rc" "a run whose slot stays held past its bound holds with 75: $out"
+  [ $((SECONDS - start)) -lt 120 ] || fail "the run waited far past its 1 s bound"
+  assert_contains "$out" "waiting: another pack or repack holds the machine-wide pack slot $H.slot (at most 1 s)" "one waiting line names the bound"
+  assert_contains "$out" "held: the machine-wide pack slot $H.slot is still held after 1 s by" "the held line names the slot and bound"
+  assert_contains "$out" "nothing was written" "the held line says nothing was written"
+  assert_equals "" "$(cat "$H.log")" "no admission is asked when the slot stays held"
+  assert_equals "$a" "$(ino "$H/data/a")" "nothing is rewritten when the slot stays held"
+  rc=0
+  out=$(FM_PACK_SLOT_WAIT=soon repack run 2>&1 5>&-) || rc=$?
+  expect_code 2 "$rc" "a bound that is not whole seconds is refused"
+  assert_contains "$out" "FM_PACK_SLOT_WAIT must be whole seconds" "the refusal names the variable"
+
+  # A stop while waiting ends the run at once with nothing written.
+  FM_PACK_SLOT_WAIT=600 repack_bg "$H.out" run
+  pid=$!
+  wait_out "$H.out" "waiting: another pack or repack holds" || fail "the run never said it waits: $(cat "$H.out")"
+  kill -TERM "$pid"
+  rc=0
+  wait "$pid" || rc=$?
+  expect_code 1 "$rc" "a run stopped while waiting exits 1"
+  assert_contains "$(cat "$H.out")" "stopped by SIGTERM before the batch started; nothing was written" "the run says it stopped"
+  assert_equals "$a" "$(ino "$H/data/a")" "a run stopped while waiting rewrites nothing"
+  exec 5>&-
+  pass "a run waits at most its bound for the pack slot, then holds with 75, and stops at once while waiting"
+}
+
+test_pack_stop_ends_a_batch() {
+  local a b sa sb out rc=0 pid start
+  if ! command -v flock >/dev/null 2>&1; then
+    echo "skip: no flock"
+    return 0
+  fi
+  H=$(new_home slotstop)
+  cold "$H/data/a"
+  cold "$H/data/b"
+  printf 'data\n' >"$H/config/repack-trees"
+  a=$(ino "$H/data/a") b=$(ino "$H/data/b")
+  sa=$(sha256sum <"$H/data/a") sb=$(sha256sum <"$H/data/b")
+  cat >"$TMP_ROOT/copy-wait" <<SH
+#!/usr/bin/env bash
+: >"$H.copying"
+n=0
+until [ -e "$H.never" ] || [ "\$n" -ge 6000 ]; do sleep 0.05; n=\$((n + 1)); done
+SH
+  chmod +x "$TMP_ROOT/copy-wait"
+  FM_REPACK_TEST_DURING_COPY="$TMP_ROOT/copy-wait" repack_bg "$H.out" run
+  pid=$!
+  start=$SECONDS
+  until [ -e "$H.copying" ]; do
+    kill -0 "$pid" 2>/dev/null || fail "the run ended before its first copy: $(cat "$H.out")"
+    [ $((SECONDS - start)) -lt 60 ] || fail "the run never reached its first copy"
+    sleep 0.1
+  done
+  out=$(FM_PACK_SLOT_LOCK="$H.slot" bash "$ROOT/bin/fm-pack.sh" stop --wait 120 2>&1) || rc=$?
+  expect_code 0 "$rc" "fm-pack.sh stop stops a repack that holds the slot: $out"
+  assert_contains "$out" "command=fm-repack run --home $H" "stop names the repack it signalled"
+  rc=0
+  wait "$pid" || rc=$?
+  expect_code 1 "$rc" "a stopped batch ends the run with 1"
+  assert_contains "$(cat "$H.out")" "run interrupted: stopped by a signal" "the run reports the batch interrupted"
+  assert_equals "$sa" "$(sha256sum <"$H/data/a")" "a keeps its content"
+  assert_equals "$sb" "$(sha256sum <"$H/data/b")" "b keeps its content"
+  assert_equals "$a" "$(ino "$H/data/a")" "a stopped batch swaps no copy in for a"
+  assert_equals "$b" "$(ino "$H/data/b")" "a stopped batch swaps no copy in for b"
+  assert_equals 0 "$(temps "$H/data")" "no temporary file is left"
+  rc=0
+  out=$(repack run 2>&1) || rc=$?
+  expect_code 0 "$rc" "a rerun after the stop continues: $out"
+  assert_contains "$out" "repacked 2 files" "the rerun repacks both files"
+  assert_not_equals "$a" "$(ino "$H/data/a")" "the rerun rewrites a"
+  pass "fm-pack.sh stop ends a repack batch at a file boundary with every path whole"
+}
+
 test_plan() {
   local out f sample m c per
   H=$(new_home plan)
@@ -419,4 +524,6 @@ test_admission_refusal_holds_batch
 test_one_batch_in_time_order
 test_lock_and_baseline
 test_pack_slot_waits_and_holds
+test_pack_slot_wait_is_bounded
+test_pack_stop_ends_a_batch
 test_plan

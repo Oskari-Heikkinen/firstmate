@@ -6,11 +6,11 @@ metadata:
   internal: true
   sources:
     - path: docs/storage.md
-      sha256: bbca8ec180d14d614c1f0f54224fc62b09ce3a3e21a769aa9db0721590be66b4
+      sha256: 5c29c67997f309eebcbacd78a2937aaeb5bcab730e4b62c058adaf34aa49179c
     - path: bin/fm-storage.sh
       sha256: 7a2a13928bbc6c4848e25702b0663def23e0d55e455eb7312ecfb6434fd64d27
     - path: bin/fm-pack.sh
-      sha256: 0802fc4a710b69123c12aea1971479ce568fd483a6b61a47dcb4a5f3779151fb
+      sha256: 3a8121bd023592f8f45c80a4cdee11d0ba0883588077d1993e78e8721de8524b
     - path: bin/fm-pack-retry.c
       sha256: 3eeff66fcf5e63e6ab6fd0da33d75f66d7df0b197e6b822ae4614c5527dfcf5b
     - path: bin/fm-pack-parity.py
@@ -35,7 +35,7 @@ Each rule has one owner: `docs/storage.md` for formats, states, reader rules and
 - `docs/storage.md`: the results-root file `lattice-storage-results-root/v1`, the states, the reader rules, mandatory bulk admission, named roots, when to pack, and retention rule R2.
 - `bin/fm-storage.sh` header: commands, files, environment.
 - `bin/fm-spawn.sh` header: when a worker launch carries `LATTICE_STORAGE_TOOL`, the absolute path workers resolve `fm-storage.sh` from, since it is not on their `PATH`.
-- `bin/fm-pack.sh` header: pack, verify, verify-tar (the G5-equivalent tar/image parity check), restore and release steps, the read-only candidates report and its pack states, sidecar fields, the release guards' exact checks, exit codes, the ENOMEM retry shim (`bin/fm-pack-retry.c`) and the machine-wide pack slot another heavy D: tool shares.
+- `bin/fm-pack.sh` header: pack, verify, verify-tar (the G5-equivalent tar/image parity check), restore and release steps, the read-only candidates report and its pack states, sidecar fields, the release guards' exact checks, exit codes, the ENOMEM retry shim (`bin/fm-pack-retry.c`), and the machine-wide pack slot another heavy D: tool shares, with its bounded wait and the `stop` verb that ends a holder at a safe point.
 - `docs/disk-room.md` and `bin/fm-disk-room.sh`: the reservation pools and the runway alerts this component admits through.
 
 ## Long-term-correct patterns
@@ -45,6 +45,7 @@ Each rule has one owner: `docs/storage.md` for formats, states, reader rules and
 - A new state is a row in the `docs/storage.md` table, a once-per-change notification, and a test through the public command.
 - A new unit or record format is read through an explicit allowlist of format names, and everything else is refused before any work.
 - Heavy steps run at `nice 19` and idle I/O, one at a time machine-wide through the pack slot, and finish inside existing helpers, with no new service or index.
+- A slot waiter gives up after a bounded wait with exit 75, and a slot holder stops at a safe point on `fm-pack.sh stop`, so an idle or long pack never holds up an install, update or landing.
 
 ## Refuse
 
@@ -80,5 +81,5 @@ Answer each check PASS or FINDING.
 9. Does each state change notify once, and is every wait, refusal and release logged with its reason?
 10. Would `tests/fm-storage.test.sh`, `tests/fm-pack.test.sh` or `tests/fm-pack-parity.test.sh` fail, through the public commands, if this behaviour broke?
 11. Would a new root, data family or unit format need only a data or allowlist entry, not a new code branch?
-12. Do heavy steps still run at `nice 19` and idle I/O, inside the machine-wide pack slot, with no new service, daemon or index?
+12. Do heavy steps still run at `nice 19` and idle I/O, inside the machine-wide pack slot, with no new service, daemon or index, and does every slot wait stay bounded and every holder stoppable without a half-committed unit?
 13. If a source pinned in this skill's `metadata.sources` changed, does every rule here still hold, and are the pins updated in the same change?

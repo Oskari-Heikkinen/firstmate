@@ -123,7 +123,7 @@ EOF
 tmp=$(mktemp -d) && printf 'done: smoke\n' > "$tmp/smoke.status" && FM_STATE_OVERRIDE="$tmp" FM_SIGNAL_GRACE=1 FM_POLL=1 FM_HEARTBEAT=999999 bin/fm-watch-arm.sh  # watcher re-arm smoke test (prints arm status, then an actionable signal)
 ```
 
-`bin/fm-test-run.sh` is the single owner of behavior-suite selection, tier selection and shard packing, bounded concurrency admission, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
+`bin/fm-test-run.sh` is the single owner of behavior-suite selection, tier selection and shard packing, bounded concurrency admission, the default per-script bound, stopping a run on TERM, per-script timing markers, family totals, the coverage guard, and the optional JSON timing artifact.
 Its header and `--help` own the flags, family labels, tiers, and changed-file map; this section only documents the entry points.
 `bin/fm-test-isolation-proof.sh` remains the single owner of the portable candidate proof and reusable family proof harness; see `docs/fm-test-isolation-proof.md`.
 The tiers, CI layouts, and shard packing are described in `docs/fm-test-portable-shards.md`.
