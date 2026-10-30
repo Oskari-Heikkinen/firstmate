@@ -382,7 +382,9 @@ live_secondmate_meta_records() {
 #   FF_STATUS = updated|current|skipped
 #   FF_INSTR  = comma list of changed instruction paths (only when updated)
 #   FF_HELD   = "<helper>@<sha12> awaiting <consumer>,..." entries joined by
-#               "; ", only when the helper gate held this target
+#               "; ", only when the helper gate held this target, plus one
+#               "proceeds past the hold limit from <utc>" or "no hold limit:
+#               <reason>" entry when FF_HELPER_HOLD_HOME is set
 #   FF_BASE_COMMIT = the resolved base commit, once it could be read
 # The caller may set FF_HELPER_ALLOW_BREAK to a space list of consumer ids that
 # the captain explicitly let deploy an unaccepted helper version.
@@ -406,22 +408,25 @@ FF_INSTR=""
 FF_HELD=""
 FF_BASE_COMMIT=""
 FF_HELPER_ALLOW_BREAK=""
+FF_HELPER_HOLD_HOME=""
 FF_HELPER_NOTES=""
 FF_HELPER_RECORDS=""
 # Run the helper-consumer gate for one target about to move to <base-rev>.
 # Returns 1 after printing the target's held status line; otherwise 0, leaving
 # in FF_HELPER_NOTES the lines to print once the target has advanced. Any check
 # failure holds, because a gate that cannot read its declarations cannot prove
-# the advance is safe. FF_HELPER_RECORDS keeps check-advance's hold, unproven
-# and break records as printed, for bin/fm-update.sh's hold log. Reads
-# ff_target's locals through ff_report.
+# the advance is safe. FF_HELPER_RECORDS keeps check-advance's hold, unproven,
+# break and expired records as printed, for bin/fm-update.sh's hold log. A
+# caller that sets FF_HELPER_HOLD_HOME to a home applies that home's hold limit
+# (check-advance --hold-bound). Reads ff_target's locals through ff_report.
 ff_helper_gate() {  # <dir> <base-rev>
-  local out rc=0 kind a b c held="" c12
+  local out rc=0 kind a b c d held="" c12
   local -a args=()
   FF_HELPER_NOTES=""
   FF_HELPER_RECORDS=""
   [ -x "$FF_HELPER_CONSUMERS_BIN" ] || return 0
   for c in $FF_HELPER_ALLOW_BREAK; do args+=(--allow-break "$c"); done
+  [ -z "$FF_HELPER_HOLD_HOME" ] || args+=(--hold-bound "$FF_HELPER_HOLD_HOME")
   out=$("$FF_HELPER_CONSUMERS_BIN" check-advance ${args[@]+"${args[@]}"} "$1" "$2" 2>&1) || rc=$?
   case "$rc" in
     0|3) ;;
@@ -431,10 +436,11 @@ ff_helper_gate() {  # <dir> <base-rev>
       return 1
       ;;
   esac
-  while IFS=$'\t' read -r kind a b c; do
+  while IFS=$'\t' read -r kind a b c d; do
     c12=$(printf '%s' "$b" | cut -c1-12)
     case "$kind" in
       hold|unproven|break) FF_HELPER_RECORDS="$FF_HELPER_RECORDS$kind"$'\t'"$a"$'\t'"$b"$'\t'"$c"$'\n' ;;
+      expired) FF_HELPER_RECORDS="$FF_HELPER_RECORDS$kind"$'\t'"$a"$'\t'"$b"$'\t'"$c"$'\t'"$d"$'\n' ;;
     esac
     case "$kind" in
       hold)
@@ -442,6 +448,15 @@ ff_helper_gate() {  # <dir> <base-rev>
         FF_HELD="$FF_HELD${FF_HELD:+; }$a@$c12 awaiting $c"
         ;;
       break) FF_HELPER_NOTES="$FF_HELPER_NOTES${FF_HELPER_NOTES:+$'\n'}helper-consumers: $label: helper $a version $c12 deployed unaccepted by $c (--allow-helper-break)" ;;
+      expired) FF_HELPER_NOTES="$FF_HELPER_NOTES${FF_HELPER_NOTES:+$'\n'}helper-consumers: $label: helper $a version $c12 deployed unaccepted by $c (held since $d, past the hold limit)" ;;
+      bound)
+        held="$held${held:+; }a pass from $b proceeds past the hold limit"
+        FF_HELD="$FF_HELD${FF_HELD:+; }proceeds past the hold limit from $b"
+        ;;
+      unbounded)
+        held="$held${held:+; }no hold limit applies: $a"
+        FF_HELD="$FF_HELD${FF_HELD:+; }no hold limit: $a"
+        ;;
       waiting) FF_HELPER_NOTES="$FF_HELPER_NOTES${FF_HELPER_NOTES:+$'\n'}helper-consumers: $label: helper $a version $c12 deployed while $c already waits (accepts neither the old nor the new version)" ;;
       unproven)
         held="$held${held:+; }helper $a version $c12 would change while declaration $c is malformed or unreadable"

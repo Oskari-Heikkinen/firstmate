@@ -8,7 +8,7 @@
 #
 # Usage:
 #   fm-helper-consumers.sh list
-#   fm-helper-consumers.sh check-advance [--allow-break <consumer>]... <checkout> <target-rev>
+#   fm-helper-consumers.sh check-advance [--allow-break <consumer>]... [--hold-bound <home>] <checkout> <target-rev>
 #   fm-helper-consumers.sh pending [--repo <dir>] [--fetch] [--if-repo <host>/<path>] [<rev> | <from>..<to>]
 #   fm-helper-consumers.sh pending [--repo <dir>] [--fetch] [--if-repo <host>/<path>] --candidate <rev>
 #   fm-helper-consumers.sh log <outcome> <home> <target-commit> <helper> <sha256> <consumers> [<note>]
@@ -42,6 +42,21 @@
 # so while one exists every change to a helper that any declaration names - its
 # own helper= lines included when they can still be read - holds as `unproven`,
 # unless --allow-break names that declaration's file stem.
+# --hold-bound <home> applies the hold limit, a whole number of seconds,
+# optionally suffixed m or h, in ${FM_CONFIG_OVERRIDE:-<home>/config}/helper-hold-max
+# (1h when the file is absent). When every record that would hold is a `hold`
+# whose helper version has been held at least the limit, counted from its first
+# open held or bypass line in the hold log below (in any home), those records
+# print as
+#   expired<TAB><helper><TAB><target-sha256><TAB><consumer>[,...]<TAB><first held at>
+# and the check advances. A version no pass has held yet never expires. When
+# the pass still holds, one more record says when the limit lets it proceed,
+# assuming this pass logs its holds now, or why no limit applies:
+#   bound<TAB><limit-seconds><TAB><utc time a pass may proceed>
+#   unbounded<TAB><reason>
+# An `unproven` hold, and every hold while the limit file is present but empty,
+# unreadable or malformed or the hold log cannot be read, gets `unbounded`.
+# Only bin/fm-update.sh passes --hold-bound, for the primary checkout.
 # A missing file hashes as `absent`. Exit 0 to advance, 3 to hold, 2 on a usage
 # error or an unreadable checkout or revision. With no declarations it prints
 # nothing and exits 0 before reading the checkout, so a home without
@@ -105,7 +120,11 @@
 #            are gated); it opens and clears like held;
 #   break    an operator-run --allow-helper-break moved past <consumers>'
 #            acceptance of <helper> version <sha256>; a record only, it opens
-#            and clears nothing.
+#            and clears nothing;
+#   expired  a pass of <home> deployed <helper> version <sha256> unaccepted by
+#            <consumers> because its hold passed the hold limit (see
+#            check-advance --hold-bound); a record only, it opens and clears
+#            nothing, and the alarm below raises it to the consumers' owners.
 # <home> is an absolute path (canonicalized when it exists), <target-commit> a
 # full commit id, <helper> the helper path as check-advance prints it, <sha256>
 # a lowercase sha256 or `absent`, and <consumers> a comma list of consumer ids;
@@ -148,6 +167,17 @@
 # pending record and re-reads only those changed since the last pass. --arm
 # installs the check through bin/fm-check-register.sh and runs a first pass;
 # --disarm unregisters its stores, closing their blockers, and the check.
+# The same pass raises one level helper-unaccepted-deployed-<helper>-<sha12>, at
+# once, for each helper version an `expired` line in the hold log records while
+# the bytes at that helper path are still that version and a consumer the line
+# names still does not accept it; it takes that version's place, so the
+# version's branch level above is not raised beside it. It routes like a branch
+# level to main and to each such consumer's owner, so every owner gets one level
+# per version, and a malformed declaration's consumer counts as not accepting.
+# It clears when each named consumer accepts the version, its declaration is
+# removed, or the helper's bytes change. The hold log and the helper files are
+# re-read only when they changed since the last pass. A hold log that cannot be
+# read, or a helper-hold-max file that cannot be read, raises its own level.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -323,7 +353,7 @@ cmd_list() {
 
 cmd_check_advance() {
   local allow="" checkout target top file helper canon rel cur tgt records="" held=0 out
-  local bad="" stem watched="" seen
+  local bad="" stem watched="" seen bound_home=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --allow-break)
@@ -331,12 +361,17 @@ cmd_check_advance() {
         allow="$allow $2"
         shift 2
         ;;
+      --hold-bound)
+        [ -n "${2:-}" ] || die "--hold-bound needs a home"
+        bound_home=$2
+        shift 2
+        ;;
       --) shift; break ;;
       -*) die "unknown option $1" ;;
       *) break ;;
     esac
   done
-  [ $# -eq 2 ] || die "usage: check-advance [--allow-break <consumer>]... <checkout> <target-rev>"
+  [ $# -eq 2 ] || die "usage: check-advance [--allow-break <consumer>]... [--hold-bound <home>] <checkout> <target-rev>"
   checkout=$1 target=$2
   [ -n "$(declarations)" ] || return 0
 
@@ -406,16 +441,70 @@ cmd_check_advance() {
     done <<< "$watched"
   fi
 
-  out=$(printf '%s' "$records" | aggregate)
-  [ -z "$out" ] || printf '%s\n' "$out" | while IFS="$TAB" read -r kind a b c; do
-    if [ "$kind" = malformed ]; then
-      printf 'malformed%s%s%s%s\n' "$TAB" "$a" "$TAB" "$b"
-    else
-      printf '%s%s%s%s%s%s%s\n' "$kind" "$TAB" "$a" "$TAB" "$b" "$TAB" "$c"
-    fi
-  done
+  out=$(printf '%s' "$records" | aggregate | awk -F '\t' 'BEGIN { OFS = "\t" } $1 == "malformed" { print $1, $2, $3; next } { print }')
+  if [ "$held" = 1 ] && [ -n "$bound_home" ]; then
+    hold_bound "$bound_home" "$out"
+    out=$BOUND_OUT held=$BOUND_HELD
+  fi
+  [ -z "$out" ] || printf '%s\n' "$out"
   [ "$held" = 0 ] || return 3
   return 0
+}
+
+# The hold limit for check-advance --hold-bound: when every record that holds
+# is a `hold` whose version has been held at least the limit, counted from its
+# first open held or bypass line in the hold log in any home, those records
+# become `expired` and the pass advances (BOUND_HELD=0). Otherwise the records
+# stay and one `bound` record says when the limit lets the pass proceed, or one
+# `unbounded` record says why no limit applies. A version with no open hold yet
+# counts from now and never expires before one pass has held it; when the log
+# cannot be read, every version counts from now.
+hold_bound() {  # <home> <records>
+  local limit_file opens now proceed stems
+  BOUND_OUT=$2 BOUND_HELD=1
+  stems=$(printf '%s\n' "$2" | awk -F '\t' '$1 == "unproven" { print $4; exit }')
+  if [ -n "$stems" ]; then
+    BOUND_OUT="$BOUND_OUT"$'\n'"unbounded${TAB}malformed or unreadable declaration $stems holds without a limit"
+    return 0
+  fi
+  limit_file="${FM_CONFIG_OVERRIDE:-$1/config}/$HOLD_MAX_FILE"
+  if ! read_limit "$limit_file" "$HOLD_DEFAULT_MAX"; then
+    BOUND_OUT="$BOUND_OUT"$'\n'"unbounded${TAB}limit file $limit_file $LIMIT_ERROR, so the hold has no limit until it is fixed"
+    return 0
+  fi
+  if ! opens=$(cmd_holds --open 2>/dev/null); then
+    BOUND_OUT="$BOUND_OUT"$'\n'"unbounded${TAB}hold log $VERSIONS_DIR/holds.log cannot be read, so every hold counts from now"
+    return 0
+  fi
+  now_to now
+  # The open holds, a `.` line, then the records. The first output line is
+  # `advance` or `hold <epoch the limit lets the pass proceed>`.
+  BOUND_OUT=$(printf '%s\n.\n%s\n' "$opens" "$2" | awk -F '\t' -v now="$now" -v limit="$LIMIT" "$AWK_EPOCH"'
+    !sep { if ($0 == ".") sep = 1; else if ($2 != "" && (!(($2 SUBSEP $3) in since) || $5 < since[$2 SUBSEP $3])) since[$2 SUBSEP $3] = $5; next }
+    $0 == "" { next }
+    { line[++n] = $0; kind[n] = $1
+      if ($1 == "hold") {
+        k = $2 SUBSEP $3; first[n] = (k in since) ? since[k] : ""
+        start = (first[n] == "") ? now : epoch(first[n])
+        if (start + limit > proceed) proceed = start + limit
+        if (first[n] == "" || start + limit > now) waiting = 1
+      } }
+    END {
+      if (waiting) { print "hold\t" proceed; for (i = 1; i <= n; i++) print line[i]; exit }
+      print "advance"
+      for (i = 1; i <= n; i++) {
+        if (kind[i] == "hold") { sub(/^hold/, "expired", line[i]); print line[i] "\t" first[i] } else print line[i]
+      }
+    }') || { BOUND_OUT="$2"$'\n'"unbounded${TAB}cannot apply the hold limit"; return 0; }
+  case "$BOUND_OUT" in
+    advance*) BOUND_OUT=${BOUND_OUT#advance}; BOUND_OUT=${BOUND_OUT#$'\n'}; BOUND_HELD=0 ;;
+    hold"$TAB"*)
+      proceed=${BOUND_OUT%%$'\n'*}; proceed=${proceed#hold"$TAB"}
+      BOUND_OUT=${BOUND_OUT#*$'\n'}
+      BOUND_OUT="$BOUND_OUT"$'\n'"bound$TAB$LIMIT$TAB$(epoch_iso "$proceed")"
+      ;;
+    *) BOUND_OUT="$2"$'\n'"unbounded${TAB}cannot apply the hold limit" ;;
+  esac
 }
 
 # ---------------------------------------------------------------- pending
@@ -724,7 +813,19 @@ record_version() {  # <repo> <commit> <rel> <sha> <consumer-lines> <landed|candi
 
 # ---------------------------------------------------------------- hold log
 
-HOLD_OUTCOMES="held cleared bypass break"
+HOLD_OUTCOMES="held cleared bypass break expired"
+HOLD_MAX_FILE="helper-hold-max"
+HOLD_DEFAULT_MAX=3600
+
+# Epoch seconds of a <utc time> field, for the awk programs that read the log.
+AWK_EPOCH='function epoch(t,   y, m, d, era, yoe, doy, doe) {
+      y = substr(t, 1, 4) + 0; m = substr(t, 6, 2) + 0; d = substr(t, 9, 2) + 0
+      if (m <= 2) y--
+      era = int(y / 400); yoe = y - era * 400
+      doy = int((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1
+      doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
+      return (era * 146097 + doe - 719468) * 86400 + substr(t, 12, 2) * 3600 + substr(t, 15, 2) * 60 + substr(t, 18, 2)
+    }'
 
 # The current time in epoch seconds into <var>; FM_HELPER_CONSUMERS_NOW wins.
 now_to() {  # <var>
@@ -792,21 +893,13 @@ cmd_holds() {
   [ -e "$log" ] || [ -L "$log" ] || return 0
   [ -f "$log" ] && [ -r "$log" ] || { printf 'fm-helper-consumers: cannot read %s\n' "$log" >&2; return 1; }
   now_to now
-  awk -F '\t' -v home="$home" -v mode="$mode" -v now="$now" -v logf="$log" '
-    function epoch(t,   y, m, d, era, yoe, doy, doe) {
-      y = substr(t, 1, 4) + 0; m = substr(t, 6, 2) + 0; d = substr(t, 9, 2) + 0
-      if (m <= 2) y--
-      era = int(y / 400); yoe = y - era * 400
-      doy = int((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1
-      doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
-      return (era * 146097 + doe - 719468) * 86400 + substr(t, 12, 2) * 3600 + substr(t, 15, 2) * 60 + substr(t, 18, 2)
-    }
+  awk -F '\t' -v home="$home" -v mode="$mode" -v now="$now" -v logf="$log" -v outcomes=" $HOLD_OUTCOMES " "$AWK_EPOCH"'
     function base(p) { sub(/.*\//, "", p); return p }
     function emit(w, end, hours) {
       printf "%s\t%s\t%s\t%.1f\t%d\t%s\t%d\t%s\n", whome[w], wstart[w], end, hours, wpass[w], wvers[w], wbreak[w], wnote[w]
     }
     NF < 8 || $1 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$/ ||
-    ($2 != "held" && $2 != "cleared" && $2 != "bypass" && $2 != "break") {
+    index(outcomes, " " $2 " ") == 0 {
       if (mode != "lines") { printf "fm-helper-consumers: %s line %d is not a hold record; skipped\n", logf, NR > "/dev/stderr"; next }
     }
     home != "" && $3 != home { next }
@@ -869,10 +962,11 @@ parse_limit() {  # <text>
   esac
 }
 
-# The limit file into LIMIT (default when absent); LIMIT_ERROR on a failed reading.
-read_limit() {  # <file>
-  local f=$1 line value="" n=0
-  LIMIT=$ALARM_DEFAULT_MAX LIMIT_ERROR=""
+# The limit file into LIMIT (<default>, else the alarm's, when absent);
+# LIMIT_ERROR on a failed reading.
+read_limit() {  # <file> [<default>]
+  local f=$1 dflt=${2:-$ALARM_DEFAULT_MAX} line value="" n=0
+  LIMIT=$dflt LIMIT_ERROR=""
   [ -e "$f" ] || [ -L "$f" ] || return 0
   [ -f "$f" ] && [ -r "$f" ] || { LIMIT_ERROR="is not a readable file"; return 1; }
   while IFS= read -r line || [ -n "$line" ]; do
@@ -881,10 +975,10 @@ read_limit() {  # <file>
     n=$((n + 1))
     value=$line
   done < "$f"
-  [ "$n" -gt 0 ] || { LIMIT_ERROR="holds no value"; LIMIT=$ALARM_DEFAULT_MAX; return 1; }
-  [ "$n" -eq 1 ] || { LIMIT_ERROR="holds more than one value"; LIMIT=$ALARM_DEFAULT_MAX; return 1; }
+  [ "$n" -gt 0 ] || { LIMIT_ERROR="holds no value"; LIMIT=$dflt; return 1; }
+  [ "$n" -eq 1 ] || { LIMIT_ERROR="holds more than one value"; LIMIT=$dflt; return 1; }
   if ! parse_limit "$value"; then
-    LIMIT=$ALARM_DEFAULT_MAX
+    LIMIT=$dflt
     LIMIT_ERROR="'$value' is not a whole number of seconds, minutes (m) or hours (h)"
     return 1
   fi
@@ -902,8 +996,9 @@ project_of() {  # <repo>
   normalize_remote "$url"
 }
 
-# Rebuild <out> from the declarations: `ok<TAB>consumer<TAB>owner<TAB>rel<TAB>accepts`
-# per helper in <repo>'s project, `bad<TAB>file<TAB>reason` per malformed file.
+# Rebuild <out> from the declarations: `who<TAB>consumer<TAB>owner<TAB>accepts`
+# per valid file, `ok<TAB>consumer<TAB>owner<TAB>rel<TAB>accepts` per helper in
+# <repo>'s project, `bad<TAB>file<TAB>reason` per malformed file.
 alarm_declarations() {  # <repo> <out>
   local file helper rel
   while IFS= read -r file; do
@@ -911,6 +1006,7 @@ alarm_declarations() {  # <repo> <out>
       printf 'bad\t%s\t%s\n' "$file" "$DECL_ERROR"
       continue
     fi
+    printf 'who\t%s\t%s\t%s\n' "$DECL_CONSUMER" "$DECL_OWNER" "${DECL_ACCEPTS# }"
     while IFS= read -r helper; do
       [ -n "$helper" ] || continue
       rel=$(helper_rel "$1" "$helper") || continue
@@ -1068,10 +1164,75 @@ alarm_disarm() {  # <home> <state>
   return "$rc"
 }
 
+# Rebuild <dir>/deployed.tsv, one row
+# `<helper name><TAB><sha256><TAB><helper><TAB><since epoch><TAB><consumers><TAB><owners>`
+# per version an `expired` line in <log> records while the helper still holds
+# those bytes (or cannot be read) and a consumer the lines name still does not
+# accept it; <dir>/deployed.helpers keeps each helper read, with its version.
+alarm_deployed() {  # <dir> <log>
+  local cands h sha t who owners live seen=$'\n'
+  cands=$(awk -F '\t' "$AWK_EPOCH"'
+    FILENAME == ARGV[1] {
+      if ($1 == "who") { own[$2] = $3; acc[$2] = " " $4 " " }
+      else if ($1 == "bad") { s = $2; sub(/.*\//, "", s); sub(/\.conf$/, "", s); bad[s] = 1 }
+      next }
+    $2 != "expired" || NF < 7 || $5 == "-" || length($6) != 64 || $6 ~ /[^0-9a-f]/ { next }
+    { k = $5 SUBSEP $6
+      if (!(k in first)) { first[k] = $1; order[++n] = k; list[k] = "" }
+      m = split($7, cs, ",")
+      for (i = 1; i <= m; i++) if (cs[i] != "-" && index("," list[k] ",", "," cs[i] ",") == 0) list[k] = list[k] (list[k] == "" ? "" : ",") cs[i] }
+    END {
+      for (j = 1; j <= n; j++) {
+        k = order[j]; split(k, p, SUBSEP); who = ""; ow = ""
+        m = split(list[k], cs, ",")
+        for (i = 1; i <= m; i++) {
+          c = cs[i]
+          if (c in acc) { if (index(acc[c], " " p[2] " ") > 0) continue; o = own[c] }
+          else if (c in bad) o = ""
+          else continue
+          who = who (who == "" ? "" : ",") c
+          if (o != "" && index("," ow ",", "," o ",") == 0) ow = ow (ow == "" ? "" : ",") o
+        }
+        if (who != "") print p[1] "\t" p[2] "\t" epoch(first[k]) "\t" who "\t" ow
+      }
+    }' "$1/decls.tsv" "$2") || return 1
+  {
+    while IFS="$TAB" read -r h sha t who owners; do
+      [ -n "$h" ] || continue
+      case "$seen" in
+        *$'\n'"$h$TAB"*) live=${seen#*$'\n'"$h$TAB"}; live=${live%%$'\n'*} ;;
+        *) live=$(file_sha "$h") || live=unreadable; seen="$seen$h$TAB$live"$'\n' ;;
+      esac
+      [ "$live" = "$sha" ] || [ "$live" = unreadable ] || continue
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${h##*/}" "$sha" "$h" "$t" "$who" "$owners"
+    done <<< "$cands"
+  } > "$1/deployed.tsv.new" && mv -f -- "$1/deployed.tsv.new" "$1/deployed.tsv" \
+    && printf '%s' "${seen#$'\n'}" > "$1/deployed.helpers"
+}
+
+# Append one level's routes to alarm_pass's `routes`: to each owner in <owners>
+# whose home this machine reaches from <root> (recorded in <dir>/stores/<owner>.home),
+# and to main, whose reason names the owners it cannot reach.
+alarm_route() {  # <root> <dir> <key> <kind> <subject> <reason> <since-epoch> <owners>
+  local o oh unreached="" reason=$6
+  for o in ${8//,/ }; do
+    case "$o" in main|.*|*[!A-Za-z0-9._-]*) oh="" ;; *) oh=$(owner_home "$1" "$o") || oh="" ;; esac
+    if [ -n "$oh" ] && [ "$oh" != "$1" ]; then
+      routes="$routes$o$TAB$3$TAB$4$TAB$5$TAB$6$TAB$7"$'\n'
+      [ "$(cat "$2/stores/$o.home" 2>/dev/null)" = "$oh" ] || printf '%s\n' "$oh" > "$2/stores/$o.home"
+    elif [ -z "$oh" ] && [ "$o" != main ]; then
+      unreached="$unreached${unreached:+, }$o"
+    fi
+  done
+  [ -z "$unreached" ] || reason="$reason (for $unreached, whose home this machine does not see)"
+  routes="${routes}main$TAB$3$TAB$4$TAB$5$TAB$reason$TAB$7"$'\n'
+}
+
 alarm_pass() {  # <home> <state> <repo>
   local home=$1 dir="$2/$ALARM_ID" repo=$3 now limit_file main_ref main="" project stamp
   local f old="" scan="" rows="" routes="" problems="" root="" line key reason
-  local b s12 rel t who owners rdir ref o oh unreached id store wanted prev tmp decl_new=0
+  local b s12 rel t who owners rdir ref oh id store wanted prev tmp decl_new=0
+  local log h live sha new deployed=" " cfg
   local -a targets=()
   now_to now
   if [ -z "$(declarations)" ]; then
@@ -1082,25 +1243,46 @@ alarm_pass() {  # <home> <state> <repo>
     command -v jq >/dev/null 2>&1 || { alarm_report "$dir" "helper-unaccepted: jq is missing, so no unaccepted helper version can be checked"; return 0; }
     stamp="$dir/.stamp"
     : > "$dir/.stamp.next" || { alarm_report "$dir" "helper-unaccepted: cannot write $dir/.stamp.next"; return 0; }
-    limit_file="${FM_CONFIG_OVERRIDE:-$home/config}/helper-unaccepted-max"
+    cfg=${FM_CONFIG_OVERRIDE:-$home/config}
+    read_limit "$cfg/$HOLD_MAX_FILE" "$HOLD_DEFAULT_MAX" \
+      || rows="$rows$ALARM_ID-hold-max-unreadable${TAB}limit file $cfg/$HOLD_MAX_FILE $LIMIT_ERROR; /updatefirstmate holds without a limit until it is fixed"$'\n'
+    limit_file="$cfg/helper-unaccepted-max"
     read_limit "$limit_file" \
       || rows="$rows$ALARM_ID-max-unreadable${TAB}limit file $limit_file $LIMIT_ERROR; the alarm counts 2h until it is fixed"$'\n'
     main_ref=$(origin_default "$repo") && main=$(git -C "$repo" rev-parse --verify --quiet "$main_ref^{commit}" 2>/dev/null) || main=""
 
     # Declarations: re-resolved only when a file, the file set or the branch
     # changed, or a file stopped being readable.
-    f=$(declarations; printf 'repo %s %s %s\n' "$repo" "$main" "$main_ref")
+    f=$(declarations; printf 'format 2\nrepo %s %s %s\n' "$repo" "$main" "$main_ref")
     if [ ! -f "$dir/decls.tsv" ] || [ ! -f "$stamp" ] || [ "$f" != "$(cat "$dir/decls.list" 2>/dev/null)" ]; then
       decl_new=1
     else
       while IFS= read -r line; do
-        case "$line" in "repo "*) continue ;; esac
+        case "$line" in "repo "*|"format "*) continue ;; esac
         [ "$stamp" -nt "$line" ] && [ -r "$line" ] || decl_new=1
       done <<< "$f"
     fi
     if [ "$decl_new" = 1 ]; then
       { alarm_declarations "$repo" "$dir/decls.tsv.new" && mv -f -- "$dir/decls.tsv.new" "$dir/decls.tsv" \
         && printf '%s\n' "$f" > "$dir/decls.list"; } || { alarm_report "$dir" "helper-unaccepted: cannot write $dir/decls.tsv"; return 0; }
+    fi
+
+    # Versions deployed past the hold limit: re-judged only when the hold log,
+    # a declaration, or a helper they name changed since the last pass.
+    log="$VERSIONS_DIR/holds.log"
+    if [ ! -e "$log" ] && [ ! -L "$log" ]; then
+      [ ! -s "$dir/deployed.tsv" ] || : > "$dir/deployed.tsv"
+    elif [ ! -f "$log" ] || [ ! -r "$log" ]; then
+      rows="$rows$ALARM_ID-hold-log-unreadable${TAB}hold log $log cannot be read, so versions deployed past the hold limit cannot be judged; the last judged alarms stay"$'\n'
+    else
+      new=$decl_new
+      { [ -f "$stamp" ] && [ "$stamp" -nt "$log" ] && [ -f "$dir/deployed.tsv" ] && [ -f "$dir/deployed.helpers" ]; } || new=1
+      [ "$new" = 1 ] || while IFS="$TAB" read -r h live; do
+        [ -n "$h" ] || continue
+        if [ -e "$h" ]; then [ "$stamp" -nt "$h" ] || new=1; else [ "$live" = absent ] || new=1; fi
+      done < "$dir/deployed.helpers"
+      [ "$new" = 0 ] || alarm_deployed "$dir" "$log" \
+        || { alarm_report "$dir" "helper-unaccepted: cannot write $dir/deployed.tsv"; return 0; }
     fi
 
     # Records: one stat each; only a record new, changed or no longer readable
@@ -1179,24 +1361,24 @@ alarm_pass() {  # <home> <state> <repo>
     [ -n "$key" ] || continue
     routes="${routes}main$TAB$key${TAB}failed-reading${TAB}$ALARM_ID$TAB$reason$TAB$now"$'\n'
   done <<< "$rows"
-  if [ -n "$(declarations)" ] && [ -s "$dir/due.tsv" ]; then
+  if [ -n "$(declarations)" ] && { [ -s "$dir/due.tsv" ] || [ -s "$dir/deployed.tsv" ]; }; then
     root=$(root_home "$home") || { alarm_report "$dir" "helper-unaccepted: cannot resolve the root home of $home, so no alarm can be delivered"; return 0; }
+    # A deployed version's level takes the place of its branch level.
+    [ -f "$dir/deployed.tsv" ] || : > "$dir/deployed.tsv"
+    while IFS="$TAB" read -r b sha rel t who owners; do
+      [ -n "$b" ] || continue
+      s12=${sha:0:12}
+      deployed="$deployed$b-$s12 "
+      alarm_route "$root" "$dir" "$(slug "$ALARM_ID-deployed-$b-$s12")" deployed-unaccepted "$rel" \
+        "$rel version $s12 was deployed by an update at $(epoch_iso "$t") after its hold passed the hold limit, and $who (owner ${owners:-unknown, its declaration is malformed}) has not accepted it, so it waits until its own review accepts that version; review artefact in $VERSIONS_DIR/$b/$sha" \
+        "$t" "$owners"
+    done < "$dir/deployed.tsv"
     while IFS="$TAB" read -r b s12 rel t who owners rdir ref; do
       [ -n "$b" ] || continue
-      key=$(slug "$ALARM_ID-$b-$s12")
-      reason="$rel version $s12 on $ref since $(epoch_iso "$t") is not accepted by $who (owner $owners) within the limit; review artefact in $rdir"
-      unreached=""
-      for o in ${owners//,/ }; do
-        case "$o" in main|.*|*[!A-Za-z0-9._-]*) oh="" ;; *) oh=$(owner_home "$root" "$o") || oh="" ;; esac
-        if [ -n "$oh" ] && [ "$oh" != "$root" ]; then
-          routes="$routes$o$TAB$key${TAB}unaccepted$TAB$rel$TAB$reason$TAB$t"$'\n'
-          [ "$(cat "$dir/stores/$o.home" 2>/dev/null)" = "$oh" ] || printf '%s\n' "$oh" > "$dir/stores/$o.home"
-        elif [ -z "$oh" ] && [ "$o" != main ]; then
-          unreached="$unreached${unreached:+, }$o"
-        fi
-      done
-      [ -z "$unreached" ] || reason="$reason (for $unreached, whose home this machine does not see)"
-      routes="${routes}main$TAB$key${TAB}unaccepted$TAB$rel$TAB$reason$TAB$t"$'\n'
+      case "$deployed" in *" $b-$s12 "*) continue ;; esac
+      alarm_route "$root" "$dir" "$(slug "$ALARM_ID-$b-$s12")" unaccepted "$rel" \
+        "$rel version $s12 on $ref since $(epoch_iso "$t") is not accepted by $who (owner $owners) within the limit; review artefact in $rdir" \
+        "$t" "$owners"
     done < "$dir/due.tsv"
   fi
   [ -n "$routes" ] || [ -d "$dir/stores" ] || return 0

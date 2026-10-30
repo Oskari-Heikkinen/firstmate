@@ -31,6 +31,10 @@
 #   - Each held pass appends one held line per held helper version to the hold
 #     log, and the pass that advances appends cleared for it, noting a break; a
 #     failed check or a malformed declaration's hold is logged too.
+#   - A version held for the hold limit from its first held line deploys: the
+#     pass reports it, logs one expired line before its cleared line, and says
+#     when the owners' alarm is not armed; a rerun logs nothing more; the home's
+#     config/helper-hold-max overrides the 1 h default, and a broken one holds.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -787,10 +791,10 @@ test_helper_hold_log_records_held_and_cleared() {
   assert_equals "$(printf '%s\t' 2026-10-30T08:46:40Z held "$home" "$target" "$w/main/bin/tool.sh" "$b")pinned" "$(cut -f 1-7 "$log")" \
     "the held line names the time, home, target, helper version and consumer"
 
-  out=$(FM_HELPER_CONSUMERS_NOW=1793353600 run_update_helpers "$w")
+  out=$(FM_HELPER_CONSUMERS_NOW=1793351800 run_update_helpers "$w")
   assert_contains "$out" "held-for-helper:" "the rerun holds again"
   assert_equals 2 "$(wc -l < "$log" | tr -d ' ')" "a rerun writes a second held line"
-  assert_equals "$(printf '%s\t' 2026-10-30T09:46:40Z)held" "$(tail -n 1 "$log" | cut -f 1-2)" "the rerun's line carries its own time"
+  assert_equals "$(printf '%s\t' 2026-10-30T09:16:40Z)held" "$(tail -n 1 "$log" | cut -f 1-2)" "the rerun's line carries its own time"
 
   declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')" "$b"
   out=$(FM_HELPER_CONSUMERS_NOW=1793357200 run_update_helpers "$w")
@@ -851,6 +855,62 @@ test_helper_hold_log_failed_check_unproven_and_break() {
   pass "a failed check, a malformed declaration and a break each leave their hold-log line"
 }
 
+# The hold limit: a version held for it, from its first held line, deploys; the
+# pass logs expired before cleared and says the owners' alarm is not armed; a
+# rerun deploys nothing new and logs nothing. config/helper-hold-max overrides it.
+test_helper_hold_limit_deploys_and_records_expired() {
+  local w out log b tip
+  b=$(sha_of $'echo b\n')
+
+  w=$(new_world helper-hold-limit)
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')"
+  bump_origin "$w" instr
+  log="$w/helper-versions/holds.log"
+  tip=$(git -C "$w/origin.git" rev-parse main)
+
+  out=$(FM_CONFIG_OVERRIDE='' FM_HELPER_CONSUMERS_NOW=1793350000 run_update_helpers "$w")
+  assert_contains "$out" "held-for-helper: $w/main/bin/tool.sh@${b:0:12} awaiting pinned; proceeds past the hold limit from 2026-10-30T09:46:40Z" \
+    "the held line says when the 1 h default lets a pass proceed"
+  out=$(FM_CONFIG_OVERRIDE='' FM_HELPER_CONSUMERS_NOW=1793353599 run_update_helpers "$w")
+  assert_contains "$out" "held-for-helper:" "a version held under the limit still holds"
+  assert_contains "$out" "proceeds past the hold limit from 2026-10-30T09:46:40Z" "the limit counts from the first held line"
+
+  out=$(FM_CONFIG_OVERRIDE='' FM_HELPER_CONSUMERS_NOW=1793353600 run_update_helpers "$w")
+  assert_contains "$out" "firstmate: updated " "a version held for the limit deploys"
+  assert_not_contains "$out" "held-for-helper:" "the pass past the limit is not held"
+  assert_contains "$out" "helper $w/main/bin/tool.sh version ${b:0:12} deployed unaccepted by pinned (held since 2026-10-30T08:46:40Z, past the hold limit)" \
+    "the pass reports the version it deployed unaccepted"
+  assert_contains "$out" "helper-unaccepted alarm is not armed" "the pass says the owners' alarm is not armed"
+  assert_not_contains "$out" "hold-log:" "every hold-log line is written"
+  assert_equals "$tip" "$(git -C "$w/main" rev-parse HEAD)" "the primary is on the target"
+  assert_equals 4 "$(wc -l < "$log" | tr -d ' ')" "the pass writes one expired and one cleared line"
+  assert_equals "$(printf '%s\t' 2026-10-30T09:46:40Z expired "$w/main/bin/tool.sh" "$b")pinned" "$(sed -n 3p "$log" | cut -f 1,2,5-7)" \
+    "the expired line names the version and its consumer"
+  assert_equals "$(printf '%s\t' cleared "$w/main/bin/tool.sh" "$b")pinned" "$(sed -n 4p "$log" | cut -f 2,5-7)" \
+    "the cleared line closes the hold after the expired line"
+  assert_contains "$(sed -n 4p "$log" | cut -f 8)" "past the hold limit for pinned" "the cleared line records the hold limit"
+
+  out=$(FM_CONFIG_OVERRIDE='' FM_HELPER_CONSUMERS_NOW=1793357200 run_update_helpers "$w")
+  assert_contains "$out" "firstmate: already current" "the rerun is current"
+  assert_not_contains "$out" "deployed unaccepted" "the rerun deploys nothing new"
+  assert_equals 4 "$(wc -l < "$log" | tr -d ' ')" "the rerun writes no expired line"
+
+  w=$(new_world helper-hold-limit-setting)
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')"
+  bump_origin "$w" instr
+  mkdir -p "$w/home/config"
+  printf '2h\n' > "$w/home/config/helper-hold-max"
+  FM_CONFIG_OVERRIDE='' FM_HELPER_CONSUMERS_NOW=1793350000 run_update_helpers "$w" >/dev/null
+  out=$(FM_CONFIG_OVERRIDE='' FM_HELPER_CONSUMERS_NOW=1793353600 run_update_helpers "$w")
+  assert_contains "$out" "held-for-helper:" "the home's setting overrides the 1 h default"
+  assert_contains "$out" "proceeds past the hold limit from 2026-10-30T10:46:40Z" "the held line uses the setting"
+  printf 'soon\n' > "$w/home/config/helper-hold-max"
+  out=$(FM_CONFIG_OVERRIDE='' FM_HELPER_CONSUMERS_NOW=1793440000 run_update_helpers "$w")
+  assert_contains "$out" "held-for-helper:" "a broken setting holds"
+  assert_contains "$out" "no hold limit: limit file " "the held line names the broken setting"
+  pass "a version held for the limit deploys once, logging expired, and the setting overrides the limit"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_follows_green_pointer_not_main
@@ -878,5 +938,6 @@ test_helper_consumer_already_waiting_advances_and_reports
 test_helper_gate_holds_redundant_divergence_reconcile
 test_helper_hold_log_records_held_and_cleared
 test_helper_hold_log_failed_check_unproven_and_break
+test_helper_hold_limit_deploys_and_records_expired
 
 echo "# all fm-update tests passed"

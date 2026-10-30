@@ -15,10 +15,16 @@
 #     with a range considers only helpers that changed in it.
 #   - log appends one validated line per call, and holds reads every hold window
 #     of the 2026-10 hold timeline back from the log, open holds included.
+#   - check-advance --hold-bound holds a version under the hold limit counted
+#     from its first held line, expires it past the limit, reads the operator's
+#     setting, and holds without a limit on a broken setting, an unreadable log
+#     or a malformed declaration.
 #   - alarm raises one level per version left unaccepted on the branch past the
 #     limit, keeps it one level across passes, clears it on acceptance and on
 #     supersession, routes it to main and to a reachable owner, raises a level
-#     naming each unreadable record, declaration or limit file, and with no
+#     naming each unreadable record, declaration, limit file or hold log, raises
+#     one level per version deployed past the hold limit to main and each
+#     unaccepting consumer's owner once, in place of its branch level, and with no
 #     declarations prints and writes nothing; --arm binds its check and runs a
 #     first pass, and --disarm removes its stores and its check.
 #   - pending --candidate files one record and one note for an unaccepted
@@ -343,6 +349,80 @@ $(row "$home" "$disk" "$d5" tetjet-filler,tetjet-services 2026-10-30T03:38:00Z)"
   pass "holds reads every hold window, gap and open hold back from the log"
 }
 
+# --- hold limit ------------------------------------------------------------------
+
+# bounded <w> <epoch>: check-advance with the hold limit of <w>/home, at <epoch>.
+bounded() {
+  FM_HELPER_CONSUMERS_NOW=$2 hc "$1" check-advance --hold-bound "$1/home" "$1/repo" "$C_TARGET"
+}
+
+test_check_advance_hold_bound() {
+  local w out rc t helper
+  w=$(new_world bound)
+  C_TARGET=$(cat "$w/c2")
+  helper="$w/repo/bin/helper.sh"
+  mkdir -p "$w/home/config"
+  declare_consumer "$w" holder "$helper" "$V1"
+  t=$(iso_epoch 2026-10-30T10:00:00Z)
+
+  rc=0
+  out=$(bounded "$w" "$t") || rc=$?
+  expect_code 3 "$rc" "a version no pass has held yet holds"
+  assert_contains "$out" "$(row bound 3600 2026-10-30T11:00:00Z)" "its wait starts now, with the 1 h default"
+
+  log_at "$w" 2026-10-30T10:00:00Z held "$helper" "$V2" holder
+  log_at "$w" 2026-10-30T10:30:00Z held "$helper" "$V2" holder
+  rc=0
+  out=$(bounded "$w" $((t + 3599))) || rc=$?
+  expect_code 3 "$rc" "a version held under the limit still holds"
+  assert_contains "$out" "$(row hold "$helper" "$V2" holder)" "the hold record is unchanged"
+  assert_contains "$out" "$(row bound 3600 2026-10-30T11:00:00Z)" "the limit counts from the first held line"
+
+  rc=0
+  out=$(bounded "$w" $((t + 3600))) || rc=$?
+  expect_code 0 "$rc" "a version held for the limit advances"
+  assert_equals "$(row expired "$helper" "$V2" holder 2026-10-30T10:00:00Z)" "$out" \
+    "the expired record names the version, its consumers and its first held time"
+
+  rc=0
+  out=$(FM_HELPER_CONSUMERS_NOW=$((t + 7200)) hc "$w" check-advance "$w/repo" "$C_TARGET") || rc=$?
+  expect_code 3 "$rc" "without --hold-bound a hold has no limit"
+  assert_not_contains "$out" "expired" "no record expires without --hold-bound"
+
+  printf '30m\n' > "$w/home/config/helper-hold-max"
+  rc=0
+  out=$(bounded "$w" $((t + 1799))) || rc=$?
+  expect_code 3 "$rc" "the setting's limit holds until it passes"
+  assert_contains "$out" "$(row bound 1800 2026-10-30T10:30:00Z)" "the setting overrides the default"
+  rc=0
+  out=$(bounded "$w" $((t + 1800))) || rc=$?
+  expect_code 0 "$rc" "the setting's limit lets the pass proceed"
+  assert_contains "$out" "$(row expired "$helper" "$V2" holder)" "past the setting's limit the version expires"
+
+  printf 'soon\n' > "$w/home/config/helper-hold-max"
+  rc=0
+  out=$(bounded "$w" $((t + 86400))) || rc=$?
+  expect_code 3 "$rc" "a broken setting holds"
+  assert_contains "$out" "$(row unbounded "limit file $w/home/config/helper-hold-max")" "the unbounded record names the setting"
+  rm -f "$w/home/config/helper-hold-max"
+
+  mv "$w/versions/holds.log" "$w/holds.log.saved"
+  mkdir "$w/versions/holds.log"
+  rc=0
+  out=$(bounded "$w" $((t + 86400))) || rc=$?
+  expect_code 3 "$rc" "an unreadable hold log holds"
+  assert_contains "$out" "$(row unbounded "hold log $w/versions/holds.log cannot be read")" "the unbounded record names the log"
+  rmdir "$w/versions/holds.log"
+  mv "$w/holds.log.saved" "$w/versions/holds.log"
+
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=typo' 'owner=x' "helper=$helper" 'acept=abc' > "$w/decl/typo.conf"
+  rc=0
+  out=$(bounded "$w" $((t + 86400))) || rc=$?
+  expect_code 3 "$rc" "a malformed declaration's hold has no limit"
+  assert_contains "$out" "$(row unbounded "malformed or unreadable declaration typo")" "the unbounded record names the declaration"
+  pass "check-advance --hold-bound holds under the limit, expires past it, reads the setting, and holds on a failed reading"
+}
+
 # --- unaccepted-version alarm -------------------------------------------------
 
 # alarm_world <name>: a repo whose origin main carries bin/helper.sh v1, committed
@@ -482,6 +562,73 @@ test_alarm_failed_readings_raise_naming_the_file() {
   out=$(alarm_at "$w" $((T0 + 120)))
   assert_equals "" "$(store_query "$w" main '.active | keys[]')" "fixing each file clears its level"
   pass "an unreadable record, declaration or limit file raises a level naming it"
+}
+
+# A version an update deployed past the hold limit: one level per version in
+# main and in each owner's store, in place of its branch level, raised once.
+test_alarm_deployed_version_reaches_each_owner_once() {
+  local w out at key owner helper
+  w=$(alarm_world alarm-deployed)
+  owner="$w/owner"
+  helper="$w/repo/bin/helper.sh"
+  mkdir -p "$owner/state"
+  printf -- '- other-mate - helper owner (home: %s; scope: helpers; projects: none; added 2026-10-01)\n' "$owner" > "$w/home/data/secondmates.md"
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=lane' 'owner=lane-mate' "helper=$helper" "accept=$V1" > "$w/decl/lane.conf"
+  at=$(iso_epoch 2026-10-30T10:00:00Z)
+  land "$w" 'echo v2' "$at"
+  key="helper-unaccepted-deployed-helper.sh-${V2:0:12}"
+
+  alarm_at "$w" $((at + 3 * 3600)) >/dev/null
+  assert_equals "helper-unaccepted-helper.sh-${V2:0:12}" "$(store_query "$w" main '.active | keys[]')" "the branch level is raised first"
+  FM_HELPER_CONSUMERS_NOW=$((at + 3 * 3600 + 60)) hc "$w" log expired "$w/home" - "$helper" "$V2" holder,lane "fixture pass"
+
+  out=$(alarm_at "$w" $((at + 3 * 3600 + 120)))
+  assert_equals "" "$out" "a delivered deployed level prints nothing"
+  assert_equals "$key" "$(store_query "$w" main '.active | keys[]')" "the deployed level replaces the branch level in main"
+  assert_equals "$key" "$(store_query "$w" other-mate '.active | keys[]')" "the reachable owner holds the deployed level"
+  assert_contains "$(store_query "$w" main ".active[\"$key\"].reason")" \
+    "bin/helper.sh version ${V2:0:12} was deployed by an update at 2026-10-30T13:01:00Z after its hold passed the hold limit, and holder,lane (owner other-mate,lane-mate) has not accepted it" \
+    "the level names the version, when it was deployed, the consumers and their owners"
+  assert_contains "$(store_query "$w" main ".active[\"$key\"].reason")" "for lane-mate, whose home this machine does not see" \
+    "an owner this machine cannot reach is named in main's level"
+  assert_equals deployed-unaccepted "$(store_query "$w" other-mate ".active[\"$key\"].kind")" "the level has its own kind"
+
+  alarm_at "$w" $((at + 4 * 3600)) >/dev/null
+  alarm_at "$w" $((at + 5 * 3600)) >/dev/null
+  assert_equals 1 "$(store_query "$w" main "[.events[] | select(.action == \"raised\" and .key == \"$key\")] | length")" \
+    "a rerun raises nothing new in main"
+  assert_equals 1 "$(store_query "$w" other-mate "[.events[] | select(.action == \"raised\" and .key == \"$key\")] | length")" \
+    "a rerun raises nothing new for the owner"
+
+  declare_consumer "$w" holder "$helper" "$V1" "$V2"
+  alarm_at "$w" $((at + 6 * 3600)) >/dev/null
+  assert_equals "" "$(store_query "$w" other-mate '.active | keys[]')" "the owner's level clears once its consumer accepts"
+  assert_contains "$(store_query "$w" main ".active[\"$key\"].reason")" "and lane (owner lane-mate) has not accepted it" \
+    "main's level still names the consumer that has not accepted"
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=lane' 'owner=lane-mate' "helper=$helper" "accept=$V2" > "$w/decl/lane.conf"
+  alarm_at "$w" $((at + 7 * 3600)) >/dev/null
+  assert_equals "" "$(store_query "$w" main '.active | keys[]')" "every consumer accepting clears the level"
+  pass "a version deployed past the hold limit raises one level per owner once, and clears on acceptance"
+}
+
+test_alarm_unreadable_hold_log_and_limit_raise() {
+  local w keys
+  w=$(alarm_world alarm-hold-failed)
+  mkdir -p "$w/versions/holds.log"
+  printf 'later\n' > "$w/home/config/helper-hold-max"
+  alarm_at "$w" "$T0" >/dev/null
+  keys=$(store_query "$w" main '.active | keys[]')
+  assert_contains "$keys" "helper-unaccepted-hold-log-unreadable" "an unreadable hold log raises"
+  assert_contains "$(store_query "$w" main '.active["helper-unaccepted-hold-log-unreadable"].reason')" "$w/versions/holds.log" \
+    "the hold log level names the log"
+  assert_contains "$keys" "helper-unaccepted-hold-max-unreadable" "an unparsable hold limit raises"
+  assert_contains "$(store_query "$w" main '.active["helper-unaccepted-hold-max-unreadable"].reason')" "/config/helper-hold-max" \
+    "the hold limit level names the file"
+  rmdir "$w/versions/holds.log"
+  rm -f "$w/home/config/helper-hold-max"
+  alarm_at "$w" $((T0 + 60)) >/dev/null
+  assert_equals "" "$(store_query "$w" main '.active | keys[]')" "fixing each file clears its level"
+  pass "an unreadable hold log or hold limit raises a level naming it"
 }
 
 test_alarm_without_declarations_is_silent() {
@@ -699,9 +846,12 @@ test_pending_records_once_and_files_one_note
 test_pending_range_and_repository_filters
 test_log_validates_and_appends_one_line
 test_holds_reads_back_every_window
+test_check_advance_hold_bound
 test_alarm_w2_raises_once_and_clears_on_acceptance
 test_alarm_supersession_owner_route_and_limit_file
 test_alarm_failed_readings_raise_naming_the_file
+test_alarm_deployed_version_reaches_each_owner_once
+test_alarm_unreadable_hold_log_and_limit_raise
 test_alarm_without_declarations_is_silent
 test_alarm_arm_and_disarm
 test_candidate_files_one_record_and_note
