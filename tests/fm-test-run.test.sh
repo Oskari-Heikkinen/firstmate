@@ -1750,16 +1750,18 @@ SH
 # starts nothing more and says how many never ran. Each mode starts scripts
 # differently (under the bound's watchdog, in a group of their own with the
 # bound off, and in --jobs workers that forward the stop), so each is stopped
-# for real. The fixtures hang until signalled and record their sleep's pid, so
-# the case can prove nothing they started outlived the stop.
+# for real. The --jobs stand-ins are both individually proven isolated, so they
+# share one concurrent phase and both run at once. The fixtures hang until
+# signalled and record their sleep's pid, so the case can prove nothing they
+# started outlived the stop.
 test_term_stops_the_running_script_and_the_run() {
   local tmp repo mode pid waited rc out err sleeper pidfile not_run
   local -a args stopped
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-stop.XXXXXX")
   repo="$tmp/repo"
   init_stub_suite_repo "$repo" fm-stop-a.test.sh fm-stop-b.test.sh \
-    fm-cd-pretool-check.test.sh fm-dod-lib.test.sh
-  for pidfile in fm-stop-a fm-cd-pretool-check fm-dod-lib; do
+    fm-cd-pretool-check.test.sh fm-pr-merge.test.sh
+  for pidfile in fm-stop-a fm-cd-pretool-check fm-pr-merge; do
     cat >"$repo/tests/$pidfile.test.sh" <<'SH'
 #!/usr/bin/env bash
 echo "ok - started, hanging until stopped"
@@ -1789,8 +1791,8 @@ SH
         not_run=1
         ;;
       jobs)
-        args=(--jobs 2 tests/fm-cd-pretool-check.test.sh tests/fm-dod-lib.test.sh)
-        stopped=(tests/fm-cd-pretool-check.test.sh tests/fm-dod-lib.test.sh)
+        args=(--jobs 2 tests/fm-cd-pretool-check.test.sh tests/fm-pr-merge.test.sh)
+        stopped=(tests/fm-cd-pretool-check.test.sh tests/fm-pr-merge.test.sh)
         not_run=0
         ;;
     esac
