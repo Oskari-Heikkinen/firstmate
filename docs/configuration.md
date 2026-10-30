@@ -2724,6 +2724,34 @@ A later fresh failure gets a fresh key, because the watcher never re-surfaces a 
 A value this command cannot use is refused by name before anything is launched, the same way `FM_PROCEVENT_LAUNCH_FLOOR_SECONDS` and `FM_PROCEVENT_MAX_OUTPUT_BYTES` are refused, so a mistyped window can never present as a fleet of sources that cannot start.
 `bin/fm-watch.sh` validates the same value when it arms and refuses to arm on an unusable one, naming the variable and the range: under a running watcher that refusal would otherwise repeat on every cycle into a discarded stdout and leave the whole home disarmed while presenting as supervised, whereas a watcher that will not arm is loud through the liveness guard.
 
+**Restart runners on current code**
+
+A runner keeps the code it started with, so an update to `bin/` reaches a source only when its runner next starts.
+`bin/fm-procevent.sh restart <source-id>` moves one source onto the code now on disk, and `--all` moves every source registered in this home; the script's header owns the command line and exit statuses.
+Nothing it does touches a registration, a captured or pending result, or another home's claim, and only a claim this home owns is ever asked to stop.
+
+- A runner that supports restart writes a private `.<id>.<token>.restartable` marker beside its staged output once its TERM trap is in place.
+  `restart` writes the matching `.<id>.<token>.restart` request and sends TERM to that runner's leader alone.
+- The runner never stops on the signal itself.
+  It records the request and stops at its next safe point: before its next launch, instead of polling again after an empty wait, or after a result is durably captured and published.
+  A TERM that lands during the launch floor's wait is acted on when that wait ends, at most `FM_PROCEVENT_LAUNCH_FLOOR_SECONDS` later.
+- While a built-in child polls, the runner forwards one TERM to its own process group, which then holds only that child's tree and the TERM-immune reader copying the child's output.
+  A child that then exits 0 with its output intact is captured as usual; anything else is discarded as a possible partial result and never captured, so a result is either recorded whole or polled again from scratch.
+- The `when` adapter ignores TERM from the moment it claims a fire and runs the action in a process group of its own, so a restart during an action lets the action finish and its outcome be captured before the runner stops, and the at-most-once fire still holds.
+  Before the claim, a TERM ends its poll with no outcome and the relaunched runner polls again.
+- An extension runner is never forwarded the stop: it finishes its current poll, which is captured as usual, and stops instead of polling again.
+- A runner started before restart support has no marker and ignores the request.
+  `restart` stops such a built-in runner with a proved group TERM - never KILL - only while its staged output is still empty and its adapter's `restart-busy` command, asked with the code on disk, does not exit 0; an adapter without that command exits 1, which counts as idle, and every other answer counts as busy.
+  An extension runner from before restart support is never stopped, because nothing proves when its child is idle.
+- A runner that has stopped releases its own claim, and `restart` relaunches the source and confirms it through the same launch path and confirmation evidence `reconcile` uses; a source that had no running runner is simply launched.
+  A source whose claim `reconcile` would not displace is reported, not displaced.
+
+`FM_PROCEVENT_RESTART_SECONDS` (default 30, range 1..600) bounds the whole command: every runner is asked first, and one shared window covers their stops.
+At the bound, a runner still finishing a poll or action is reported `stopping`, and a runner from before restart support that never looked idle is reported `busy`; the request stays in place, so a `stopping` runner still stops at its next safe point and the watcher's next `reconcile` relaunches it.
+`restart` prints one line per source - `restarted`, `started`, `ended`, `stopping`, `busy`, `skipped`, `uncertain` or `failed`, each with its reason - and a `restart:` summary line with each count.
+It exits 1 when a relaunch failed to confirm (also announced as a launch failure, as above), 3 when anything was left `stopping`, `busy` or `uncertain`, and 0 otherwise, so a caller can tell a finished restart from one that still needs a later look.
+An unusable window or confirm setting is refused by name before anything is signalled.
+
 **Limit captured output**
 
 `FM_PROCEVENT_MAX_OUTPUT_BYTES` (default 1048576) bounds a single captured result while the source runs; oversized output is drained but truncated with a stderr notice rather than staged or published whole or dropped.
@@ -2838,6 +2866,7 @@ FM_PROCEVENT_OWNER_LEASE_SECONDS=600    # how long a source runner keeps going w
 FM_PROCEVENT_OWNER_CHECK_SECONDS=60     # a runner guard's detection interval, read twice per interval; 1..3600
 FM_PROCEVENT_LAUNCH_FLOOR_SECONDS=1     # minimum interval between launches of one registration generation's source command; 1..3600
 FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=3   # how long reconcile waits for the runners it started to prove they are running; 1..600, keep well below FM_POLL
+FM_PROCEVENT_RESTART_SECONDS=30         # how long fm-procevent.sh restart waits for the runners it asked to stop; 1..600
 FM_WHEN_OUTPUT_TAIL_BYTES=8192          # bound on the command-output tail inside one condition->action outcome document
 FM_CODEX_WATCH_CHECKPOINT=180   # seconds per foreground watcher checkpoint in Codex primary supervision
 FM_CODEX_WATCH_CHECKPOINT_AWAY=3600  # requested away checkpoint bound on a home that runs the supervision host; longer of this and attended bound, capped at 27000
