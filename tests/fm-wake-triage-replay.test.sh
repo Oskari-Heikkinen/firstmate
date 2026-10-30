@@ -28,8 +28,10 @@
 #     .agents/skills/wake-triage/SKILL.md), and an unreadable one refuses.
 #   - The pi engine's JSON event stream is read.
 #   - score types main's wake turns and states the exit test met or not met,
-#     and refuses a replay line whose seq names another row time in the host
-#     log copy it reads.
+#     types a stuck-busy row whose message was handled by the row time plus
+#     its --probe-lag S (cleared on its own) whatever main's turn was, and
+#     refuses a replay line whose seq names another row time in the host log
+#     copy it reads.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -216,7 +218,7 @@ test_routes_and_probes() {
 }
 
 test_handled_message_passes() {
-  local h2="$TMP_ROOT/home2" out="$TMP_ROOT/handled.tsv" now day iso
+  local h2="$TMP_ROOT/home2" out="$TMP_ROOT/handled.tsv" now day iso head
   mkdir -p "$h2/state/gamma.inbox/handled"
   now=$(date +%s)
   iso=$(python3 -c 'import sys, time; print(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(sys.argv[1]) - 60)))' "$now")
@@ -242,7 +244,29 @@ test_handled_message_passes() {
   assert_equals "fail relay" "$(field "$TMP_ROOT/late.tsv" h1 evidence) $(field "$TMP_ROOT/late.tsv" h1 action)" "a message handled after the probe time fails"
   assert_contains "$(cat "$STUB_DIR/h1.msg")" "gamma had not handled inbox 3.msg (queued $iso) by" "the message says the record was handled only later"
   assert_grep "main-only row(s) in host log $TMP_ROOT/late-host.log" "$TMP_ROOT/late.tsv.log" "the log names the host log read"
-  pass "a stuck-busy message passes only when handled by the probe time"
+  # Score: a stuck message handled by the deadline cleared on its own, so
+  # main's note about it does not make the row one the operator needed.
+  head=$(cut -f5 "$h2/state/.supervision-host.log")
+  wake_json "$(python3 -c 'import sys, time; print(time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(int(sys.argv[1]) + 3)))' "$now")" \
+    "$head" "The gamma worker's stuck message cleared on its own, so nothing was lost there." 1 > "$TMP_ROOT/main-s.jsonl"
+  RC=0
+  OUT=$("$TR" score --home "$h2" --replay "$out" --transcript "$TMP_ROOT/main-s.jsonl" --out "$TMP_ROOT/score-s.md" 2>&1) || RC=$?
+  expect_code 0 "$RC" "score of a self-cleared stuck message"
+  assert_grep "on $(python3 -c 'import sys, time; print(time.strftime("%Y-%m-%d", time.gmtime(int(sys.argv[1]))))' "$now"): **met**; 1 would-settle." "$TMP_ROOT/score-s.md" \
+    "a settle of a stuck message handled by the deadline meets the exit test though main told the operator"
+  assert_grep "| stale:stuck-busy-inbox | S (was V) | pass |" "$TMP_ROOT/score-s.md" "the row is typed S, naming main's own type"
+  head=$(cut -f5 "$TMP_ROOT/late-host.log")
+  wake_json "$(python3 -c 'import sys, time; print(time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(int(sys.argv[1]) + 3)))' "$((now - 1000))")" \
+    "$head" "Nothing new." 0 > "$TMP_ROOT/main-late.jsonl"
+  RC=0
+  OUT=$("$TR" score --home "$h2" --host-log "$TMP_ROOT/late-host.log" --replay "$TMP_ROOT/late.tsv" --transcript "$TMP_ROOT/main-late.jsonl" --out "$TMP_ROOT/score-late.md" 2>&1) || RC=$?
+  expect_code 0 "$RC" "score of a message handled late"
+  assert_grep "| stale:stuck-busy-inbox | 0 | 0 | 0 | 1 | 0 | 0 |" "$TMP_ROOT/score-late.md" "a message handled after the deadline is not S"
+  RC=0
+  OUT=$("$TR" score --home "$h2" --host-log "$TMP_ROOT/late-host.log" --probe-lag 5000 --replay "$TMP_ROOT/late.tsv" --transcript "$TMP_ROOT/main-late.jsonl" --out "$TMP_ROOT/score-late.md" 2>&1) || RC=$?
+  expect_code 0 "$RC" "score with a longer deadline"
+  assert_grep "| stale:stuck-busy-inbox | S (was N) | fail |" "$TMP_ROOT/score-late.md" "--probe-lag sets the deadline score types S by"
+  pass "a stuck-busy message passes only when handled by the probe time, and scores S when it cleared"
 }
 
 test_engine_failure_is_relay_and_retried() {
@@ -355,8 +379,8 @@ test_score() {
   OUT=$("$TR" score --home "$H" --replay "$out" --transcript "$TMP_ROOT/main-m.jsonl" --out "$TMP_ROOT/score-m.md" 2>&1) || RC=$?
   expect_code 0 "$RC" "score"
   assert_grep "**claude/claude-sonnet-5-5** on 2026-10-29: **met**; 1 would-settle." "$TMP_ROOT/score-m.md" "settles only where main was M or N meet the exit test"
-  assert_grep "| check:loop-alerts | 0 | 0 | 0 | 1 | 1 |" "$TMP_ROOT/score-m.md" "main's handling is typed per class"
-  assert_grep "| stale:stuck-busy-inbox | 0 | 0 | 1 | 0 | 1 |" "$TMP_ROOT/score-m.md" "more than 2 tool calls is M"
+  assert_grep "| check:loop-alerts | 0 | 0 | 0 | 1 | 0 | 1 |" "$TMP_ROOT/score-m.md" "main's handling is typed per class"
+  assert_grep "| stale:stuck-busy-inbox | 0 | 0 | 1 | 0 | 0 | 1 |" "$TMP_ROOT/score-m.md" "more than 2 tool calls is M, and an unhandled stuck message is not S"
   awk -F'\t' 'BEGIN { OFS = "\t" } $2 == "seq=h4" { for (i = 3; i <= NF; i++) if ($i == "evidence=pass") $i = "evidence=fail" } { print }' "$out" > "$TMP_ROOT/unproven.tsv"
   assert_equals "fail settle" "$(field "$TMP_ROOT/unproven.tsv" h4 evidence) $(field "$TMP_ROOT/unproven.tsv" h4 action)" "fixture: a settle on failing evidence"
   RC=0
