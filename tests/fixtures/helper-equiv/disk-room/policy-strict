@@ -1,0 +1,6 @@
+fm-storage-admission-policy/v1
+admission=off
+c-terms=strict
+c-terms-command=/bin/sh
+c-terms-arg=-c
+c-terms-arg=cat "$FAKE_CTERMS"

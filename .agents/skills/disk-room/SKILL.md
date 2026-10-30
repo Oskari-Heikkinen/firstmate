@@ -39,6 +39,7 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows
 - Around a distro re-import, run `bin/fm-reimport-rekey.sh record` in each parked home before the export and `apply` before its first session start, so status logs are not rescanned from the start; [`docs/disk-room.md`](../../../docs/disk-room.md#re-importing-the-distro) owns the steps.
 - A home that pins `fm-disk-room.sh` accepts its exact bytes through the helper-consumer gate ([`docs/helper-consumers.md`](../../../docs/helper-consumers.md)), so any byte change, even with an unchanged interface, holds the update until that consumer accepts the new copy; `updatefirstmate` owns that hold.
   The interface version and self-test are evidence for the consumer's review, and writing a strict C: terms policy drops v1 and v2; `docs/disk-room.md` "Consumer interface" owns both.
+  To see how a new copy answers a consumer's own calls in each policy state before it accepts it, run `bin/fm-helper-equiv.sh report` with the call set that consumer publishes ([`docs/helper-consumers.md`](../../../docs/helper-consumers.md#consumer-call-sets) owns the format); a difference it reports is a finding for that review, never an acceptance or a refusal.
 
 ## What a low reading means and who acts
 
