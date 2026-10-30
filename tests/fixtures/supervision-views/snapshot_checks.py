@@ -14,6 +14,7 @@ from unittest.mock import patch
 from crew_checks import CrewParity
 from compatibility_checks import Compatibility
 from fm_view_engine import Engine, Inputs, Refused
+import fm_view_snapshot
 from fm_view_snapshot import Snapshot
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -56,7 +57,7 @@ class SnapshotParity(unittest.TestCase):
 
     def native(self):
         snapshot = Snapshot(Inputs(str(self.home)), self.env)
-        captures = snapshot.capture(snapshot.inventory())
+        captures = snapshot.endpoints(snapshot.capture(snapshot.inventory()), 10)
         rows = [snapshot.compose(row, NOW, EPOCH) for row in captures]
         return snapshot.finish(captures, rows, NOW, EPOCH)["tasks"]
 
@@ -109,12 +110,44 @@ class SnapshotParity(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported"):
             self.native()
 
+    def test_one_endpoint_process_observes_every_local_row(self):
+        (self.state / "other.meta").write_text("kind=scout\nspawn_gen=g1\n")
+        (self.state / "remote.meta").write_text("kind=secondmate\nremote_host=remote-fixture\nremote_root=/explicit/root\nremote_backend=herdr\nremote_target=opaque\nhome=/remote/home\n")
+        calls = []
+        original = fm_view_snapshot.run
+        def counted(argv, *args, **kwargs):
+            calls.append(argv[2:])
+            return original(argv, *args, **kwargs)
+        with patch.object(fm_view_snapshot, "run", counted):
+            self.compare()
+        # The remote row is never observed locally; both local rows share one
+        # adapter process instead of sourcing the backend graph per row.
+        self.assertEqual(calls, [["snapshot-endpoint", "other", "task"]])
+
+    def test_endpoint_batch_refuses_mismatched_packets_and_unobserved_rows(self):
+        from fm_view_process import Observation
+        snapshot = Snapshot(Inputs(str(self.home)), self.env)
+        captures = snapshot.capture(snapshot.inventory())
+        for status, stdout in ((0, b"other\0null\0not_checked\0"), (0, b"task\0null\0"),
+                               (0, b"task\0null\0not_checked\0task\0null\0not_checked\0"),
+                               (0, b"task\0maybe\0not_checked\0"), (0, b"task\0null\0awake\0"),
+                               (0, b"task\0null\0not_checked"), (1, b"task\0null\0not_checked\0")):
+            observed = Observation(("bash",), status, stdout, b"", 0, 0)
+            with self.subTest(status=status, stdout=stdout), \
+                    patch.object(fm_view_snapshot, "run", lambda *args, **kwargs: observed), \
+                    self.assertRaisesRegex(ValueError, "snapshot endpoint observation unavailable"):
+                snapshot.endpoints(captures, 10)
+        # A current row composed without batched evidence refuses rather than
+        # inventing an endpoint or observing it again per row.
+        with self.assertRaisesRegex(ValueError, "snapshot endpoint observation unavailable"):
+            snapshot.compose(captures[0], NOW, EPOCH)
+
     def test_generation_discards_every_mutable_surface(self):
         self.fixture.status(b"blocked [key=x]: predecessor\n")
         (self.home / "data/task").mkdir()
         (self.home / "data/task/report.md").touch()
         snapshot = Snapshot(Inputs(str(self.home)), self.env)
-        captures = snapshot.capture(snapshot.inventory())
+        captures = snapshot.endpoints(snapshot.capture(snapshot.inventory()), 10)
         rows = [snapshot.compose(row, NOW, EPOCH) for row in captures]
         (self.state / "task.meta").write_text("kind=scout\nspawn_gen=replacement\n")
         finished = snapshot.finish(captures, rows, NOW, EPOCH)
@@ -132,7 +165,7 @@ class SnapshotParity(unittest.TestCase):
 
     def test_capture_append_and_fresh_pane_negative_control(self):
         snapshot = Snapshot(Inputs(str(self.home)), self.env)
-        captures = snapshot.capture(snapshot.inventory())
+        captures = snapshot.endpoints(snapshot.capture(snapshot.inventory()), 10)
         with (self.state / "task.status").open("ab") as stream:
             stream.write(b"blocked [key=later]: after capture\n")
         rows = [snapshot.compose(row, NOW, EPOCH) for row in captures]
@@ -273,7 +306,8 @@ class SnapshotCompatibility(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, self.env), patch.object(Snapshot, "compose", compose):
             actual, error = await self.invoke("fm-fleet-snapshot.sh", "--json",
                 FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH))
-        self.assertEqual(calls, ["task"], error)
+        # The batched endpoint observation refuses before any row composes.
+        self.assertEqual(calls, [], error)
         self.assertIn(b"passive snapshot-endpoint integration unsupported; use legacy", error)
         expected, _ = await self.invoke("fm-fleet-snapshot.sh", "--json", native=False,
             FM_SNAPSHOT_NOW=NOW, FM_SNAPSHOT_NOW_EPOCH=str(EPOCH))
@@ -649,7 +683,7 @@ exit 1
 class SnapshotScheduling(unittest.IsolatedAsyncioTestCase):
     async def test_initial_capture_and_final_barriers_never_take_critical_capacity(self):
         import tempfile
-        for phase in ("inventory", "capture", "finish"):
+        for phase in ("inventory", "capture", "endpoints", "finish"):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temporary:
                 home = Path(temporary).resolve()
                 (home / "state").mkdir()

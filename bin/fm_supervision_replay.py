@@ -211,7 +211,12 @@ class _Workload:
                         or (len(args) == 7 and args[:5] == ["axi", "logs", "--step", "ci", "--run"]
                             and token(args[5]) and args[6] == "--full"))
             admitted = admitted and cwd[1] == "worktree"
-        elif operation in ("backend", "snapshot-endpoint", "saved-custody", "done-proof", "forge"):
+        elif operation == "snapshot-endpoint":
+            # One batched observation names every local row of a snapshot.
+            admitted = (1 <= len(args) <= 256 and len(set(args)) == len(args)
+                        and all(arg in self.homes[request["home"]] for arg in args)
+                        and (not request["task"] or args == [request["task"]]))
+        elif operation in ("backend", "saved-custody", "done-proof", "forge"):
             admitted = (len(args) == (2 if operation in ("done-proof", "forge") else 1)
                         and args[0] in self.homes[request["home"]]
                         and (not request["task"] or args[0] == request["task"]))

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # fm-view-adapter.sh - fixed passive observations for the native view engine.
-# Internal API: <backend|snapshot-endpoint|saved-custody|done-proof|forge> <task-id> [captured-line-or-pr]
+# Internal API: <backend|saved-custody|done-proof|forge> <task-id> [captured-line-or-pr]
+#               snapshot-endpoint <task-id>...
 # FM_HOME selects the explicit home; callers bound the whole process group and
 # stdout/stderr. Output is a NUL-delimited field packet, never executable text.
 # No queue/cursor/publication/action authority; no arbitrary command argument.
@@ -25,22 +26,36 @@ KIND=${KIND:-ship}
 fm_meta_get_to WT "$META" worktree
 case "$operation" in
   snapshot-endpoint)
-    fm_backend_of_meta_to BACKEND "$META"
-    [ "$BACKEND" = tmux ] || exit 3
-    fm_backend_target_of_meta_to TARGET "$META" || TARGET=''
-    EXISTS=null
-    AGENT_STATE=not_checked
-    if [ -n "$TARGET" ]; then
-      if fm_backend_target_exists "$BACKEND" "$TARGET" "fm-$ID" >/dev/null 2>&1; then
-        EXISTS=true
-      else
-        EXISTS=false
+    # One process observes every listed row, so a snapshot sources this graph
+    # once instead of once per row. Each packet names its task; any row on a
+    # backend this route does not admit refuses the whole batch.
+    shift
+    [ "$#" -le 256 ] || exit 2
+    for ID in "$@"; do
+      case "$ID" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) exit 2 ;; esac
+    done
+    for ID in "$@"; do
+      META="$STATE/$ID.meta"
+      KIND='' BACKEND='' TARGET=''
+      fm_meta_get_to KIND "$META" kind
+      KIND=${KIND:-ship}
+      fm_backend_of_meta_to BACKEND "$META"
+      [ "$BACKEND" = tmux ] || exit 3
+      fm_backend_target_of_meta_to TARGET "$META" || TARGET=''
+      EXISTS=null
+      AGENT_STATE=not_checked
+      if [ -n "$TARGET" ]; then
+        if fm_backend_target_exists "$BACKEND" "$TARGET" "fm-$ID" >/dev/null 2>&1; then
+          EXISTS=true
+        else
+          EXISTS=false
+        fi
+        if [ "$KIND" = secondmate ]; then
+          AGENT_STATE=$(fm_backend_agent_alive "$BACKEND" "$TARGET" 2>/dev/null || printf unknown)
+        fi
       fi
-      if [ "$KIND" = secondmate ]; then
-        AGENT_STATE=$(fm_backend_agent_alive "$BACKEND" "$TARGET" 2>/dev/null || printf unknown)
-      fi
-    fi
-    printf '%s\0%s\0' "$EXISTS" "$AGENT_STATE"
+      printf '%s\0%s\0%s\0' "$ID" "$EXISTS" "$AGENT_STATE"
+    done
     ;;
   backend)
     fm_backend_of_meta_to BACKEND "$META"
