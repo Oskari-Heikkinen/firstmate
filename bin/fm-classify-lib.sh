@@ -76,6 +76,12 @@ case $- in *u*) _fm_classify_nounset=on ;; *) _fm_classify_nounset=off ;; esac
 # shellcheck source=bin/fm-alert-store-lib.sh
 # shellcheck disable=SC1091
 . "$_FM_CLASSIFY_LIB_DIR/fm-alert-store-lib.sh"
+# The wait-condition evaluator shared with bin/fm-park.sh reads the file, inbox
+# and process kinds of a declared wait (_fm_wait_condition_holds below). It
+# defines functions only.
+# shellcheck source=bin/fm-wait-cond-lib.sh
+# shellcheck disable=SC1091
+. "$_FM_CLASSIFY_LIB_DIR/fm-wait-cond-lib.sh"
 unset _fm_classify_nounset
 
 # Captain-relevant status verbs. A status line carrying any of these is work
@@ -569,12 +575,71 @@ status_paused_until() {  # <status-line> -> epoch on stdout
 #                       unreadable queue cannot prove a holding wait.
 #   receipt:<abs-path>  the receipt file does not exist yet while its parent
 #                       directory does.
-# A new kind is one more arm in _fm_wait_condition_holds. Without a tag, the
+#   file:<abs-path>     the path does not exist yet.
+#   inbox:<task-id>     no explicit pickup is recorded for the task (park_pickup
+#                       equal to park_token in <state>/<task-id>.meta) and its
+#                       steering inbox <state>/<task-id>.inbox holds no unread
+#                       *.msg record, so input that has arrived ends the wait.
+#                       A task without a record cannot hold a wait.
+#   process:<pid>:<start>:<UTC>
+#                       the process with that pid and start token
+#                       (fm_wait_pid_start_to) still runs and is not a zombie,
+#                       and the time <UTC> (as for until) has not passed. The
+#                       start token makes a reused pid end the wait, and the
+#                       time bounds a process that never ends;
+#                       `fm-worker-status.sh --process-tag` prints the tag.
+# <state> is FM_STATE_OVERRIDE, else the home's state directory. The file, inbox
+# and process kinds are read through fm_wait_cond_eval (bin/fm-wait-cond-lib.sh),
+# the evaluator bin/fm-park.sh uses for its conditions of the same names, and a
+# declared wait holds while that evaluator answers "not met yet".
+# FM_WAIT_KINDS lists the kinds; a new kind is one more word there and one more
+# arm in _fm_wait_condition_holds. Without a tag, the
 # prose `until <UTC>` clause status_paused_until reads is the line's condition;
 # with a tag, the tag alone is the condition, so a guessed ETA written as prose
 # never outranks the machine-checkable source. A tag with an unknown kind, a
 # malformed argument, a checker that is not installed, or a source that cannot
 # be read counts as NOT holding: a wait nothing can verify wakes its supervisor.
+
+FM_WAIT_KINDS='heavy until merge-result receipt file inbox process'
+
+# 0 when <kind> is one of FM_WAIT_KINDS.
+status_wait_kind_known() {  # <kind>
+  case " $FM_WAIT_KINDS " in *" ${1-} "*) [ -n "${1-}" ] ;; *) return 1 ;; esac
+}
+
+# Print the `[wait=process:<pid>:<start>:<UTC>]` tag for a running process and
+# a future time <UTC> (as for until); 1 when no such process runs, and 2 when
+# <UTC> is malformed or has passed.
+status_wait_process_tag() {  # <pid> <UTC>
+  local start until
+  until=$(fm_utc_iso_to_epoch "${2-}") || return 2
+  [ "$(date +%s)" -lt "$until" ] || return 2
+  fm_wait_pid_start_to start "${1-}" || return 1
+  printf '[wait=process:%s:%s:%s]' "$1" "$start" "$2"
+}
+
+# Print why a status line's wait tag cannot be checked, naming the valid kinds,
+# or nothing (return 1) when the line has no tag or one the checker reads.
+status_wait_tag_problem() {  # <status-line>
+  local cond rc=0
+  status_wait_tag "$1" cond || rc=$?
+  case "$rc" in
+    1) return 1 ;;
+    2) printf 'its wait tag is malformed or repeated (one [wait=<kind>:<arg>], no spaces or ] in <arg>)' ;;
+    *)
+      if ! status_wait_kind_known "${cond%%:*}"; then
+        printf "its wait tag kind '%s' is unknown" "${cond%%:*}"
+      else
+        case "$cond" in
+          process:*:*:*) return 1 ;;
+          process:*) printf 'a process wait needs [wait=process:<pid>:<start>:<UTC>]; fm-worker-status.sh --process-tag <pid> <UTC> prints it' ;;
+          *) return 1 ;;
+        esac
+      fi
+      ;;
+  esac
+  printf ' (valid kinds: %s)' "$FM_WAIT_KINDS"
+}
 
 # Print "<kind>:<arg>" of the head's wait tag; 1 when the line has none, and 2
 # when it has more than one or the tag is not well-formed.
@@ -603,7 +668,7 @@ status_wait_untagged() {  # <status-line>
 
 # 0 when one "<kind>:<arg>" condition holds at <now>; 1 otherwise.
 _fm_wait_condition_holds() {  # <kind:arg> <now>
-  local kind=${1%%:*} arg=${1#*:} now=$2 dir rec fields state pid until log dirpart checker rc config
+  local kind=${1%%:*} arg=${1#*:} now=$2 dir rec fields state pid until log dirpart checker rc config start f
   case "$kind" in
     heavy)
       case "$arg" in [A-Za-z0-9]*) ;; *) return 1 ;; esac
@@ -664,6 +729,33 @@ _fm_wait_condition_holds() {  # <kind:arg> <now>
       dirpart=${arg%/*}
       [ -n "$dirpart" ] || dirpart=/
       [ -d "$dirpart" ] && [ -x "$dirpart" ]
+      ;;
+    file)
+      rc=0
+      fm_wait_cond_eval "file:$arg" '' || rc=$?
+      [ "$rc" -eq 1 ]
+      ;;
+    inbox)
+      state=${FM_STATE_OVERRIDE:-${FM_HOME:-${FM_ROOT_OVERRIDE:-${_FM_CLASSIFY_LIB_DIR%/*}}}/state}
+      rc=0
+      fm_wait_cond_eval "inbox:$arg" "$state" || rc=$?
+      [ "$rc" -eq 1 ] || return 1
+      for f in "$state/$arg.inbox"/*.msg; do
+        [ ! -e "$f" ] || return 1
+      done
+      return 0
+      ;;
+    process)
+      pid=${arg%%:*}
+      start=${arg#*:}
+      until=${start#*:}
+      start=${start%%:*}
+      [ "$until" != "$arg" ] && [ "$until" != "${arg#*:}" ] || return 1
+      until=$(fm_utc_iso_to_epoch "$until") || return 1
+      [ "$now" -lt "$until" ] || return 1
+      rc=0
+      fm_wait_cond_eval "process:$pid:$start" '' || rc=$?
+      [ "$rc" -eq 1 ]
       ;;
     *) return 1 ;;
   esac

@@ -304,7 +304,7 @@ test_host_checkpoint_bounds_the_park_by_posture() {
   assert_contains "$(cat "$home/host-env")" 'park=1000' "the away bound must never shorten a longer checkpoint"
   # Quiet mode's record is a present captain (bin/fm-afk-contract.sh AWAY OR
   # QUIET), so the checkpoint keeps its attended bound beside it.
-  for f in fm-afk-contract.sh fm-classify-lib.sh fm-timeout-lib.sh fm-alert-store-lib.sh; do cp "$ROOT/bin/$f" "$home/root/bin/$f"; done
+  for f in fm-afk-contract.sh fm-classify-lib.sh fm-timeout-lib.sh fm-alert-store-lib.sh fm-wait-cond-lib.sh; do cp "$ROOT/bin/$f" "$home/root/bin/$f"; done
   rm -f "$home/state/.afk-contract"
   FM_HOME="$home" FM_AFK_MODE=quiet "$ROOT/bin/fm-afk-contract.sh" enter --words 'keep routine wakes off my main' >/dev/null 2>&1 \
     || fail "fixture: could not record quiet mode"

@@ -20,9 +20,9 @@ MAX_CAPTURE_READS = 100000
 # complete invocation tail, including redirection/continuation, in CI. A real
 # capture's code_ref still needs independent provenance review.
 CALLER_SITES = {
-    "bin/fm-classify-lib.sh:3709": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true'),
-    "bin/fm-classify-lib.sh:3755": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$task" 2>/dev/null) || true'),
-    "bin/fm-classify-lib.sh:3884": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true'),
+    "bin/fm-classify-lib.sh:3801": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true'),
+    "bin/fm-classify-lib.sh:3847": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$task" 2>/dev/null) || true'),
+    "bin/fm-classify-lib.sh:3976": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true'),
     "bin/fm-inactive-reconcile.sh:562": ("crew-state", "value", "status", '"$CREW_STATE_BIN" "$id" 2>/dev/null) || state_rc=$?'),
     "bin/fm-fleet-snapshot.sh:362": ("crew-state", "first", "continued", '"$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null || true'),
     "bin/fm-supervise-daemon.sh:1556": ("wake-drain", "identity", "boolean", 'if ! "$FM_DAEMON_DIR/fm-wake-drain.sh" > "$out" 2> "$err"; then'),

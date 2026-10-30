@@ -119,7 +119,8 @@
 #           that fails, append a blocked: status line naming park-exit.log so the
 #           supervisor is woken rather than an idle session holding memory.
 #
-# Conditions (one line, no shell interpretation):
+# Conditions (one line, no shell interpretation); bin/fm-wait-cond-lib.sh
+# evaluates file:, receipt: and inbox:, shared with declared waits:
 #   file:<absolute-path>          true once the path exists (a fetched run, a results file)
 #   pr-merged:<github-pr-url>     true once the PR is merged; closed unmerged is an error
 #   inbox:<task-id>              true only after explicit `pickup <task-id>`;
@@ -215,9 +216,14 @@ export FM_HOME
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# The shared condition evaluator; ShellCheck already reads it through the
+# fm-classify-lib.sh directive below.
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/fm-wait-cond-lib.sh"
 # A park watch runs `poll` every interval, and a poll needs only the task-id
-# and pull request parsers above; cmd_poll loads the custody helpers itself
-# when the record shows an interrupted release to reconcile.
+# and pull request parsers and the condition evaluator above; cmd_poll loads
+# the custody helpers itself when the record shows an interrupted release to
+# reconcile.
 if [ "${1-}" != poll ]; then
   # shellcheck source=bin/fm-wake-lib.sh
   . "$SCRIPT_DIR/fm-wake-lib.sh"
@@ -415,16 +421,19 @@ heavy_job_path() {
 }
 
 cmd_check() {
-  local cond=${1-} state value tool meta_park_token meta_park_pickup
+  local cond=${1-} state value tool
   local -a argv
   condition_valid "$cond" || exit 2
   case "$cond" in
-    inbox:*)
-      task_resolve "${cond#inbox:}"
-      meta_read park_token park_pickup
-      [ -n "$meta_park_token" ] && [ "$meta_park_pickup" = "$meta_park_token" ] && exit 0
-      exit 1 ;;
-    file:*|receipt:*) [ -e "${cond#*:}" ] && exit 0; exit 1 ;;
+    inbox:*|file:*|receipt:*)
+      # bin/fm-wait-cond-lib.sh owns what these kinds mean, shared with the
+      # declared waits of the same names.
+      case "$cond" in inbox:*) task_resolve "${cond#inbox:}" ;; esac
+      fm_wait_cond_eval "$cond" "$STATE"
+      state=$?
+      [ "$state" -gt 1 ] || exit "$state"
+      printf 'cannot evaluate %s: its source cannot be read\n' "$cond"
+      exit 2 ;;
     merge-result:*)
       value=${cond#merge-result:}
       "$SCRIPT_DIR/fm-procevent-merge-queue.sh" result-ready "$value"

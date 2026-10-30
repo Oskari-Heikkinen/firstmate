@@ -430,7 +430,7 @@ INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
 # exact park command stays inline, while the worker-guide waits-and-parking
 # reference owns the wait tags and handoff format, and fm-park.sh's header owns
 # the conditions and resume semantics.
-PARK_RULE="   Before a wait longer than a few minutes, read \`$(fm_worker_guide_ref waits-and-parking)\` for the tags that keep monitoring quiet while a declared wait holds, and for parking:
+PARK_RULE="   Before a wait longer than a few minutes, read \`$(fm_worker_guide_ref waits-and-parking)\` for the tags that keep monitoring quiet while a declared wait holds (a long command declares its process), and for parking:
    when the wait is on an external result that will take a while, park instead of idling with \`FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-park.sh") $ID --handoff <file>\`."
 
 # The receive-and-ack half of the steering-inbox contract, included in every

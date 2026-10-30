@@ -756,6 +756,11 @@ case_copy_free_qualification() {
   FM_HOME="$home" "$PARK" pickup "$id" || fail 'explicit pickup failed'
   FM_HOME="$home" "$PARK" check "inbox:$id" || fail 'explicit pickup did not clear the wait'
   assert_present "$home/state/$id.inbox/001.msg" 'condition consumed an ordinary inbox message'
+  # The file and receipt kinds go through the same evaluator as declared waits.
+  rc=0; FM_HOME="$home" "$PARK" check "file:$home/no-result" >/dev/null || rc=$?
+  [ "$rc" = 1 ] || fail "an absent file condition did not answer not yet (rc $rc)"
+  : > "$home/result"
+  FM_HOME="$home" "$PARK" check "receipt:$home/result" >/dev/null || fail 'a present receipt condition was not met'
   printf 'tamper\n' >> "$home/data/$id/suspension.bundle"
   suspend_lib "$dir" fm_suspend_validate "$meta" "$id" "$home" "$home/data" && fail 'bundle corruption validated'
   pass 'copy-free qualification is off by default, uses continuous 24h/immediate policy, refuses dirty/unknown work and proves its saved head'
