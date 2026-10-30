@@ -1,5 +1,5 @@
 {
- "code_ref": "9da984aeca8ae9939e8a506f13ab14a02c973c5e",
+ "code_ref": "9c6dee0f8022643548f75a231a9e2dbc2e55d799",
  "excluded": [
   {
    "class": "outside-roots",
@@ -3164,35 +3164,35 @@
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:2263",
+     "site": "bin/fm-wake-lib.sh:2290",
      "source": "[ -r \"$file\" ] || return 1",
      "template": "<arg1: epoch file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:2266",
+     "site": "bin/fm-wake-lib.sh:2293",
      "source": "IFS=' ' read -r -a toks 2>/dev/null < \"$file\" || return 1",
      "template": "<arg1: epoch file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:2843",
+     "site": "bin/fm-wake-lib.sh:2870",
      "source": "[ -s \"$1\" ] && awk 'BEGIN { ok=1 } !/^[0-9]+$/ || seen[$0]++ { ok=0 } END { exit !ok }' \"$1\"",
      "template": "<arg1: rows file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:2843",
+     "site": "bin/fm-wake-lib.sh:2870",
      "source": "[ -s \"$1\" ] && awk 'BEGIN { ok=1 } !/^[0-9]+$/ || seen[$0]++ { ok=0 } END { exit !ok }' \"$1\"",
      "template": "<arg1: rows file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:2873",
+     "site": "bin/fm-wake-lib.sh:2900",
      "source": "fm_wake_grant_rows_valid \"$1\" && fm_wake_branch_owner_matches \"$2\"",
      "template": "<arg1: rows file>"
     },
@@ -3330,7 +3330,7 @@
     {
      "mode": "clock",
      "root": "X",
-     "site": "bin/fm-wake-lib.sh:2627",
+     "site": "bin/fm-wake-lib.sh:2654",
      "source": "epoch=$(date +%s)",
      "template": "clock:date +%s"
     },
@@ -4084,7 +4084,7 @@
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-wake-lib.sh:2831",
+     "site": "bin/fm-wake-lib.sh:2858",
      "source": "' \"$file\"",
      "template": "<arg1: rows file>"
     },
@@ -4589,56 +4589,56 @@
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:1602",
+     "site": "bin/fm-wake-lib.sh:1604",
      "source": "fm_file_text_to owner_pid \"$lockdir/pid\" || true",
      "template": "<arg1: lock path>/pid"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:1619",
+     "site": "bin/fm-wake-lib.sh:1621",
      "source": "fm_file_text_to owner_pid \"$lockdir/pid\" || true",
      "template": "<arg1: lock path>/pid"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:1645",
+     "site": "bin/fm-wake-lib.sh:1672",
      "source": "if [ -L \"$lockdir\" ]; then",
      "template": "<arg1: lock path>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:1648",
+     "site": "bin/fm-wake-lib.sh:1675",
      "source": "fm_file_text_to pid \"$ownerdir/pid\" || true",
      "template": "<owner dir (readlink of lock)>/pid"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:1655",
+     "site": "bin/fm-wake-lib.sh:1682",
      "source": "fm_file_text_to pid \"$lockdir/pid\" || true",
      "template": "<arg1: lock path>/pid"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:2853",
+     "site": "bin/fm-wake-lib.sh:2880",
      "source": "[ -f \"$file\" ] && [ ! -L \"$file\" ] || return 1",
      "template": "<arg1: owner file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:2854",
+     "site": "bin/fm-wake-lib.sh:2881",
      "source": "exec 8< \"$file\" || return 1",
      "template": "<arg1: owner file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:2873",
+     "site": "bin/fm-wake-lib.sh:2900",
      "source": "fm_wake_grant_rows_valid \"$1\" && fm_wake_branch_owner_matches \"$2\"",
      "template": "<arg2: owner file>"
     },
@@ -5496,7 +5496,7 @@
      "source": "if ! fm_wake_branch_grant_live \"$ELIGIBLE_ROWS_FILE\" \"$ELIGIBLE_OWNER_FILE\"; then"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2887",
+     "site": "bin/fm-wake-lib.sh:2914",
      "source": "if fm_wake_branch_grant_live \"$rows\" \"$owner\"; then"
     }
    ],
@@ -5555,15 +5555,15 @@
      "source": "if ! fm_wake_branch_grant_live \"$ELIGIBLE_ROWS_FILE\" \"$ELIGIBLE_OWNER_FILE\"; then"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2887",
+     "site": "bin/fm-wake-lib.sh:2914",
      "source": "if fm_wake_branch_grant_live \"$rows\" \"$owner\"; then"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2893",
+     "site": "bin/fm-wake-lib.sh:2920",
      "source": "BEGIN { while ((getline line < seqs) > 0) keep[line] = 1 }"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2899",
+     "site": "bin/fm-wake-lib.sh:2926",
      "source": "BEGIN { if (seqs != \"\") while ((getline line < seqs) > 0) reserved[line] = 1 }"
     }
    ],
@@ -5690,31 +5690,31 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-lib.sh:2289",
+     "site": "bin/fm-wake-lib.sh:2316",
      "source": "FM_AUTOARM_GEN=$(_fm_autoarm_epoch_field \"$epoch\" epoch) || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2290",
+     "site": "bin/fm-wake-lib.sh:2317",
      "source": "FM_AUTOARM_OWNER=$(_fm_autoarm_epoch_field \"$epoch\" owner_pid) || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2291",
+     "site": "bin/fm-wake-lib.sh:2318",
      "source": "FM_AUTOARM_OUTCOME=$(_fm_autoarm_epoch_field \"$epoch\" outcome) || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2292",
+     "site": "bin/fm-wake-lib.sh:2319",
      "source": "FM_AUTOARM_SESSION=$(_fm_autoarm_epoch_field \"$epoch\" session_pid 2>/dev/null || true)"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2293",
+     "site": "bin/fm-wake-lib.sh:2320",
      "source": "FM_AUTOARM_RECOVERY=$(_fm_autoarm_epoch_field \"$epoch\" recovery_generation 2>/dev/null || true)"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2297",
+     "site": "bin/fm-wake-lib.sh:2324",
      "source": "FM_AUTOARM_IDENTITY=$(sed -n '2p' \"$epoch\" 2>/dev/null || true)"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2359",
+     "site": "bin/fm-wake-lib.sh:2386",
      "source": "epoch_mtime=$(fm_path_mtime \"$state/.claude-autoarm-epoch\") || return 1"
     }
    ],
@@ -5730,7 +5730,7 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-lib.sh:2350",
+     "site": "bin/fm-wake-lib.sh:2377",
      "source": "[ -e \"$state/.claude-autoarm-failure-alarmed\" ] && return 1"
     }
    ],
@@ -5746,7 +5746,7 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-lib.sh:2349",
+     "site": "bin/fm-wake-lib.sh:2376",
      "source": "[ -e \"$state/.claude-autoarm-failure-notified\" ] && return 1"
     }
    ],
@@ -5862,7 +5862,7 @@
      "source": "m=$(fm_sup_stat_mtime \"$beat\")"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2360",
+     "site": "bin/fm-wake-lib.sh:2387",
      "source": "beacon_mtime=$(fm_path_mtime \"$state/.last-watcher-beat\") || return 1"
     },
     {
@@ -5906,7 +5906,7 @@
      "source": "pid=$(cat \"$lock\" 2>/dev/null) || {"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2353",
+     "site": "bin/fm-wake-lib.sh:2380",
      "source": "lock_pid=$(sed -n '1p' \"$state/.lock\" 2>/dev/null || true)"
     },
     {
@@ -6024,11 +6024,11 @@
      "source": "classified=$(status_presentation_marker_offset \"$(status_signal_seen_marker_path \"$state\" \"$task\")\" \"$f\")"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3025",
+     "site": "bin/fm-wake-lib.sh:3052",
      "source": "fm_file_text_to text \"$marker\" || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3343",
+     "site": "bin/fm-wake-lib.sh:3370",
      "source": "if [ \"$mode\" = historical ] && fm_wake_signal_reported_current \"$STATE\" \"$path\"; then"
     }
    ],
@@ -6079,11 +6079,11 @@
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3241",
+     "site": "bin/fm-wake-lib.sh:3268",
      "source": "offset=$(status_presentation_cursor_offset \"$path\" 2>/dev/null) || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3346",
+     "site": "bin/fm-wake-lib.sh:3373",
      "source": "offset=$(fm_wake_status_cursor_offset \"$path\") || return 1"
     }
    ],
@@ -6204,19 +6204,19 @@
      "source": "' \"$FM_WAKE_QUEUE\" | LC_ALL=C sort -n > \"$DRAIN_TMP\" || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2673",
+     "site": "bin/fm-wake-lib.sh:2700",
      "source": "\"$FM_WAKE_QUEUE\" 2>/dev/null || true"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2886",
+     "site": "bin/fm-wake-lib.sh:2913",
      "source": "[ -f \"$FM_WAKE_QUEUE\" ] || { printf '0\\n'; return 0; }"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2896",
+     "site": "bin/fm-wake-lib.sh:2923",
      "source": "' \"$FM_WAKE_QUEUE\") || count=''"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2903",
+     "site": "bin/fm-wake-lib.sh:2930",
      "source": "' \"$FM_WAKE_QUEUE\") || count=''"
     }
    ],
@@ -6246,7 +6246,7 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-lib.sh:2634",
+     "site": "bin/fm-wake-lib.sh:2661",
      "source": "seq=$(cat \"$seq_file\" 2>/dev/null || echo 0)"
     }
    ],
@@ -6394,7 +6394,7 @@
      "source": "fm_recovery_marker_read \"$marker\" || true"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2356",
+     "site": "bin/fm-wake-lib.sh:2383",
      "source": "fm_recovery_marker_read \"$state/.watcher-down\" || return 1"
     },
     {
@@ -7069,23 +7069,23 @@
      "source": "status_snapshot_latest_event \"$STATE/$task.status\" \"$endpoint\" \"$ident\" || continue"
     },
     {
-     "site": "bin/fm-wake-lib.sh:2958",
+     "site": "bin/fm-wake-lib.sh:2985",
      "source": "status_observed_signature_to \"$1\" \"$2\""
     },
     {
-     "site": "bin/fm-wake-lib.sh:3241",
+     "site": "bin/fm-wake-lib.sh:3268",
      "source": "offset=$(status_presentation_cursor_offset \"$path\" 2>/dev/null) || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3275",
+     "site": "bin/fm-wake-lib.sh:3302",
      "source": "' \"$path\" \"$min_offset\" \"$end_offset\" 2>/dev/null) || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3346",
+     "site": "bin/fm-wake-lib.sh:3373",
      "source": "offset=$(fm_wake_status_cursor_offset \"$path\") || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3358",
+     "site": "bin/fm-wake-lib.sh:3385",
      "source": "if ! fm_wake_unread_events \"$path\" 0 \"$offset\" \"$endpoint\"; then"
     }
    ],
