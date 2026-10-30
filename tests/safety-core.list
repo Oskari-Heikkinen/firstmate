@@ -32,6 +32,7 @@ tests/fm-fleet-sync.test.sh
 tests/fm-secondmate-sync.test.sh
 tests/fm-update.test.sh
 tests/fm-green-pointer.test.sh
+tests/fm-ci-plan.test.sh
 
 # Spawn and merge guards.
 tests/fm-spawn-orca-worktree.test.sh

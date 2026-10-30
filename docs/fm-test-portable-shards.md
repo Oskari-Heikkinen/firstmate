@@ -29,7 +29,7 @@ The `plan` job picks one layout for each run; [`bin/fm-ci-plan.sh`](../bin/fm-ci
 | push to `ci/try/**` | `try` | static, changed-file lint, up to three shards of the tests the push selects, and the real-Herdr job only when it selects a real-Herdr test |
 | push to `ci/**` | `ci` | static, lint partitions, three gate shards, one changed-area job, and the real-Herdr job running the gate members plus the changed area |
 | push to `ci/full/**` | `full` | static, lint partitions, seven shards of `gate` and `full`, and the real-Herdr job running its `gate` and `full` members |
-| push to `main` | `full`, or `skip` | as `ci/full/**`; `skip` when the same commit already passed this workflow on a `ci/full/**` push, and then only the static job runs |
+| push to `main` | `full`, or `skip` | as `ci/full/**`; `skip` when the same commit already passed this workflow on the `full` layout on a `ci/**` push (a `ci/full/**` push, or a `ci/**` push the changed-file map escalated; never `ci/try/**`), as `bin/fm-ci-plan.sh` decides from each run's plan record, and then only the static job runs |
 | weekly schedule or manual dispatch | `weekly` | static, five shards of `weekly` and `live`, stock macOS Bash, the full test-file lint, and the failure alert |
 
 The changed-area selection is `bin/fm-test-run.sh --changed --tier full,weekly`, so a change to a weekly feature still runs that feature's tests before landing.

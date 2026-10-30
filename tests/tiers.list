@@ -23,6 +23,7 @@ gate tests/fm-backend-herdr-respawn-idem-e2e.test.sh
 gate tests/fm-backend-herdr-smoke.test.sh
 gate tests/fm-backend-herdr-stale-active-tab-e2e.test.sh
 gate tests/fm-busy-state.test.sh
+gate tests/fm-ci-plan.test.sh
 gate tests/fm-claude-stop-autoarm.test.sh
 gate tests/fm-claude-update.test.sh
 gate tests/fm-control-relaunch.test.sh
@@ -103,7 +104,6 @@ full tests/fm-cd-pretool-check.test.sh
 full tests/fm-check-register.test.sh
 full tests/fm-check-unregister.test.sh
 full tests/fm-ci-errors.test.sh
-full tests/fm-ci-plan.test.sh
 full tests/fm-classify-corr-token.test.sh
 full tests/fm-claude-trust.test.sh
 full tests/fm-component-check.test.sh

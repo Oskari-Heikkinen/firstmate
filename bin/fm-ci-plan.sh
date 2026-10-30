@@ -7,25 +7,28 @@
 # Usage:
 #   fm-ci-plan.sh --event <name> --ref <ref> [--sha <sha>] [--repo <owner/name>]
 #                 [--run-id <id>] [--base <ref>] [--output <file>]
-#                 [--summary <file>]
+#                 [--summary <file>] [--record <file>]
 #
 #   --event    the GitHub event name (push, schedule, workflow_dispatch, ...)
 #   --ref      the pushed ref, e.g. refs/heads/ci/<task>
 #   --sha      the pushed commit (default HEAD); a ci/try/** push reads its
 #              trailers, and a main push looks for an earlier run of it
 #   --repo, --run-id
-#              this run's repository and run id, for the main push's lookup
-#              through gh; without them a main push runs its suites
+#              this run's repository (owner/name) and numeric run id, for the
+#              main push's lookup through gh (GH_TOKEN needs actions: read);
+#              without them a main push runs its suites
 #   --base     the ref changed files are diffed against (default origin/main)
 #   --output   file the outputs are appended to as key=value lines (default
 #              $GITHUB_OUTPUT, else stdout)
 #   --summary  file every summary line is also appended to (default
 #              $GITHUB_STEP_SUMMARY); summary lines always go to stdout
+#   --record   file the plan record (below) is written to; needs --run-id and
+#              a full --ref. The workflow uploads it as the fm-ci-plan artifact
 #   -h, --help print this header
 #
 # Layouts:
-#   skip    a main push whose exact commit already passed this workflow on a
-#           ci/full/** push; any doubt (an API error, no such run) runs full
+#   skip    a main push whose exact commit already passed this workflow on
+#           the full layout on a ci/** push (below); any doubt runs full
 #   ci      other ci/** pushes: the gate shards plus the changed area; an
 #           unmapped changed path, or more than 30 selected tier-2 tests,
 #           escalates the push to full
@@ -60,8 +63,22 @@
 # run. The portable entries run in up to three shards; the real-Herdr entries
 # run in the Herdr job, which a try push otherwise skips.
 #
-# Exit status: 0 with every output written; 1 when a trailer is refused or a
-# selection command fails; 2 on a usage error.
+# The plan record is one JSON object holding the layout this run chose:
+#   {"schema":"fm-ci-plan/v1","layout":..,"sha":..,"ref":..,"event":..,
+#    "run_id":..}
+# A main push skips only when an earlier successful push run of this same
+# workflow on the exact same commit, in this repository, on a ci/** branch
+# other than ci/try/**, has an fm-ci-plan artifact whose record says layout
+# full and names that run's own sha, run id, ref and push event. The reading
+# fails closed: an API error, a missing, expired, malformed or mismatched
+# record, or a run without one is no prior pass, and each candidate is judged
+# on its own record, so one unreadable candidate never hides a valid one. Only
+# the newest ten candidates are read, which bounds the plan job's API calls.
+# Each rejected candidate and the verdict go to the summary.
+#
+# Exit status: 0 with every output written; 1 when a trailer is refused, a
+# selection command fails or the plan record cannot be written; 2 on a usage
+# error.
 set -u
 # Trailer values and test lists are split on whitespace; none is a glob.
 set -f
@@ -78,6 +95,10 @@ RUN_ID=
 BASE=origin/main
 OUTPUT=${GITHUB_OUTPUT:-}
 SUMMARY=${GITHUB_STEP_SUMMARY:-}
+RECORD=
+SCHEMA=fm-ci-plan/v1
+ARTIFACT=fm-ci-plan
+MAX_CANDIDATES=10
 
 usage() {
   awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0" >&2
@@ -110,7 +131,7 @@ summary() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --event|--ref|--sha|--repo|--run-id|--base|--output|--summary)
+    --event|--ref|--sha|--repo|--run-id|--base|--output|--summary|--record)
       [ "$#" -gt 1 ] || die_usage "$1 requires a value"
       case "$1" in
         --event) EVENT=$2 ;;
@@ -121,6 +142,7 @@ while [ "$#" -gt 0 ]; do
         --base) BASE=$2 ;;
         --output) OUTPUT=$2 ;;
         --summary) SUMMARY=$2 ;;
+        --record) RECORD=$2 ;;
       esac
       shift 2
       ;;
@@ -135,6 +157,23 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$EVENT" ] || die_usage "--event is required"
 [ -n "$REF" ] || [ "$EVENT" != push ] || die_usage "--ref is required for a push"
+# Both go into API paths, and the run id into the plan record.
+case "$REPO" in
+  '') ;;
+  */*/*|/*|*/|*[!A-Za-z0-9._/-]*) die_usage "--repo '$REPO' is not an owner/name" ;;
+  */*) ;;
+  *) die_usage "--repo '$REPO' is not an owner/name" ;;
+esac
+case "$RUN_ID" in
+  *[!0-9]*) die_usage "--run-id '$RUN_ID' is not a run id" ;;
+esac
+if [ -n "$RECORD" ]; then
+  [ -n "$RUN_ID" ] || die_usage "--record needs --run-id"
+  case "$REF" in
+    refs/*) ;;
+    *) die_usage "--record needs a full --ref, not '$REF'" ;;
+  esac
+fi
 
 HEAD_SHA=$(git rev-parse --verify --quiet "$HEAD_SHA^{commit}") || {
   printf 'fm-ci-plan: --sha names no commit in this checkout\n' >&2
@@ -144,27 +183,118 @@ HEAD_SHA=$(git rev-parse --verify --quiet "$HEAD_SHA^{commit}") || {
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/fm-ci-plan.XXXXXX") || exit 1
 trap 'rm -rf "$WORK"' EXIT
 
-# A main push whose exact commit already passed this same workflow on a
-# ci/full/** push (the main layout) skips the suites. Any doubt (an API error,
-# no matching run) runs them.
+# The first line of a captured stderr file, or a placeholder.
+first_line() {
+  local line=
+  { IFS= read -r line <"$1"; } 2>/dev/null
+  printf '%s' "${line:-no error text}"
+}
+
+# Print "<verdict> <detail>" for one candidate's downloaded record: "full" when
+# it proves a full-layout run of HEAD_SHA by run <id> on <branch>, otherwise
+# why not.
+judge_record() {
+  local file=$1 id=$2 branch=$3
+  if [ ! -f "$file" ]; then
+    printf 'unreadable the artifact holds no plan.json\n'
+    return
+  fi
+  jq -rs --arg schema "$SCHEMA" --arg sha "$HEAD_SHA" --argjson id "$id" \
+    --arg ref "refs/heads/$branch" '
+    if length != 1 or (.[0] | type) != "object" then "unreadable the record is not one JSON object"
+    else .[0]
+    | if .schema != $schema then "unreadable the record schema is \(.schema | tojson), not \($schema)"
+      elif .sha != $sha then "mismatch the record names commit \(.sha | tojson)"
+      elif .run_id != $id then "mismatch the record names run \(.run_id | tojson)"
+      elif .ref != $ref or .event != "push" then "mismatch the record names \(.event | tojson) on \(.ref | tojson)"
+      elif .layout != "full" then "layout it used the \(.layout | tojson) layout"
+      else "full ok" end
+    end' "$file" 2>/dev/null || printf 'unreadable the record is not valid JSON\n'
+}
+
+# A main push may skip when an earlier run proved this commit on the full
+# layout (the header owns the rule). Returns 0 for a proven pass, 1 otherwise,
+# with the reason in the summary.
 prior_full_pass() {
-  local workflow_id runs prior
-  [ -n "$REPO" ] && [ -n "$RUN_ID" ] || return 1
-  workflow_id=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq .workflow_id) \
-    && [ -n "$workflow_id" ] || return 1
-  runs=$(gh api "repos/$REPO/actions/workflows/$workflow_id/runs?head_sha=$HEAD_SHA&event=push&status=success&per_page=100") \
-    || return 1
-  prior=$(printf '%s' "$runs" | jq -r --arg sha "$HEAD_SHA" --arg repo "$REPO" \
+  local run workflow_id runs candidates id url branch verdict detail count=0
+  local shown="\`$HEAD_SHA\`" scratch=$WORK/prior
+  if [ -z "$REPO" ] || [ -z "$RUN_ID" ]; then
+    summary "Suites run: no --repo and --run-id to look up an earlier run of $shown."
+    return 1
+  fi
+  if ! mkdir -p "$scratch"; then
+    summary "Suites run: could not make a scratch directory for the API answers."
+    return 1
+  fi
+  if ! run=$(gh api "repos/$REPO/actions/runs/$RUN_ID" 2>"$scratch/err"); then
+    summary "Suites run: could not read this run's workflow ($(first_line "$scratch/err"))."
+    return 1
+  fi
+  if ! workflow_id=$(printf '%s' "$run" | jq -er '.workflow_id | numbers' 2>/dev/null); then
+    summary "Suites run: this run's API answer names no workflow id."
+    return 1
+  fi
+  if ! runs=$(gh api "repos/$REPO/actions/workflows/$workflow_id/runs?head_sha=$HEAD_SHA&event=push&status=success&per_page=100" 2>"$scratch/err"); then
+    summary "Suites run: could not list earlier successful runs of $shown ($(first_line "$scratch/err"))."
+    return 1
+  fi
+  # Newest first. head_branch is the pushed branch without refs/heads/.
+  if ! candidates=$(printf '%s' "$runs" | jq -r --arg sha "$HEAD_SHA" --arg repo "$REPO" \
     --argjson wid "$workflow_id" --argjson self "$RUN_ID" '
-    [.workflow_runs[]?
+    if (.workflow_runs | type) != "array" then error("no workflow_runs list") else . end
+    | [.workflow_runs[]
       | select(.head_sha == $sha and .event == "push" and .conclusion == "success"
         and .workflow_id == $wid and .id != $self
-        and (.head_branch // "" | startswith("ci/full/"))
-        and .head_repository.full_name == $repo)]
-    | sort_by(.run_started_at) | last // empty
-    | "\(.html_url) \(.head_branch)"') || return 1
-  [ -n "$prior" ] || return 1
-  summary "Suites skipped: ${prior%% *} (${prior#* }) already passed this workflow on \`$HEAD_SHA\`."
+        and .head_repository.full_name == $repo
+        and (.head_branch // "" | startswith("ci/"))
+        and (.head_branch // "" | startswith("ci/try/") | not))]
+    | sort_by(.run_started_at) | reverse | .[]
+    | "\(.id) \(.html_url) \(.head_branch)"' 2>/dev/null); then
+    summary "Suites run: the list of earlier successful runs of $shown was unreadable."
+    return 1
+  fi
+  if [ -z "$candidates" ]; then
+    summary "Suites run: no earlier successful ci/** run of $shown (ci/try/** never counts)."
+    return 1
+  fi
+
+  while IFS=' ' read -r id url branch; do
+    [ -n "$id" ] || continue
+    count=$((count + 1))
+    if [ "$count" -gt "$MAX_CANDIDATES" ]; then
+      summary "Not read: candidates past the newest $MAX_CANDIDATES."
+      break
+    fi
+    case "$id" in
+      *[!0-9]*) summary "Not counted: a candidate with run id $id."; continue ;;
+    esac
+    if ! gh run download "$id" -R "$REPO" -n "$ARTIFACT" -D "$scratch/$id" </dev/null >/dev/null 2>"$scratch/err"; then
+      summary "Not counted: $url ($branch) has no readable $ARTIFACT artifact ($(first_line "$scratch/err"))."
+      continue
+    fi
+    read -r verdict detail <<<"$(judge_record "$scratch/$id/plan.json" "$id" "$branch")"
+    if [ "$verdict" = full ]; then
+      summary "Suites skipped: $url ($branch) already passed this workflow on the full layout at $shown."
+      return 0
+    fi
+    summary "Not counted: $url ($branch): $detail."
+  done <<<"$candidates"
+  summary "Suites run: no earlier successful full-layout ci/** run of $shown."
+  return 1
+}
+
+# Write the plan record of the chosen layout to RECORD.
+write_record() {
+  local tmp=$RECORD.tmp.$$
+  if ! jq -n --arg schema "$SCHEMA" --arg layout "$layout" --arg sha "$HEAD_SHA" \
+    --arg ref "$REF" --arg event "$EVENT" --argjson run_id "$RUN_ID" \
+    '{schema: $schema, layout: $layout, sha: $sha, ref: $ref, event: $event, run_id: $run_id}' \
+    >"$tmp" 2>/dev/null || ! mv -f "$tmp" "$RECORD" 2>/dev/null; then
+    rm -f "$tmp"
+    printf '::error::fm-ci-plan: could not write the plan record %s\n' "$RECORD"
+    exit 1
+  fi
+  summary "Plan record: layout $layout at $RECORD"
 }
 
 # Count the non-empty lines of $1.
@@ -347,3 +477,4 @@ out lint "$lint"
 out changed "$changed"
 out herdr_paths "$herdr_paths"
 out try_list "$try_list"
+[ -z "$RECORD" ] || write_record

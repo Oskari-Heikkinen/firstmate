@@ -53,10 +53,21 @@ jobs:
           HEAD_SHA: ${{ github.sha }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
-        # bin/fm-ci-plan.sh owns the layouts and every output below.
+        # bin/fm-ci-plan.sh owns the layouts, every output below and the plan
+        # record a later main push of this commit reads back.
         run: |
+          mkdir -p "$RUNNER_TEMP/fm-ci-plan"
           bin/fm-ci-plan.sh --event "$EVENT" --ref "$REF" --sha "$HEAD_SHA" \
-            --repo "$REPO" --run-id "$RUN_ID"
+            --repo "$REPO" --run-id "$RUN_ID" \
+            --record "$RUNNER_TEMP/fm-ci-plan/plan.json"
+      - name: Upload the plan record
+        uses: actions/upload-artifact@v4
+        with:
+          name: fm-ci-plan
+          path: ${{ runner.temp }}/fm-ci-plan/plan.json
+          if-no-files-found: error
+          # A re-run of the plan job replaces its earlier record.
+          overwrite: true
       # Shards pack by measured durations: the aggregate timing artifact of the
       # newest successful main or ci/full/** run, merged with the newest
       # successful weekly run's. Without one every test weighs the same.
