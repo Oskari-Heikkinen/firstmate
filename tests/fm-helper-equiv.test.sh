@@ -166,6 +166,8 @@ test_disk_room_history() {
   assert_grep "| strict | 9 | check --expect-write 100G | rc | differs | 1 | 0 |" "$r" "strict policy admits more (F2)"
   assert_grep "| strict | 19 | FM\_DISK\_ROOM\_HOST= status --json | stderr | differs | (no output) | line 1: fm-disk-room: host-c:mount: host drive is not mounted |" "$r" "strict policy refuses SSD-only calls (F3)"
   assert_grep "| strict | 2 | --interface v1 | rc | differs | 0 | 1 |" "$r" "strict policy stops serving v1 (F9)"
+  assert_grep "| strict | 5 | --self-test v1 | rc | differs | 0 | 1 |" "$r" "strict policy fails the v1 self-test (F9)"
+  assert_no_grep "| absent | 5 | --self-test v1 | rc |" "$r" "absent policy: the v1 self-test still passes"
   assert_grep "| unreadable | 8 | check --expect-write 95G | rc | differs | 0 | 2 |" "$r" "an unreadable policy fails every measure (F4)"
 
   RC=0

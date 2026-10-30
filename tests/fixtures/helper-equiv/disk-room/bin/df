@@ -1,8 +1,10 @@
 #!/bin/sh
 # Fake df for fm-helper-equiv fixtures: the value of --output=FIELD for PATH is
-# the file $FAKE_DF/<basename of PATH>.FIELD.
+# the file $FAKE_DF/<basename of PATH>.FIELD, else $FAKE_DF/default.FIELD, so
+# a helper's own temporary root (such as its self-test's) reads fixed values.
 field='' path=''
 for a in "$@"; do case "$a" in --output=*) field=${a#--output=} ;; -*) ;; *) path=$a ;; esac; done
 f="$FAKE_DF/${path##*/}.$field"
+[ -r "$f" ] || f="$FAKE_DF/default.$field"
 [ -r "$f" ] || { echo "df: $path: No such file or directory" >&2; exit 1; }
 printf '%s\n' "$field"; cat "$f"
