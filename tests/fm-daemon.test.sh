@@ -3081,6 +3081,95 @@ test_wedge_alarm_shutdown_stops_active_notifier_group() {
   pass "daemon shutdown stops and reaps the active notifier process group"
 }
 
+# Stop a real daemon executable while it waits in one loop sleep. The daemon runs
+# from a fixture bin dir whose fm-watch.sh is a stub (<watch-mode>), against a
+# fake tmux and a fake sleep that holds only the <held-secs> sleep for 600 s and
+# records its pid, so an exit at all proves the TERM interrupted that sleep, and
+# the recorded pid proves no sleep child outlived the daemon.
+daemon_stop_in_sleep() {  # <name> <held-secs> <watch-mode> [VAR=value...]
+  local name=$1 held=$2 mode=$3 dir state bin fakebin real_sleep f pid nap i rc
+  shift 3
+  dir="$TMP_ROOT/$name"; state="$dir/state"; bin="$dir/bin"; fakebin="$dir/fakebin"
+  mkdir -p "$state" "$bin" "$fakebin"
+  real_sleep=$(command -v sleep)
+  for f in "$ROOT"/bin/*; do
+    [ "${f##*/}" = fm-watch.sh ] || ln -s "$f" "$bin/${f##*/}"
+  done
+  cat > "$bin/fm-watch.sh" <<SH
+#!/usr/bin/env bash
+case "$mode" in
+  crash) exit 1 ;;
+  non-wake) printf 'fm-watch: already running\n'; exit 0 ;;
+  *) exec "$real_sleep" 600 ;;
+esac
+SH
+  # The first pane probe is the daemon's startup check; FM_TEST_PANE_GONE makes
+  # every later probe find the pane gone.
+  cat > "$fakebin/tmux" <<SH
+#!/usr/bin/env bash
+[ "\${1:-}" = display-message ] || exit 0
+if [ -n "\${FM_TEST_PANE_GONE:-}" ] && [ -e "$dir/pane-probed" ]; then exit 1; fi
+: > "$dir/pane-probed"
+printf '%%1\n'
+SH
+  cat > "$fakebin/sleep" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = "$held" ]; then
+  printf '%s\n' "\$\$" >> "$dir/held-sleep"
+  exec "$real_sleep" 600
+fi
+exec "$real_sleep" "\$@"
+SH
+  chmod +x "$bin/fm-watch.sh" "$fakebin/tmux" "$fakebin/sleep"
+  env PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=tmux \
+    FM_SUPERVISOR_TARGET=%1 FM_INJECT_FAIL_SLEEP=31 FM_CRASH_NORMAL_SLEEP=32 \
+    HOUSEKEEPING_TICK=33 FM_HOUSEKEEPING_TICK=999999 "$@" \
+    "$bin/fm-supervise-daemon.sh" > "$dir/daemon.out" 2> "$dir/daemon.err" &
+  pid=$!
+  i=0
+  while [ ! -s "$dir/held-sleep" ] && is_live_non_zombie "$pid" && [ "$i" -lt 600 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if [ ! -s "$dir/held-sleep" ]; then
+    wait_for_exit "$pid" 0 || true
+    fail "$name: the daemon never reached its ${held}s sleep: $(cat "$dir/daemon.err" "$state/.supervise-daemon.log" 2>/dev/null)"
+  fi
+  nap=$(head -n 1 "$dir/held-sleep")
+  kill -TERM "$pid"
+  # 100 polls is the 10 s fm-afk-launch.sh stop budget.
+  if wait_for_exit "$pid" 100; then rc=0; else rc=$?; fi
+  if is_live_non_zombie "$nap"; then
+    kill -KILL "$nap" 2>/dev/null || true
+    fail "$name: the stopped daemon left its ${held}s sleep child running (pid $nap, daemon rc=$rc)"
+  fi
+  [ "$rc" -eq 0 ] || fail "$name: TERM during the ${held}s sleep did not stop the daemon cleanly (rc=$rc)"
+  grep -F 'daemon shutting down' "$state/.supervise-daemon.log" >/dev/null \
+    || fail "$name: the daemon exited without its shutdown cleanup: $(cat "$state/.supervise-daemon.log" 2>/dev/null)"
+  [ ! -e "$state/.supervise-daemon.pid" ] || fail "$name: the stopped daemon left its pidfile"
+  pass "$name: TERM during the ${held}s sleep stops the daemon at once and reaps the sleep"
+}
+
+test_daemon_stop_interrupts_watcher_tmpfile_retry() {
+  daemon_stop_in_sleep daemon-stop-mktemp 5 live TMPDIR="$TMP_ROOT/daemon-stop-mktemp/no-such-dir"
+}
+
+test_daemon_stop_interrupts_pane_gone_backoff() {
+  daemon_stop_in_sleep daemon-stop-pane-gone 31 live FM_TEST_PANE_GONE=1
+}
+
+test_daemon_stop_interrupts_crash_backoff() {
+  daemon_stop_in_sleep daemon-stop-crash 32 crash
+}
+
+test_daemon_stop_interrupts_non_wake_idle_tick() {
+  daemon_stop_in_sleep daemon-stop-non-wake 33 non-wake
+}
+
+test_daemon_stop_interrupts_poll_sleep() {
+  daemon_stop_in_sleep daemon-stop-poll 1 live
+}
+
 test_inject_wedge_alarm_fires_active_alert_on_non_tmux_backend() {
   # The whole incident: a non-tmux (herdr) primary gets NO tmux status-line
   # flash, so inject_wedge_alarm must still emit the backend-independent alert
@@ -3527,6 +3616,11 @@ test_wedge_alarm_hung_channel_times_out_and_falls_through
 test_wedge_alarm_backgrounded_command_times_out_and_reaps_descendant
 test_wedge_alarm_hung_override_times_out_and_falls_through
 test_wedge_alarm_shutdown_stops_active_notifier_group
+test_daemon_stop_interrupts_watcher_tmpfile_retry
+test_daemon_stop_interrupts_pane_gone_backoff
+test_daemon_stop_interrupts_crash_backoff
+test_daemon_stop_interrupts_non_wake_idle_tick
+test_daemon_stop_interrupts_poll_sleep
 test_inject_wedge_alarm_fires_active_alert_on_non_tmux_backend
 test_inject_wedge_alarm_throttles_when_marker_cannot_be_written
 test_fm_send_reports_delivered_unconfirmed_submit
