@@ -97,9 +97,19 @@
 # actually bound a probe command and that the host accepts the memory limit
 # BEFORE any root starts; when either check fails the run refuses with a
 # named error, so a required-bounds run never lints uncapped. Without
-# FM_LINT_REQUIRE_BOUNDS (a local developer lint, where hosts like macOS
-# cannot apply the address-space limit at all) each root still runs in its
-# own ShellCheck process with identical diagnostics, just unbounded.
+# FM_LINT_REQUIRE_BOUNDS (a local developer lint) each root still runs in its
+# own ShellCheck process with identical diagnostics and the same wall deadline
+# and grace, so one hung root or a ShellCheck slot that never frees cannot hold
+# the run forever; only the address-space limit is left off, because hosts like
+# macOS cannot apply it at all. When the watchdog is missing or fails its probe,
+# a local run says so on stderr and its roots run without a deadline.
+#
+# A root that exits 75 ends with reason busy: the machine's ShellCheck guard
+# (a wrapper some hosts put first on PATH) could not get a slot in time, and
+# ShellCheck itself never exits 75. Busy roots do not mask another failure;
+# when every failing root is busy and nothing else failed, the run prints
+# "fm-lint.sh: wait: shellcheck-busy: N root(s) found the machine's ShellCheck
+# slot taken; nothing is wrong with the code, rerun later" and exits 75.
 #
 # Per-root evidence is incremental: workers append begin/end records (root,
 # mode, shard, start, end, duration, exit status, reason, and peak RSS when
@@ -108,7 +118,7 @@
 # begun-but-unfinished. With --telemetry the log is retained at
 # <telemetry-without-.tsv>.roots.tsv (or <telemetry>.roots.tsv if there is no
 # .tsv suffix); otherwise it lives only in the
-# run's scratch dir. Reason values are ok, findings, timeout, memory,
+# run's scratch dir. Reason values are ok, findings, busy, timeout, memory,
 # signal:<sig>, limit-unavailable, or error:<rc>. Memory requires process-level
 # evidence (a GHC exhaustion status or runtime error on stderr), not an echoed
 # source excerpt or an OOM phrase in a filename. In partition mode begin/end
@@ -203,6 +213,7 @@ fm_lint_classify_root() {  # <rc> <root-stderr-file>
   local rc=$1 err=$2
   case "$rc" in
     0) printf 'ok\n'; return 0 ;;
+    75) printf 'busy\n'; return 0 ;;
     97) printf 'limit-unavailable\n'; return 0 ;;
     251) printf 'memory\n'; return 0 ;;
   esac
@@ -301,7 +312,7 @@ fm_lint_run_root() {  # <index> <path> <output-dir> <shard-index> [<split-pass>]
 }
 
 fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
-  local manifest=$1 output_dir=$2 shard_index=$3 tab entry index path output invocation_rc rc=0
+  local manifest=$1 output_dir=$2 shard_index=$3 tab entry index path output invocation_rc rc=0 busy=0
   local -a root_entries
   root_entries=()
   tab=$(printf '\t')
@@ -335,20 +346,20 @@ fm_lint_worker() {  # <manifest> <output-dir> <shard-index>
         FM_LINT_WORKER_ARGS=(--norc --exclude="$FM_LINT_INTERNAL_CROSS_FILE_CODES")
         invocation_rc=0
         fm_lint_run_root "$index" "$path" "$output_dir" "$shard_index" dataflow || invocation_rc=$?
-        [ "$rc" -ne 0 ] || rc=$invocation_rc
+        case "$invocation_rc" in 0) ;; 75) busy=1 ;; *) [ "$rc" -ne 0 ] || rc=$invocation_rc ;; esac
         FM_LINT_WORKER_ARGS=(--norc --external-sources --extended-analysis=false
           --include="$FM_LINT_INTERNAL_CROSS_FILE_CODES")
         invocation_rc=0
         fm_lint_run_root "$index" "$path" "$output_dir" "$shard_index" sources || invocation_rc=$?
-        [ "$rc" -ne 0 ] || rc=$invocation_rc
+        case "$invocation_rc" in 0) ;; 75) busy=1 ;; *) [ "$rc" -ne 0 ] || rc=$invocation_rc ;; esac
         continue
       fi
       invocation_rc=0
       fm_lint_run_root "$index" "$path" "$output_dir" "$shard_index" || invocation_rc=$?
-      if [ "$rc" -eq 0 ] && [ "$invocation_rc" -ne 0 ]; then
-        rc=$invocation_rc
-      fi
+      case "$invocation_rc" in 0) ;; 75) busy=1 ;; *) [ "$rc" -ne 0 ] || rc=$invocation_rc ;; esac
     done
+    # A busy root (exit 75) is reported only when nothing else failed.
+    [ "$rc" -ne 0 ] || [ "$busy" -eq 0 ] || rc=75
     trap - HUP INT TERM
   else
     : > "$output.out"
@@ -369,7 +380,8 @@ if [ "${1:-}" = "--internal-worker" ]; then
 fi
 
 # Private per-root payload mode used only by the bounded runner above: apply
-# the per-process address-space limit (a positive KiB count), then exec
+# the per-process address-space limit (a positive KiB count, or none for a
+# local run, which keeps only the wall deadline), then exec
 # /usr/bin/time for the per-root peak-RSS record when it is available, else the
 # tool itself. A limit the host cannot apply exits 97 so the parent reports
 # limit-unavailable instead of running uncapped.
@@ -383,17 +395,20 @@ if [ "${1:-}" = "--internal-root" ]; then
   internal_memory_kib=$3
   shift 3
   case "$internal_memory_kib" in
+    none) ;;
     ''|0*|*[!0-9]*)
-      printf 'fm-lint.sh: --internal-root memory limit must be a positive KiB count, got %s\n' \
+      printf 'fm-lint.sh: --internal-root memory limit must be a positive KiB count or none, got %s\n' \
         "$internal_memory_kib" >&2
       exit 2
       ;;
+    *)
+      ulimit -v "$internal_memory_kib" 2>/dev/null || {
+        printf 'fm-lint.sh: per-root memory limit %s KiB is not enforceable on this host\n' \
+          "$internal_memory_kib" >&2
+        exit 97
+      }
+      ;;
   esac
-  ulimit -v "$internal_memory_kib" 2>/dev/null || {
-    printf 'fm-lint.sh: per-root memory limit %s KiB is not enforceable on this host\n' \
-      "$internal_memory_kib" >&2
-    exit 97
-  }
   if [ -x /usr/bin/time ]; then
     if [ "$(uname)" = Darwin ]; then
       exec /usr/bin/time -l -o "$internal_rss_file" "$@"
@@ -1070,7 +1085,8 @@ fi
 # watchdog is probed and the host's acceptance of ulimit -v is checked before
 # any root starts; failed checks refuse with a named error. A required-bounds run
 # never lints uncapped. Without it each root still runs alone in its own
-# ShellCheck process, unbounded, for local developer lint.
+# ShellCheck process under the wall deadline when the watchdog passes a probe,
+# with no address-space limit.
 ROOT_SECONDS=${FM_LINT_ROOT_SECONDS:-1200}
 ROOT_GRACE=${FM_LINT_ROOT_GRACE:-5}
 # 12 GiB of virtual address space per analysis process. ulimit -v caps
@@ -1103,6 +1119,7 @@ for bound_pair in \
 done
 
 BOUND_MECH=none
+ROOT_MEMORY_ARG=none
 if [ "${FM_LINT_REQUIRE_BOUNDS:-0}" = 1 ]; then
   bounds_problems=()
   if declare -F fm_exec_timed >/dev/null 2>&1; then
@@ -1139,6 +1156,18 @@ if [ "${FM_LINT_REQUIRE_BOUNDS:-0}" = 1 ]; then
     printf 'fm-lint.sh: refusing to lint uncapped under FM_LINT_REQUIRE_BOUNDS=1.\n' >&2
     exit 2
   fi
+  ROOT_MEMORY_ARG=$ROOT_MEMORY_KIB
+elif declare -F fm_exec_timed >/dev/null 2>&1; then
+  probe_rc=0
+  ( fm_exec_timed 30 1 true ) >/dev/null 2>&1 || probe_rc=$?
+  if [ "$probe_rc" -eq 0 ]; then
+    BOUND_MECH=perl
+  else
+    printf 'fm-lint.sh: the timeout watchdog could not run a probe command (rc=%s); roots run without a deadline.\n' \
+      "$probe_rc" >&2
+  fi
+else
+  printf 'fm-lint.sh: bin/fm-timeout-lib.sh is missing beside fm-lint.sh; roots run without a deadline.\n' >&2
 fi
 
 PROGRESS=0
@@ -1184,11 +1213,16 @@ else
   ROOTS_LOG=$TMP_ROOT/roots.tsv
 fi
 : > "$ROOTS_LOG"
-if [ "$BOUND_MECH" != none ]; then
+if [ "$BOUND_MECH" != none ] && [ "$ROOT_MEMORY_ARG" != none ]; then
   bounds_applied=1
   root_deadline_meta=$ROOT_SECONDS
   root_grace_meta=$ROOT_GRACE
   root_memory_meta=$ROOT_MEMORY_KIB
+elif [ "$BOUND_MECH" != none ]; then
+  bounds_applied=0
+  root_deadline_meta=$ROOT_SECONDS
+  root_grace_meta=$ROOT_GRACE
+  root_memory_meta=unbounded
 else
   bounds_applied=0
   root_deadline_meta=unbounded
@@ -1285,7 +1319,7 @@ fm_lint_run_worker() {  # <worker-index>
     FM_LINT_INTERNAL_FOLLOW_SOURCES="$FOLLOW_SOURCES"
     FM_LINT_INTERNAL_EXCLUDE="$EXCLUDE_CODES"
     FM_LINT_INTERNAL_BOUNDED="$BOUND_MECH"
-    FM_LINT_INTERNAL_MEMORY_KIB="$ROOT_MEMORY_KIB"
+    FM_LINT_INTERNAL_MEMORY_KIB="$ROOT_MEMORY_ARG"
     FM_LINT_INTERNAL_ROOT_SECS="$ROOT_SECONDS"
     FM_LINT_INTERNAL_GRACE="$ROOT_GRACE"
     FM_LINT_INTERNAL_ROOTS_LOG="$ROOTS_LOG"
@@ -1359,7 +1393,7 @@ while [ "$worker" -lt "$SHARD_COUNT" ]; do
     printf 'fm-lint.sh: worker produced no result for shard %s.\n' "$worker" >&2
     rc=2
   fi
-  if [ "$overall_rc" -eq 0 ] && [ "$rc" -ne 0 ]; then
+  if [ "$rc" -ne 0 ] && { [ "$overall_rc" -eq 0 ] || [ "$overall_rc" -eq 75 ]; }; then
     overall_rc=$rc
   fi
   worker=$((worker + 1))
@@ -1387,14 +1421,19 @@ fi
 
 purity_rc=0
 fm_lint_run_backend_purity || purity_rc=$?
-if [ "$overall_rc" -eq 0 ] && [ "$purity_rc" -ne 0 ]; then
+if { [ "$overall_rc" -eq 0 ] || [ "$overall_rc" -eq 75 ]; } && [ "$purity_rc" -ne 0 ]; then
   overall_rc=$purity_rc
 fi
 
-if [ "$overall_rc" -eq 0 ]; then
+if [ "$overall_rc" -eq 0 ] || [ "$overall_rc" -eq 75 ]; then
   fm_lint_run_workflows || overall_rc=$?
 else
   fm_lint_run_workflows || true
+fi
+if [ "$overall_rc" -eq 75 ]; then
+  busy_roots=$(awk -F '\t' '$1 == "end" && $10 == "busy" { n++ } END { print n + 0 }' "$ROOTS_LOG" 2>/dev/null)
+  printf "fm-lint.sh: wait: shellcheck-busy: %s root(s) found the machine's ShellCheck slot taken; nothing is wrong with the code, rerun later\n" \
+    "${busy_roots:-some}" >&2
 fi
 
 if [ -n "$TELEMETRY" ]; then

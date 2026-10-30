@@ -80,6 +80,7 @@ init_changed_fixture_repo() {
   local repo=$1 script
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
   cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
@@ -119,7 +120,6 @@ init_changed_fixture_repo() {
   : >"$repo/bin/fm-supervisor-target-lib.sh"
   : >"$repo/bin/fm-spawn.sh"
   : >"$repo/bin/fm-control-lib.sh"
-  : >"$repo/bin/fm-timeout-lib.sh"
   : >"$repo/bin/fm-procevent-quota.sh"
   : >"$repo/bin/fm-quota-axi-lib.sh"
   : >"$repo/bin/fm-quota-choose.sh"
@@ -176,6 +176,7 @@ init_primary_and_linked_worktree() {
   for tree in "$repo" "$linked"; do
     mkdir -p "$tree/bin" "$tree/tests"
     cp "$RUNNER" "$tree/bin/fm-test-run.sh"
+    cp "$ROOT/bin/fm-timeout-lib.sh" "$tree/bin/fm-timeout-lib.sh"
     cp "$ROOT/tests/git-config-helpers.sh" "$tree/tests/"
     chmod +x "$tree/bin/fm-test-run.sh"
     cat >"$tree/tests/probe.test.sh" <<PROBE
@@ -667,7 +668,6 @@ test_changed_uses_bounded_automatic_concurrency() {
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-changed-consent.XXXXXX")
   repo="$tmp/repo"
   init_changed_fixture_repo "$repo"
-  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
   for script in fm-backend-herdr-smoke.test.sh fm-daemon.test.sh fm-pi-watch-extension.test.sh; do
     cat >"$repo/tests/$script" <<'SH'
 #!/usr/bin/env bash
@@ -714,10 +714,11 @@ PY
   cp "$RUNNER" "$timeout_repo/bin/fm-test-run.sh"
   cp "$ROOT/tests/git-config-helpers.sh" "$timeout_repo/tests/"
   cat >"$timeout_repo/bin/fm-timeout-lib.sh" <<'SH'
-fm_run_timed() {
-  [ "$1" -eq 1500 ] || return 99
-  return 124
+fm_exec_timed() {
+  [ "$1" -eq 1500 ] || exit 99
+  exit 124
 }
+fm_timed_out() { [ "$1" = 124 ] || [ "$1" = 137 ]; }
 SH
   cat >"$timeout_repo/$timeout_script" <<'SH'
 #!/usr/bin/env bash
@@ -789,15 +790,14 @@ SH
 
 # A local verification round names the subjects it cares about. Exercise begin/end
 # markers from real fixture processes to prove that a plain list of script paths
-# gets bounded automatic scheduling without changing its per-script timeout
-# contract, so verifying several subjects is one bounded concurrent run rather
-# than a serial chain of separate `bash tests/X.test.sh` invocations.
+# gets bounded automatic scheduling, so verifying several subjects is one
+# bounded concurrent run rather than a serial chain of separate
+# `bash tests/X.test.sh` invocations.
 test_script_list_uses_bounded_automatic_concurrency() {
   local tmp repo script parallel_shape serial_shape mixed_shape expected_jobs
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-script-list.XXXXXX")
   repo="$tmp/repo"
   init_changed_fixture_repo "$repo"
-  rm -f "$repo/bin/fm-timeout-lib.sh"
   # fm-cd-pretool-check and fm-pr-merge are individually proven isolated;
   # fm-backend-orca is not, so it must still land in the serial tail.
   for script in fm-cd-pretool-check.test.sh fm-pr-merge.test.sh fm-backend-orca.test.sh; do
@@ -847,14 +847,8 @@ assert automatic["selection"].split(";")[-1] == f"jobs={expected}"
 assert serial["selection"].split(";")[-1] == "jobs=1"
 PYJSON
 
-  (cd "$repo" && bin/fm-test-run.sh tests/fm-backend-orca.test.sh) \
-    >"$tmp/named.out" 2>"$tmp/named.err" \
-    || fail "a named script unexpectedly required a timeout helper: $(cat "$tmp/named.err")"
-  grep -Eq '^FM_TEST_END .+ tests/fm-backend-orca\.test\.sh exit=0 ' "$tmp/named.out" \
-    || fail "a named script did not run without an automatic bound: $(cat "$tmp/named.out")"
-
   rm -rf "$tmp"
-  pass "a plain script list defaults to bounded automatic concurrency without an automatic timeout"
+  pass "a plain script list defaults to bounded automatic concurrency"
 }
 
 test_family_proofs_run_in_separate_concurrent_phases() {
@@ -1461,6 +1455,7 @@ init_stub_suite_repo() {
   shift
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
   cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in "$@"; do
@@ -1517,6 +1512,7 @@ test_unmapped_new_test_never_inherits_family_concurrency() {
   repo="$tmp/repo"
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
   cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   chmod +x "$repo/bin/fm-test-run.sh"
   # Two members of the proven residual family, plus a test basename the family
@@ -1676,7 +1672,7 @@ SH
     fail "the timed-out script left grandchild $grandchild running"
   fi
 
-  # 0 keeps the historical unbounded behavior, so no existing caller changes.
+  # A bound that is not a whole number is refused rather than ignored.
   set +e
   "$runner" --per-script-timeout-secs nope "$hang" >"$tmp/o2" 2>"$tmp/e2"
   rc=$?
@@ -1692,10 +1688,12 @@ SH
 # gets killed mid-run and retries invisibly, so an over-budget run has to be a
 # failure, not a note in the log.
 # tests/fm-watch-triage.test.sh finishes in about 434s alone and about 698s
-# under CI load, so the automatic --changed bound must leave a slow but healthy
+# under CI load, so the default per-script bound must leave a slow but healthy
 # watcher-wake-lock script room while still bounding a genuinely hung one
-# (upstream issue #3869). The stub records the bound the runner hands it.
-test_changed_bound_gives_slow_watcher_suites_headroom() {
+# (upstream issue #3869). The stub records the bound the runner hands it; the
+# default applies to --changed and to a plain script list alike, and only an
+# explicit 0 runs a script unbounded.
+test_default_bound_gives_slow_watcher_suites_headroom() {
   local tmp repo script bound rc
   tmp=$(mktemp -d)
   repo="$tmp/repo"
@@ -1704,11 +1702,12 @@ test_changed_bound_gives_slow_watcher_suites_headroom() {
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
   cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   cat >"$repo/bin/fm-timeout-lib.sh" <<'SH'
-fm_run_timed() {
+fm_exec_timed() {
   printf '%s\n' "$1" >bound-secs
-  shift
-  "$@"
+  shift 2
+  exec "$@"
 }
+fm_timed_out() { [ "$1" = 124 ] || [ "$1" = 137 ]; }
 SH
   cat >"$repo/$script" <<'SH'
 #!/usr/bin/env bash
@@ -1728,8 +1727,130 @@ SH
   bound=$(cat "$repo/bound-secs")
   [ "$bound" -ge 1500 ] \
     || fail "automatic --changed bound for $script must be at least 1500s, got ${bound}s"
+
+  rm -f "$repo/bound-secs"
+  (cd "$repo" && bin/fm-test-run.sh "$script") >"$tmp/list.out" 2>"$tmp/list.err" \
+    || fail "healthy listed watcher script must pass: $(cat "$tmp/list.out" "$tmp/list.err")"
+  [ -s "$repo/bound-secs" ] || fail "a plain script list did not run under the default bound: $(cat "$tmp/list.out")"
+  bound=$(cat "$repo/bound-secs")
+  [ "$bound" -ge 1500 ] || fail "the default bound for a plain list must be at least 1500s, got ${bound}s"
+
+  rm -f "$repo/bound-secs"
+  (cd "$repo" && bin/fm-test-run.sh --per-script-timeout-secs 0 "$script") >"$tmp/zero.out" 2>"$tmp/zero.err" \
+    || fail "an unbounded run of a healthy script must pass: $(cat "$tmp/zero.out" "$tmp/zero.err")"
+  assert_contains "$(cat "$tmp/zero.out")" "ok - healthy but slow watcher suite" \
+    "an explicit 0 must still run the script"
+  [ ! -e "$repo/bound-secs" ] || fail "--per-script-timeout-secs 0 must run the script without a bound"
   rm -rf "$tmp"
-  pass "the automatic --changed bound gives the slow watcher suite at least 1500s"
+  pass "the default bound gives the slow watcher suite at least 1500s in every mode, and 0 disables it"
+}
+
+# A stop must not wait for a script to finish: TERM to the runner ends the
+# running script's whole process group at once, reports that script as stopped,
+# starts nothing more and says how many never ran. Each mode starts scripts
+# differently (under the bound's watchdog, in a group of their own with the
+# bound off, and in --jobs workers that forward the stop), so each is stopped
+# for real. The fixtures hang until signalled and record their sleep's pid, so
+# the case can prove nothing they started outlived the stop.
+test_term_stops_the_running_script_and_the_run() {
+  local tmp repo mode pid waited rc out err sleeper pidfile not_run
+  local -a args stopped
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-stop.XXXXXX")
+  repo="$tmp/repo"
+  init_stub_suite_repo "$repo" fm-stop-a.test.sh fm-stop-b.test.sh \
+    fm-cd-pretool-check.test.sh fm-dod-lib.test.sh
+  for pidfile in fm-stop-a fm-cd-pretool-check fm-dod-lib; do
+    cat >"$repo/tests/$pidfile.test.sh" <<'SH'
+#!/usr/bin/env bash
+echo "ok - started, hanging until stopped"
+sleep 600 &
+printf '%s\n' "$!" >"$STOP_EVIDENCE/${0##*/}.sleep"
+wait
+SH
+  done
+  cat >"$repo/tests/fm-stop-b.test.sh" <<'SH'
+#!/usr/bin/env bash
+: >"$STOP_EVIDENCE/b-ran"
+echo "ok - the script after the stopped one"
+SH
+
+  for mode in bounded unbounded jobs; do
+    rm -rf "$tmp/ev"
+    mkdir "$tmp/ev"
+    case "$mode" in
+      bounded)
+        args=(--jobs 1 tests/fm-stop-a.test.sh tests/fm-stop-b.test.sh)
+        stopped=(tests/fm-stop-a.test.sh)
+        not_run=1
+        ;;
+      unbounded)
+        args=(--jobs 1 --per-script-timeout-secs 0 tests/fm-stop-a.test.sh tests/fm-stop-b.test.sh)
+        stopped=(tests/fm-stop-a.test.sh)
+        not_run=1
+        ;;
+      jobs)
+        args=(--jobs 2 tests/fm-cd-pretool-check.test.sh tests/fm-dod-lib.test.sh)
+        stopped=(tests/fm-cd-pretool-check.test.sh tests/fm-dod-lib.test.sh)
+        not_run=0
+        ;;
+    esac
+    (cd "$repo" && exec env STOP_EVIDENCE="$tmp/ev" bin/fm-test-run.sh "${args[@]}" --json "$tmp/$mode.json") \
+      >"$tmp/$mode.out" 2>"$tmp/$mode.err" &
+    pid=$!
+    waited=0
+    for sleeper in "${stopped[@]}"; do
+      pidfile="$tmp/ev/${sleeper#tests/}.sleep"
+      while [ ! -s "$pidfile" ] && [ "$waited" -lt 600 ]; do
+        sleep 0.1
+        waited=$((waited + 1))
+      done
+      [ -s "$pidfile" ] || {
+        kill -KILL "$pid" 2>/dev/null || true
+        fail "$mode: $sleeper never started: $(cat "$tmp/$mode.out" "$tmp/$mode.err")"
+      }
+    done
+    kill -TERM "$pid"
+    waited=0
+    while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 600 ]; do
+      sleep 0.1
+      waited=$((waited + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null || true
+      fail "$mode: the runner did not end after TERM: $(cat "$tmp/$mode.out" "$tmp/$mode.err")"
+    fi
+    rc=0
+    wait "$pid" || rc=$?
+    out=$(cat "$tmp/$mode.out")
+    err=$(cat "$tmp/$mode.err")
+    expect_code 143 "$rc" "$mode: a run stopped by TERM"
+    for sleeper in "${stopped[@]}"; do
+      assert_contains "$out" "not ok - $sleeper stopped by SIGTERM before it finished" \
+        "$mode: the stopped script was not reported as stopped"
+      assert_contains "$out" " $sleeper exit=143 " "$mode: the stopped script must end as exit 143"
+      pidfile="$tmp/ev/${sleeper#tests/}.sleep"
+      sleeper=$(cat "$pidfile")
+      waited=0
+      while kill -0 "$sleeper" 2>/dev/null && [ "$waited" -lt 50 ]; do
+        sleep 0.1
+        waited=$((waited + 1))
+      done
+      if kill -0 "$sleeper" 2>/dev/null; then
+        kill -KILL "$sleeper" 2>/dev/null || true
+        fail "$mode: the stopped script left $sleeper running"
+      fi
+    done
+    assert_contains "$out" "FM_TEST_STOPPED signal=SIGTERM not_run=$not_run" \
+      "$mode: the run did not report the stop"
+    assert_contains "$out" "FM_TEST_SUMMARY total=${#stopped[@]} failed=${#stopped[@]}" \
+      "$mode: a stopped run still prints its summary"
+    assert_contains "$err" "timing artifact not written: the run was stopped by SIGTERM" \
+      "$mode: a stopped run must say why it wrote no timing artifact"
+    [ ! -e "$tmp/$mode.json" ] || fail "$mode: a stopped run must not write a timing artifact"
+    [ ! -e "$tmp/ev/b-ran" ] || fail "$mode: a script after the stop still started"
+  done
+  rm -rf "$tmp"
+  pass "TERM ends the running script's group, reports it stopped and starts nothing more"
 }
 
 test_max_wall_ms_is_a_result_not_advice() {
@@ -1740,6 +1861,7 @@ test_max_wall_ms_is_a_result_not_advice() {
   fast=tests/fm-budget-fixture.test.sh
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$runner"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
   cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   cat >"$repo/$fast" <<'SH'
 #!/usr/bin/env bash
@@ -1805,6 +1927,7 @@ test_jobs_parallel_scheduler_and_failure_propagation() {
   d=tests/fm-supervision-instructions.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
   cp "$RUNNER" "$runner"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
   cp "$ROOT/tests/git-config-helpers.sh" "$repo/tests/"
   cat >"$fake_bin/stat" <<'SH'
 #!/usr/bin/env bash
@@ -2149,7 +2272,8 @@ test_unmapped_new_test_never_inherits_family_concurrency
 test_changed_shared_fixture_selects_its_readers
 test_concurrent_runs_are_ordered_longest_first
 test_per_script_timeout_bounds_a_hang
-test_changed_bound_gives_slow_watcher_suites_headroom
+test_default_bound_gives_slow_watcher_suites_headroom
+test_term_stops_the_running_script_and_the_run
 test_max_wall_ms_is_a_result_not_advice
 test_jobs_parallel_scheduler_and_failure_propagation
 test_from_list_selects_entries_and_refuses_bad_ones

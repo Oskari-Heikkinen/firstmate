@@ -35,13 +35,18 @@
 #             R/.incoming, no usable FUSE mount in the default mode, UNIT
 #             already at R, or stale staging for UNIT in R/.incoming;
 #         75  wait on disk room (D: unavailable, low room, or pack-UNIT
-#             already reserved), nothing written.
+#             already reserved) or on the pack slot, nothing written;
+#         143 or 130  stopped by SIGTERM (fm-pack.sh stop) or SIGINT before
+#             the commit, this run's staging removed; a stop during the
+#             commit is held until the unit is whole, then the run ends 0
+#             (see "Stopping a holder").
 #   fm-pack.sh verify IMAGE [--against SRC]
 #       IMAGE is R/UNIT.sqfs with its sidecars beside it. Checks the image
 #       sha256, then reads the image afresh: every member's sha256 and the
 #       regular-file count must match UNIT.members.sha256. With --against, SRC
 #       must also still match UNIT.tree.tsv, the check to repeat before an
-#       owner removes the source. Exit 0 verified, 1 a mismatch, 2 misuse.
+#       owner removes the source. Exit 0 verified, 1 a mismatch, 2 misuse,
+#       75 the pack slot stayed held.
 #       verify, restore and release read a unit whose UNIT.json format is
 #       fm-pack-unit/v1 or tj-fetch-arrival-unit/v2 (a lattice-research fetch
 #       arrival, whose members list carries paths without ./), and refuse any
@@ -106,14 +111,18 @@
 #         75  one line fm-pack: wait: storage-offline: REASON, only when an
 #             input failed to open or read and fm-storage.sh health --volume d
 #             then exited 75 with the line offline REASON; any other answer
-#             keeps the exit 1 or 2 refusal, so unknown is never parity.
+#             keeps the exit 1 or 2 refusal, so unknown is never parity; or
+#             the pack slot's fm-pack: wait: pack-slot-busy: line, before any
+#             work.
 #       It has no deadline of its own: the caller's timeout bounds a run, and
 #       a run killed by SIGKILL can leave its squashfuse mount, as verify can.
 #   fm-pack.sh restore IMAGE DEST
 #       Check the image sha256, then fm-disk-room.sh run --name restore-UNIT
 #       --expect-write <logical bytes> -- unsquashfs -d DEST IMAGE, then the
 #       member check on DEST/basename(SRC). DEST must not exist yet. Exit 0
-#       restored and checked, 75 refused for room, 1 a failure, 2 misuse.
+#       restored and checked, 75 refused for room or the pack slot stayed
+#       held, 1 a failure, 2 misuse; a failed or stopped restore leaves what
+#       it wrote in DEST.
 #
 #   fm-pack.sh release IMAGE SRC --accepted-by WHO [--note TEXT] [--ref FILE]...
 #                      [--also PATH]... [--window SECONDS]
@@ -167,9 +176,9 @@
 #             unreadable --ref, an --also PATH that is not a link of a file in
 #             SRC, the unit already released, or an aside left by an earlier
 #             run (rename it back to SRC, then release again);
-#         75  wait, nothing deleted: the window has not passed, or another
+#         75  wait, nothing deleted: the window has not passed, another
 #             release of the unit holds its lock (a file in XDG_RUNTIME_DIR,
-#             else TMPDIR, else /tmp).
+#             else TMPDIR, else /tmp), or the pack slot stayed held.
 #
 #   fm-pack.sh candidates --home HOME [--root ROOT]... [--timeout SECONDS]
 #                         [--small SIZE]
@@ -214,6 +223,22 @@
 #       read (every row still printed); 2 misuse or an unreadable HOME/data;
 #       75 otherwise when a ROOT is waiting (its wait: line on stderr).
 #
+#   fm-pack.sh stop [--wait SECONDS]
+#       Ask the command holding the machine-wide pack slot (a pack, verify,
+#       verify-tar, restore, release or fm-repack run) to stop at its next
+#       safe point, and wait up to SECONDS (default 60) for it to end. It
+#       reads the holder line, checks that the named pid still has the
+#       recorded start time, sends SIGTERM to that pid only (its own steps
+#       run in process groups it ends itself), then waits. Exit codes:
+#         0   the slot was free, or the holder stopped;
+#         1   refused, nothing signalled: the holder line names no pid and
+#             start time, the pid is gone while the slot is still held (a
+#             process it left inherited the lock), the pid's start time
+#             differs (a reused pid), or the signal failed;
+#         2   misuse, or the lock path is not a regular file;
+#         75  one line fm-pack: wait: pack-slot-busy: the holder got SIGTERM
+#             and still runs after SECONDS.
+#
 # Reading the image afresh: a new squashfuse -o ro mount on a temporary
 # directory (fusermount3 -u afterwards). pack, verify and verify-tar refuse
 # with exit 2 before any work when squashfuse, fusermount3 or a usable
@@ -246,17 +271,35 @@
 # exclusive flock on one lock file for the whole command, so one runs at a
 # time on the machine. candidates only reads metadata under bounded walks, and
 # a listing that waited out a multi-hour pack would be stale when it printed.
-# A command that finds the slot taken prints one line and blocks until it is
-# free; it never fails or exits for the slot:
-#   fm-pack: waiting for the machine-wide pack slot LOCK, held by HOLDER
-# The holder truncates LOCK and writes one line, pid=PID started=EPOCH
-# command=TEXT, which HOLDER quotes. LOCK is FM_PACK_SLOT_LOCK, default
-# $HOME/.cache/fm-pack/slot.lock, outside every home. Another heavy D: tool
+# A command that finds the slot taken prints one line and waits at most
+# FM_PACK_SLOT_WAIT seconds (default 900; 0 does not wait):
+#   fm-pack: waiting for the machine-wide pack slot LOCK (at most N s), held by HOLDER
+# If the slot is still held then, it prints one more line and exits 75,
+# having done nothing:
+#   fm-pack: wait: pack-slot-busy: LOCK still held after N s by HOLDER; nothing done
+# The holder truncates LOCK and writes one line, pid=PID start=TICKS
+# started=EPOCH command=TEXT, which HOLDER quotes; TICKS is the pid's start
+# time (field 22 of /proc/PID/stat), so stop can tell the holder from a reused
+# pid. LOCK is FM_PACK_SLOT_LOCK, default $HOME/.cache/fm-pack/slot.lock,
+# outside every home; anything there but a regular file exits 2. Another heavy D: tool
 # (fm-repack) shares the slot by taking flock on the same file the same way,
 # and closes it for any process that may outlive it, as fm-pack does for the
 # squashfuse daemon. release takes its per-unit lock first and the slot
 # second, because its last guard reads the whole image and its removal is
 # heavy I/O; a holder of the slot never waits on a release's unit lock.
+#
+# Stopping a holder: from taking the slot on, SIGTERM and SIGINT stop the
+# command at once, at a safe point, exiting 143 or 130 with one line
+# (fm-pack: stopped by SIGTERM). Each long step (the walks, the hashing,
+# mksquashfs, the member check, unsquashfs, the parity check) runs in its own
+# process group, which the stop sends SIGTERM and, 5 s later, SIGKILL; the
+# command's cleanup then runs as on any failure. Two sections finish first:
+# pack's commit (from the first rename into R until the unit is whole) and
+# release's removal (from the first removal until the record says released);
+# a stop that arrives there is held, the section completes, the command
+# exits 0 with its normal output and says on stderr that a stop arrived. A
+# stop never leaves a unit half committed. A SIGKILL is not a stop: it can
+# leave staging or a squashfuse mount, as before.
 #
 # Environment (all optional):
 #   FM_PACK_MOUNT   mount (default): verify and verify-tar read the image
@@ -273,11 +316,14 @@
 #   FM_DISK_ROOM_STATE  fm-disk-room's state directory, for release's
 #                   reservation check (the same default as fm-disk-room.sh)
 #   FM_PACK_SLOT_LOCK  the machine-wide pack slot's lock file
+#   FM_PACK_SLOT_WAIT  seconds a command waits for the pack slot (900)
 #   FM_PACK_RETRY_LIMIT  seconds the shim keeps retrying one call (600)
 #   FM_PACK_TEST_BEFORE_RECHECK  test hook only: a command run by bash -c
 #                   between packing and the source re-check, between
 #                   release's rename aside and its re-check, and before
 #                   verify-tar's identity re-check
+#   FM_PACK_TEST_IN_COMMIT  test hook only: a command run by bash -c inside
+#                   pack's commit section, before the first rename
 #   FM_PACK_RETRY_TEST_EVERY  test hook only: the shim fails the first try
 #                   of every Nth wrapped call in each process with ENOMEM
 set -u
@@ -343,27 +389,163 @@ finish() {
   [ -z "$RUN" ] || rm -rf -- "$RUN"
 }
 
+# slot_lock_to VAR: the pack slot's lock path; exit 2 when something other
+# than a regular file stands there, since opening a FIFO would hang.
+slot_lock_to() {
+  local __lock=${FM_PACK_SLOT_LOCK:-${HOME:-/tmp}/.cache/fm-pack/slot.lock}
+  [ ! -e "$__lock" ] || [ -f "$__lock" ] || die "the pack slot $__lock is not a regular file"
+  printf -v "$1" '%s' "$__lock"
+}
+
+# slot_holder_to VAR LOCK: the holder line LOCK holds (empty when unnamed),
+# read in the shell and bounded, never through a pipe or subshell.
+slot_holder_to() {
+  local __line=''
+  if [ -f "$2" ]; then { IFS= read -r -n 4096 __line <"$2"; } 2>/dev/null; fi
+  printf -v "$1" '%s' "$__line"
+}
+
+# proc_start_to VAR PID: the start time of PID in clock ticks since boot
+# (field 22 of /proc/PID/stat), the half of an exec-stable identity a pid
+# alone lacks; 1 when the process is gone or /proc cannot answer.
+proc_start_to() {
+  local __stat='' __f=()
+  [[ $2 =~ ^[1-9][0-9]*$ ]] || return 1
+  { IFS= read -r __stat <"/proc/$2/stat"; } 2>/dev/null || [ -n "$__stat" ] || return 1
+  read -r -a __f <<<"${__stat##*) }"
+  [[ ${__f[19]:-} =~ ^[0-9]+$ ]] || return 1
+  printf -v "$1" '%s' "${__f[19]}"
+}
+
+# Stopping (see "Stopping a holder"): every slot holder ends a long step in
+# the background through run_stoppable, so on_stop, its INT and TERM trap,
+# runs at once rather than after the step; between hold_stops and
+# release_stops a stop is only recorded, so a commit finishes whole.
+PACK_CHILD='' STOPS_HELD='' STOP_STATUS=''
+
+# run_stoppable CMD...: run CMD in its own process group with stdin from
+# /dev/null and wait for it; returns CMD's status. Only after take_slot, whose
+# traps end the group: without them a stop would leave the step running.
+run_stoppable() {
+  local rc
+  set -m
+  ( set +m; "$@" ) </dev/null &
+  PACK_CHILD=$!
+  set +m
+  # A wait a trapped signal interrupts returns above 128 with the step alive.
+  while :; do
+    wait "$PACK_CHILD" 2>/dev/null; rc=$?
+    if [ "$rc" -le 128 ] || ! kill -0 "$PACK_CHILD" 2>/dev/null; then break; fi
+  done
+  PACK_CHILD=''
+  return "$rc"
+}
+
+# on_stop STATUS: end the running step's process group (TERM, KILL after
+# 5 s), then exit STATUS so the EXIT trap's cleanup runs.
+# shellcheck disable=SC2329 # Registered as the INT and TERM trap in take_slot.
+on_stop() {
+  local guard
+  if [ -n "$STOPS_HELD" ]; then STOP_STATUS=${STOP_STATUS:-$1}; return 0; fi
+  trap '' INT TERM
+  if [ -n "$PACK_CHILD" ]; then
+    kill -TERM -- "-$PACK_CHILD" 2>/dev/null
+    ( sleep 5; kill -KILL -- "-$PACK_CHILD" 2>/dev/null ) </dev/null >/dev/null 2>&1 7>&- 8>&- &
+    guard=$!
+    wait "$PACK_CHILD" 2>/dev/null
+    kill -KILL -- "-$PACK_CHILD" 2>/dev/null
+    kill "$guard" 2>/dev/null
+    PACK_CHILD=''
+  fi
+  if [ "$1" = 130 ]; then note "stopped by SIGINT"; else note "stopped by SIGTERM"; fi
+  exit "$1"
+}
+
+hold_stops() { STOPS_HELD=1; }
+
+# release_stops: end hold_stops; 0 when a stop arrived while held.
+release_stops() {
+  STOPS_HELD=''
+  [ -n "$STOP_STATUS" ]
+}
+
 # take_slot TEXT: hold the machine-wide pack slot on fd 7 until exit, waiting
-# with one line while another holder has it (see "Machine-wide pack slot").
+# at most FM_PACK_SLOT_WAIT seconds with one line while another holder has it,
+# then exit 75 (see "Machine-wide pack slot"). From here INT and TERM stop the
+# command through on_stop.
 take_slot() {
-  local lock=${FM_PACK_SLOT_LOCK:-${HOME:-/tmp}/.cache/fm-pack/slot.lock} holder
+  local lock wait=${FM_PACK_SLOT_WAIT:-900} holder start rc
+  [[ $wait =~ ^[0-9]{1,7}$ ]] || die "FM_PACK_SLOT_WAIT must be whole seconds, not $wait"
   need flock
+  slot_lock_to lock
   mkdir -p -- "${lock%/*}" || die "cannot create the directory of the pack slot $lock"
   exec 7>>"$lock" || die "cannot open the pack slot $lock"
+  trap 'on_stop 130' INT
+  trap 'on_stop 143' TERM
   if ! flock -n 7; then
-    holder=$(cat -- "$lock" 2>/dev/null)
-    holder=${holder%%"$NL"*}
-    note "waiting for the machine-wide pack slot $lock, held by ${holder:-a holder that has not named itself}"
-    flock 7 || die "cannot take the pack slot $lock"
+    slot_holder_to holder "$lock"
+    note "waiting for the machine-wide pack slot $lock (at most $wait s), held by ${holder:-a holder that has not named itself}"
+    run_stoppable flock -w "$wait" -E 75 7; rc=$?
+    case "$rc" in
+      0) ;;
+      75)
+        slot_holder_to holder "$lock"
+        note "wait: pack-slot-busy: $lock still held after $wait s by ${holder:-a holder that has not named itself}; nothing done"
+        exit 75 ;;
+      *) die "cannot take the pack slot $lock" ;;
+    esac
   fi
-  printf 'pid=%s started=%s command=%s\n' "$$" "$(date +%s)" "$*" >"$lock" ||
+  proc_start_to start "$$" || start=''
+  printf 'pid=%s start=%s started=%s command=%s\n' "$$" "$start" "$(date +%s)" "$*" >"$lock" ||
     note "cannot name this holder in $lock"
+}
+
+# ---------------------------------------------------------------- stop
+
+cmd_stop() {
+  local wait=60 lock line pid start started now deadline
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --wait) [ "$#" -ge 2 ] && [[ $2 =~ ^[0-9]{1,7}$ ]] || die "--wait needs whole seconds"; wait=$2; shift 2 ;;
+      *) die "unknown stop argument: $1" ;;
+    esac
+  done
+  need flock
+  slot_lock_to lock
+  [ -e "$lock" ] || { printf 'fm-pack: stop: the pack slot is free (%s does not exist)\n' "$lock"; exit 0; }
+  exec 9<"$lock" || die "cannot open the pack slot $lock"
+  if flock -n 9; then
+    printf 'fm-pack: stop: the pack slot %s is free\n' "$lock"; exit 0
+  fi
+  slot_holder_to line "$lock"
+  pid=${line#pid=} pid=${pid%% *} start=${line#* start=} start=${start%% *}
+  case "$line" in
+    pid=*' start='*' started='*' command='*) ;;
+    *) fail1 "stop: refused: the holder of $lock has not named itself as pid=PID start=TICKS (${line:-an empty line}); nothing signalled" ;;
+  esac
+  [[ $pid =~ ^[1-9][0-9]*$ ]] && [[ $start =~ ^[0-9]+$ ]] ||
+    fail1 "stop: refused: the holder line of $lock names no pid and start time ($line); nothing signalled"
+  proc_start_to now "$pid" ||
+    fail1 "stop: refused: the named holder pid $pid is gone, yet $lock is still held, by a process that inherited it; nothing signalled"
+  [ "$now" = "$start" ] ||
+    fail1 "stop: refused: pid $pid started at $now ticks, not the holder's $start; nothing signalled"
+  kill -TERM "$pid" 2>/dev/null || fail1 "stop: refused: cannot signal the holder pid $pid; nothing signalled"
+  started=${line#* command=}
+  note "stop: sent SIGTERM to the pack slot holder pid $pid ($started); it stops at its next safe point"
+  deadline=$(( $(date +%s) + wait ))
+  while proc_start_to now "$pid" && [ "$now" = "$start" ]; do
+    [ "$(date +%s)" -lt "$deadline" ] || {
+      note "wait: pack-slot-busy: the holder pid $pid got SIGTERM and is still running after $wait s"; exit 75; }
+    sleep 0.2
+  done
+  printf 'fm-pack: stop: the pack slot holder pid %s stopped\n' "$pid"
 }
 
 valid_unit() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; }
 
 # tree_list DIR: the tree list of DIR on stdout (pack step 3 above).
 TREE_FORMAT='%y\t%s\t%m\t%n\t%T@\t%l\t%p\n'
+# shellcheck disable=SC2329 # Run by name through run_stoppable.
 tree_list() {
   (cd "$1" && find . -xdev -printf "$TREE_FORMAT" | LC_ALL=C sort -t$'\t' -k7)
 }
@@ -373,7 +555,7 @@ tree_list() {
 tree_matches() {
   local tmp rc
   tmp=$(mktemp "${TMPDIR:-/tmp}/fm-pack-tree.XXXXXX") || { note "tree-read-failed: cannot create scratch"; return 1; }
-  if tree_list "$1" >"$tmp"; then
+  if run_stoppable tree_list "$1" >"$tmp"; then
     cmp -s "$tmp" "$2"; rc=$?
     [ "$rc" -le 1 ] || note "tree-read-failed: comparing $1 with $2"
   else
@@ -384,9 +566,14 @@ tree_matches() {
 }
 
 # members_list DIR: sha256sum lines of every regular file under DIR, sorted.
+# shellcheck disable=SC2329 # Run by name through run_stoppable.
 members_list() {
   (cd "$1" && set -o pipefail && find . -xdev -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum --)
 }
+
+# members_check DIR MEMBERS: 0 when every line of MEMBERS matches under DIR.
+# shellcheck disable=SC2329 # Run by name through run_stoppable.
+members_check() { (cd "$1" && sha256sum --quiet --strict -c -- "$2"); }
 
 # census DIR -> "FILES LOGICAL FREES"
 census() {
@@ -424,7 +611,7 @@ check_members_mount() {
     note "the image holds no directory $dir"; unmount_verify; return 1
   fi
   rc=0
-  (cd "$MNT/$dir" && sha256sum --quiet --strict -c -- "$members") || rc=1
+  run_stoppable members_check "$MNT/$dir" "$members" || rc=1
   if [ "$rc" = 0 ]; then
     if ! count=$(cd "$MNT/$dir" && find . -type f -printf '.\n' | wc -l) ||
       ! expected=$(wc -l <"$members"); then
@@ -535,8 +722,6 @@ cmd_pack() {
   packaging=$(( logical + logical / 100 + 1048576 ))
 
   CLEANUP=pack_cleanup
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
   R=$("$BIN/fm-storage.sh" bulk-root --root "$root" "$task" --name "pack-$UNIT" \
     --download 0 --expanded 0 --packaging "$packaging" --pid "$$"); rc=$?
   case "$rc" in
@@ -555,19 +740,19 @@ cmd_pack() {
   I=$R/.incoming
   STAGED=("$I/$UNIT.members.sha256" "$I/$UNIT.tree.tsv" "$I/$UNIT.sqfs" "$I/$UNIT.sqfs.sha256" "$I/$UNIT.json" "$I/$UNIT.recheck.tsv")
 
-  members_list "$src" >"$I/$UNIT.members.sha256" || fail1 "hashing $src failed"
-  tree_list "$src" >"$I/$UNIT.tree.tsv" || fail1 "listing $src failed"
+  run_stoppable members_list "$src" >"$I/$UNIT.members.sha256" || fail1 "hashing $src failed"
+  run_stoppable tree_list "$src" >"$I/$UNIT.tree.tsv" || fail1 "listing $src failed"
   [ "$(wc -l <"$I/$UNIT.members.sha256")" = "$files" ] || fail1 "$src changed during the census"
 
   packed_at=$(date +%s)
-  mksquashfs "$src" "$I/$UNIT.sqfs" -noappend -keep-as-directory -one-file-system -comp gzip -no-xattrs \
+  run_stoppable mksquashfs "$src" "$I/$UNIT.sqfs" -noappend -keep-as-directory -one-file-system -comp gzip -no-xattrs \
     -processors 2 -mem 512M -quiet -no-progress >&2 || fail1 "mksquashfs failed"
   sync -f "$I/$UNIT.sqfs" 2>/dev/null || sync
   (cd "$I" && sha256sum -- "$UNIT.sqfs" >"$UNIT.sqfs.sha256") || fail1 "hashing the image failed"
 
   if [ -n "${FM_PACK_TEST_BEFORE_RECHECK:-}" ]; then bash -c "$FM_PACK_TEST_BEFORE_RECHECK"; fi
   recheck=$I/$UNIT.recheck.tsv
-  tree_list "$src" >"$recheck" || fail1 "listing $src again failed"
+  run_stoppable tree_list "$src" >"$recheck" || fail1 "listing $src again failed"
   cmp -s "$recheck" "$I/$UNIT.tree.tsv" || fail1 "$src changed while it was packed; nothing committed"
   rm -f -- "$recheck"
 
@@ -591,6 +776,9 @@ cmd_pack() {
       packed_at: $packed, verified_at: $verified, verify_method: $method, mksquashfs: $version}' >"$json" ||
     fail1 "writing $json failed"
 
+  # A stop during the commit is held until the unit is whole, then reported.
+  hold_stops
+  if [ -n "${FM_PACK_TEST_IN_COMMIT:-}" ]; then bash -c "$FM_PACK_TEST_IN_COMMIT"; fi
   for f in sqfs.sha256 members.sha256 tree.tsv sqfs json; do
     mv -n -- "$I/$UNIT.$f" "$R/$UNIT.$f" && [ ! -e "$I/$UNIT.$f" ] || fail1 "committing $UNIT.$f failed"
     COMMITTED=partial
@@ -599,6 +787,7 @@ cmd_pack() {
   sync -f "$R/$UNIT.json" 2>/dev/null || sync
   rmdir "$I" 2>/dev/null
   pack_cleanup
+  if release_stops; then note "a stop arrived during the commit of $UNIT; the unit was committed whole first"; fi
   printf 'fm-pack-receipt/v1 image=%s sha256=%s files=%s logical=%s frees=%s verified_at=%s sidecar=%s\n' \
     "$R/$UNIT.sqfs" "$image_sha" "$files" "$logical" "$frees" "$verified_at" "$R/$UNIT.json"
 }
@@ -655,7 +844,7 @@ cmd_verify_tar() {
   need_reader
   [ "$METHOD" = mount ] || need unsquashfs
   take_slot "fm-pack verify-tar $*"
-  python3 "$BIN/fm-pack-parity.py" --reader "$METHOD" --storage-tool "$BIN/fm-storage.sh" "$@"
+  run_stoppable python3 "$BIN/fm-pack-parity.py" --reader "$METHOD" --storage-tool "$BIN/fm-storage.sh" "$@"
 }
 
 cmd_restore() {
@@ -670,14 +859,14 @@ cmd_restore() {
   logical=$(sidecar logical_bytes "$IJSON") || die "$IJSON has no logical_bytes"
   take_slot "fm-pack restore $IMG $dest"
   image_sha_ok "$IDIR" "$IUNIT" || fail1 "$IMG does not match $IUNIT.sqfs.sha256"
-  "$BIN/fm-disk-room.sh" run --name "restore-$IUNIT" --expect-write "$logical" -- \
+  run_stoppable "$BIN/fm-disk-room.sh" run --name "restore-$IUNIT" --expect-write "$logical" -- \
     unsquashfs -no-progress -quiet -d "$dest" "$IMG" >&2
   case $? in
     0) ;;
     75) exit 75 ;;
     *) fail1 "unsquashfs into $dest failed" ;;
   esac
-  (cd "$dest/$IDIRNAME" && sha256sum --quiet --strict -c -- "$IMEMBERS") || fail1 "$dest failed the member check"
+  run_stoppable members_check "$dest/$IDIRNAME" "$IMEMBERS" || fail1 "$dest failed the member check"
   printf 'fm-pack: restored %s into %s/%s and checked %s files\n' "$IMG" "$dest" "$IDIRNAME" "$(wc -l <"$IMEMBERS")"
 }
 
@@ -990,8 +1179,6 @@ cmd_release() {
   flock -n 8 || rel_refuse 75 "another release of $IUNIT holds its lock"
   take_slot "fm-pack release $IMG $src"
   CLEANUP=release_cleanup
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
 
   now=$(date +%s)
   [ "$now" -ge $((REL_VERIFIED + REL_WINDOW)) ] ||
@@ -1032,6 +1219,8 @@ cmd_release() {
   tree_matches "$REL_ASIDE" "$IDIR/$IUNIT.tree.tsv" || rel_refuse 1 "$src changed while it was renamed aside"
   in_use "$REL_ASIDE" "${names[@]}"
 
+  # Once removal starts, a stop is held until the record says released.
+  hold_stops
   REL_MOVED='' REL_PENDING=''
   if ! rm -rf --one-file-system -- "$REL_ASIDE"; then
     note "removing $REL_ASIDE failed partway; what is left stays there and $REL_RECORD stays in state releasing"
@@ -1050,6 +1239,7 @@ cmd_release() {
     note "cannot leave $src/STORED.md; the release itself is complete"
   release_record released "$files" "$freed" "$released" || note "cannot rewrite $REL_RECORD as released"
   rel_log "released $IUNIT $src: freed $freed bytes ($(awk -v b="$freed" 'BEGIN { printf "%.2f", b / 1073741824 }') GiB), accepted by $REL_ACCEPTED"
+  if release_stops; then note "a stop arrived during the removal of $src; the release was finished first"; fi
   printf 'fm-pack-release/v1 image=%s src=%s freed=%s accepted_by=%s released_at=%s record=%s\n' \
     "$IMG" "$src" "$freed" "$REL_ACCEPTED" "$released" "$REL_RECORD"
 }
@@ -1239,6 +1429,7 @@ cmd_candidates() {
     restore) shift; cmd_restore "$@" ;;
     release) shift; cmd_release "$@" ;;
     candidates) shift; cmd_candidates "$@" ;;
+    stop) shift; cmd_stop "$@" ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;
   esac

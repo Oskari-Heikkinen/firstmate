@@ -369,7 +369,8 @@ fm_lint_bounds_supported() {
 # when perl itself reports that the allocation was refused, forwarding perl's
 # own error and exiting with GHC's heap-exhaustion status 251, as ShellCheck
 # does when its runtime is refused memory; an allocation that succeeds falls
-# through like any other root.
+# through like any other root. A *busy* root exits 75, as the machine's
+# ShellCheck guard does when it cannot get a slot in time.
 # Anything else records its path on FM_TEST_STUB_LOG and exits cleanly.
 fm_lint_stub_reactive_shellcheck() {
   local fakebin=$1
@@ -398,6 +399,10 @@ case "$target" in
       esac
       exit "$alloc_rc"
     fi
+    ;;
+  *busy*)
+    printf 'shellcheck-guard: no free ShellCheck slot in time\n' >&2
+    exit 75
     ;;
   *oom-exit1*)
     printf 'shellcheck: malloc: resource exhausted (out of memory)\n' >&2
@@ -1941,12 +1946,14 @@ test_roots_sidecar_records_per_root_lifecycle() {
   [ -f "$roots_log" ] || fail "the run wrote no per-root sidecar beside telemetry"
   grep -q $'^format\tfm-lint-roots-v1$' "$roots_log" \
     || fail "the sidecar is missing its format header"
+  # Without FM_LINT_REQUIRE_BOUNDS the wall deadline still applies; only the
+  # address-space limit is left off.
   grep -q $'^meta\tbounds_enforced\t0$' "$roots_log" \
     || fail "the sidecar did not record the unenforced bounds state"
-  grep -q $'^meta\ttiming_mechanism\tnone$' "$roots_log" \
+  grep -q $'^meta\ttiming_mechanism\tperl$' "$roots_log" \
     || fail "the sidecar did not record the timing mechanism"
-  grep -q $'^meta\troot_deadline_seconds\tunbounded$' "$roots_log" \
-    || fail "the sidecar did not record the unbounded deadline state"
+  grep -q $'^meta\troot_deadline_seconds\t1200$' "$roots_log" \
+    || fail "the sidecar did not record the default local deadline"
   grep -q $'^meta\troot_memory_limit_kib\tunbounded$' "$roots_log" \
     || fail "the sidecar did not record the unbounded memory state"
   grep -q $'^meta\troots_completed\t3$' "$roots_log" \
@@ -1958,6 +1965,79 @@ test_roots_sidecar_records_per_root_lifecycle() {
   [ "$(awk -F '\t' '$1 == "end" && ($8 == "" || $8 !~ /^[0-9]+$/) { n++ } END { print n + 0 }' "$roots_log")" -eq 0 ] \
     || fail "an end record is missing its exit status"
   pass "the retained sidecar records each root's lifecycle with a mode, reason, and duration"
+}
+
+test_local_run_keeps_the_root_deadline() {
+  local tmp fakebin stub_log roots_log out rc blocker ok lone_dir
+  tmp=$(fm_test_tmproot fm-lint-local-deadline)
+  fakebin=$(fm_fakebin "$tmp")
+  fm_lint_stub_reactive_shellcheck "$fakebin"
+  stub_log="$tmp/stub.log"
+  roots_log="$tmp/lint.roots.tsv"
+  blocker="$tmp/blocker.sh"
+  ok="$tmp/ok.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$blocker"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$ok"
+
+  # A local run (no FM_LINT_REQUIRE_BOUNDS) still ends a hung root at the deadline.
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_LINT_JOBS=1 \
+    FM_LINT_ROOT_SECONDS=1 FM_LINT_ROOT_GRACE=1 \
+    FM_TEST_STUB_LOG="$stub_log" FM_TEST_BLOCK_SECS=300 \
+    "$LINT" --telemetry "$tmp/lint.tsv" "$ok" "$blocker" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a hung root in a local run unexpectedly passed"
+  assert_contains "$out" "reason=timeout" "the local run did not end the hung root at its deadline"$'\n'"$out"
+  awk -F '\t' '$1 == "end" && $3 ~ /blocker\.sh$/ && $10 == "timeout" { found=1 } END { exit !found }' \
+    "$roots_log" || fail "the sidecar did not record the local timeout by name"
+  awk -F '\t' '$1 == "end" && $3 ~ /ok\.sh$/ && $10 == "ok" { found=1 } END { exit !found }' \
+    "$roots_log" || fail "the sidecar lost the clean root's ok record"
+  grep -q $'^meta\troot_deadline_seconds\t1$' "$roots_log" \
+    || fail "the sidecar did not record the local deadline"
+
+  # A copy without its watchdog library says so and runs its roots unbounded.
+  lone_dir="$tmp/lone"
+  mkdir -p "$lone_dir"
+  cp "$LINT" "$lone_dir/fm-lint.sh"
+  chmod +x "$lone_dir/fm-lint.sh"
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_TEST_STUB_LOG="$stub_log" \
+    "$lone_dir/fm-lint.sh" --telemetry "$tmp/lone.tsv" "$ok" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "a watchdog-less local run failed"$'\n'"$out"
+  assert_contains "$out" "roots run without a deadline" "the watchdog-less run did not say it is unbounded"
+  grep -q $'^meta\troot_deadline_seconds\tunbounded$' "$tmp/lone.roots.tsv" \
+    || fail "the watchdog-less sidecar did not record the unbounded deadline"
+  pass "a local run keeps the root deadline, and says so when it cannot"
+}
+
+test_busy_roots_exit_75_only_when_nothing_else_failed() {
+  local tmp fakebin roots_log out rc ok busy findings
+  tmp=$(fm_test_tmproot fm-lint-busy)
+  fakebin=$(fm_fakebin "$tmp")
+  fm_lint_stub_reactive_shellcheck "$fakebin"
+  roots_log="$tmp/lint.roots.tsv"
+  ok="$tmp/ok.sh"; busy="$tmp/busy.sh"; findings="$tmp/oom-text-findings.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$ok"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$busy"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$findings"
+
+  rc=0
+  out=$(CI=true PATH="$fakebin:$PATH" "$LINT" --telemetry "$tmp/lint.tsv" "$ok" "$busy" 2>&1) || rc=$?
+  [ "$rc" -eq 75 ] || fail "a run whose only failure is a busy guard exited $rc, expected 75"$'\n'"$out"
+  assert_contains "$out" "fm-lint.sh: wait: shellcheck-busy: 1 root(s)" "the busy run did not print its wait line"
+  awk -F '\t' '$1 == "end" && $3 ~ /busy\.sh$/ && $10 == "busy" { found=1 } END { exit !found }' \
+    "$roots_log" || fail "the sidecar did not record the busy root by name"
+  grep -q $'^meta\tresult_exit\t75$' "$roots_log" \
+    || fail "the sidecar did not record the busy exit"
+
+  # A real failure beside a busy root wins, in either shard order.
+  rc=0
+  out=$(CI=true PATH="$fakebin:$PATH" "$LINT" "$busy" "$findings" 2>&1) || rc=$?
+  [ "$rc" -eq 1 ] || fail "findings beside a busy root exited $rc, expected 1"$'\n'"$out"
+  assert_not_contains "$out" "wait: shellcheck-busy" "a run with findings still printed the busy wait line"
+  rc=0
+  out=$(CI=true PATH="$fakebin:$PATH" FM_LINT_JOBS=1 "$LINT" "$findings" "$busy" 2>&1) || rc=$?
+  [ "$rc" -eq 1 ] || fail "findings before a busy root exited $rc, expected 1"$'\n'"$out"
+  pass "busy roots exit 75 only when nothing else failed"
 }
 
 test_seeded_module_boundary_parity() {
@@ -2061,6 +2141,8 @@ test_require_bounds_refuses_when_enforcement_is_missing
 test_pinned_shellcheck_memory_limit
 test_sidecar_result_exit_reflects_final_status
 test_roots_sidecar_records_per_root_lifecycle
+test_local_run_keeps_the_root_deadline
+test_busy_roots_exit_75_only_when_nothing_else_failed
 test_seeded_module_boundary_parity
 test_changed_mode_lints_only_the_changed_file
 test_ci_changed_mode_lints_changed_files_with_full_analysis

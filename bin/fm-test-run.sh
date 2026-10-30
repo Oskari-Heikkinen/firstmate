@@ -117,13 +117,12 @@
 #                   scheduler.
 #   --per-script-timeout-secs N
 #                   terminate a script that runs longer than N seconds and
-#                   record it as exit 124 (0 disables, the default). The
-#                   --changed applies 1500s automatically, above the slowest
-#                   measured CI script with margin; exceeding it becomes a
-#                   bounded failure, not proof of a hang. --max-wall-ms is
-#                   checked after the run and so cannot catch a hang on its own.
-#                   External interruption cleanup is outside this runner's
-#                   guarantee; configured per-script bounds remain authoritative.
+#                   record it as exit 124 (TERM to its process group, KILL 10s
+#                   later). The default is 1500s in every executing mode, above
+#                   the slowest measured CI script with margin; exceeding it
+#                   becomes a bounded failure, not proof of a hang. 0 disables
+#                   the bound. --max-wall-ms is checked after the run and so
+#                   cannot catch a hang on its own.
 #   --max-wall-ms N fail the run when its measured invocation wall clock exceeds
 #                   N milliseconds, including an empty selection. It is
 #                   evaluated after selection and suite execution and cannot
@@ -141,6 +140,16 @@
 #   FM_TEST_SUMMARY_FAMILY family=<name> count=<n> duration_ms=<n> failed=<n>
 #   FM_TEST_SLOWEST rank=<k> script=<path> duration_ms=<n>
 #   FM_TEST_BUDGET max_wall_ms=<n> duration_ms=<n>   (only with --max-wall-ms)
+#   FM_TEST_STOPPED signal=SIG<name> not_run=<n>     (only after a stop)
+#
+# Stopping: TERM, INT or HUP stops the run at once. Each script runs in a
+# process group of its own, so the runner signals first: TERM to the running
+# script's group (every --jobs worker forwards it to its own), KILL to whatever
+# is left 10s later. The stopped script is reported as exit 128 + the signal's
+# number with "not ok - <script> stopped by SIG<name> before it finished", no
+# further script starts, the summary lines still print, a --json artifact is
+# not written (its durations would measure the stop), FM_TEST_STOPPED counts
+# the scripts never run, and the runner exits 128 + the signal's number.
 #
 # Shard packing (stderr, only with --shard):
 #   FM_TEST_SHARD shard=<k>/<n> scripts=<n> modeled_ms=<n> max_modeled_ms=<n> unmeasured=<n>
@@ -157,7 +166,8 @@
 # Exit status is non-zero if any selected script exits non-zero, a configured
 # --fail-on-gate-skip token appears, the measured duration exceeds
 # --max-wall-ms, timing-artifact finalization fails, or a concurrent worker
-# violates its isolation check. Other gate skips (first meaningful line
+# violates its isolation check; a stopped run exits 128 + the signal's number
+# (see Stopping). Other gate skips (first meaningful line
 # matching ^skip:) remain successful and are counted as skipped_gate; each one
 # is logged with its reason and recorded in the timing artifact.
 #
@@ -231,8 +241,8 @@ JOBS=1
 JOBS_EXPLICIT=0
 JOBS_MAX=8
 MAX_WALL_MS=
-PER_SCRIPT_TIMEOUT_SECS=0
-# Bound applied automatically on the automatic --changed path, derived from
+# The default per-script bound, applied to every executing mode unless
+# --per-script-timeout-secs names another (0 disables it), derived from
 # measured healthy runtimes with margin rather than picked: the slowest measured
 # script is tests/fm-watch-triage.test.sh at about 1075s under CI load (timing artifacts
 # from green main runs record that loaded figure). 1500s keeps every measured script
@@ -242,7 +252,11 @@ PER_SCRIPT_TIMEOUT_SECS=0
 # cancels the job. It is a guard, not a speed control: a HUNG script becomes a
 # bounded failure instead of an unbounded suite, which is the shape that
 # silently outruns a caller's invocation budget.
-CHANGED_DEFAULT_TIMEOUT_SECS=1500
+DEFAULT_PER_SCRIPT_TIMEOUT_SECS=1500
+PER_SCRIPT_TIMEOUT_SECS=$DEFAULT_PER_SCRIPT_TIMEOUT_SECS
+# Seconds a script has to end after its TERM, at the bound or on a stop, before
+# its process group is KILLed: enough for a test's own cleanup trap.
+STOP_GRACE_SECS=10
 
 # The tier map owner: every tests/*.test.sh with exactly one tier, format in its
 # own header. KNOWN_TIERS is the closed tier vocabulary this header defines.
@@ -2179,9 +2193,6 @@ done
 # says. --family, --all and a plain --tier take only an explicit --jobs.
 AUTO_CONCURRENCY=0
 if { [ "$MODE" = changed ] || [ "$MODE" = scripts ] || [ "$MODE" = list ]; } && [ "$JOBS_EXPLICIT" -eq 0 ]; then
-  if [ "$MODE" = changed ] && [ "${#SCRIPTS[@]}" -gt 0 ] && [ "$PER_SCRIPT_TIMEOUT_SECS" -eq 0 ]; then
-    PER_SCRIPT_TIMEOUT_SECS=$CHANGED_DEFAULT_TIMEOUT_SECS
-  fi
   auto_admissible=0
   for s in "${SCRIPTS[@]}"; do
     script_overlaps_in_this_run "$s" && auto_admissible=$((auto_admissible + 1))
@@ -2284,6 +2295,51 @@ cleanup_run() {
 
 trap cleanup_run EXIT
 
+# Stopping (see the header's "Stopping"). STOP_SIGNAL names the first TERM, INT
+# or HUP; RUN_CHILD is the running script's bounding process, or with no bound
+# the leader of its own process group (RUN_CHILD_GROUP=1), which then has
+# STOP_GRACE_SECS before RUN_GUARD KILLs the group.
+STOP_SIGNAL=
+RUN_CHILD=
+RUN_CHILD_GROUP=0
+RUN_GUARD=
+
+# request_stop SIG: signal first - the running script, then every --jobs
+# worker, which forwards to its own script - and only then let the loops wind
+# down, so a stop never waits for a script to finish.
+request_stop() {
+  local slot
+  [ -n "$STOP_SIGNAL" ] || STOP_SIGNAL=$1
+  if [ -n "$RUN_CHILD" ]; then
+    if [ "$RUN_CHILD_GROUP" -eq 1 ]; then
+      kill -TERM -- "-$RUN_CHILD" 2>/dev/null || true
+      if [ -z "$RUN_GUARD" ]; then
+        ( sleep "$STOP_GRACE_SECS"; kill -KILL -- "-$RUN_CHILD" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+        RUN_GUARD=$!
+      fi
+    else
+      # fm_exec_timed forwards this to the script's group and KILLs it after
+      # the grace.
+      kill -TERM "$RUN_CHILD" 2>/dev/null || true
+    fi
+  fi
+  for slot in ${WORKER_PIDS[@]+"${!WORKER_PIDS[@]}"}; do
+    kill -TERM "${WORKER_PIDS[$slot]}" 2>/dev/null || true
+  done
+}
+
+stop_status() {  # 128 + the number of STOP_SIGNAL
+  case "$STOP_SIGNAL" in
+    HUP) printf '129' ;;
+    INT) printf '130' ;;
+    *) printf '143' ;;
+  esac
+}
+
+trap 'request_stop TERM' TERM
+trap 'request_stop INT' INT
+trap 'request_stop HUP' HUP
+
 RUN_ID="fm-test-run-${RUN_STARTED_MS}-$$"
 TOTAL=0
 FAILED=0
@@ -2360,11 +2416,51 @@ record_script_result() {
   TOTAL=$((TOTAL + 1))
 }
 
+# run_child <out|-> CMD...: run CMD as RUN_CHILD, in its own process group and
+# with stdin from /dev/null, writing to <out>, or to this runner's stdout for
+# "-", and wait for it; returns its status. The wait runs in the background so
+# request_stop, the TERM, INT and HUP trap, acts at once; a wait that trap
+# interrupts is resumed until CMD ends.
+run_child() {
+  local out=$1 rc
+  shift
+  if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
+    set -- fm_exec_timed "$PER_SCRIPT_TIMEOUT_SECS" "$STOP_GRACE_SECS" "$@"
+    RUN_CHILD_GROUP=0
+  else
+    RUN_CHILD_GROUP=1
+    set -m
+  fi
+  if [ "$out" = - ]; then
+    ( set +m; "$@" ) </dev/null &
+  else
+    ( set +m; "$@" ) </dev/null >"$out" 2>&1 &
+  fi
+  RUN_CHILD=$!
+  set +m
+  # A stop that arrived while CMD was starting reaches it now.
+  [ -z "$STOP_SIGNAL" ] || request_stop "$STOP_SIGNAL"
+  while :; do
+    wait "$RUN_CHILD" 2>/dev/null
+    rc=$?
+    { [ "$rc" -gt 128 ] && kill -0 "$RUN_CHILD" 2>/dev/null; } || break
+  done
+  if [ -n "$RUN_GUARD" ]; then
+    kill -KILL -- "-$RUN_CHILD" 2>/dev/null || true
+    kill "$RUN_GUARD" 2>/dev/null || true
+    wait "$RUN_GUARD" 2>/dev/null || true
+    RUN_GUARD=
+  fi
+  RUN_CHILD=
+  return "$rc"
+}
+
 # Run <script>, capturing output to <out>. <stream> 1 also echoes it live.
 # <id> only has to be unique within this run. When PER_SCRIPT_TIMEOUT_SECS is
 # positive, a script that outruns it is terminated and reported as exit 124: a
 # hung script must become a bounded failure rather than an unbounded suite,
-# because an unbounded suite is what silently outruns its caller's budget.
+# because an unbounded suite is what silently outruns its caller's budget. A
+# script a stop ended is reported as 128 + the signal's number.
 run_script_bounded() {  # <script> <out> <stream> <id>
   local script=$1 out=$2 stream=$3 id=$4
   # Declaring the variables local first keeps the helper's export scoped to this
@@ -2382,31 +2478,33 @@ run_script_bounded() {  # <script> <out> <stream> <id>
     local FM_TEST_ONLY=$only_case FM_TEST_ONLY_MARKER=$marker
     export FM_TEST_ONLY FM_TEST_ONLY_MARKER
   fi
+  local started=$SECONDS
   set +e
   if [ "$stream" -eq 1 ]; then
-    if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
-      # Expansion is intentionally deferred to the child bash passed to -c.
-      # shellcheck disable=SC2016
-      fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash -c \
-        'bash "$1" 2>&1 | tee "$2"; exit "${PIPESTATUS[0]}"' _ "$script" "$out"
-      rc=$?
-    else
-      bash "$script" 2>&1 | tee "$out"
-      rc=${PIPESTATUS[0]}
-    fi
-  elif [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ]; then
-    fm_run_timed "$PER_SCRIPT_TIMEOUT_SECS" bash "$script" >"$out" 2>&1
+    # Expansion is intentionally deferred to the child bash passed to -c.
+    # shellcheck disable=SC2016
+    run_child - bash -c \
+      'bash "$1" 2>&1 | tee "$2"; exit "${PIPESTATUS[0]}"' _ "$script" "$out"
     rc=$?
   else
-    bash "$script" >"$out" 2>&1
+    run_child "$out" bash "$script"
     rc=$?
   fi
-  if [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && [ "$rc" -eq 124 ]; then
+  if [ -n "$STOP_SIGNAL" ]; then
+    # A script a stop reached did not finish, whatever it exited with.
+    rc=$(stop_status)
+    printf 'not ok - %s stopped by SIG%s before it finished\n' "$script" "$STOP_SIGNAL" >>"$out"
+    [ "$stream" -eq 1 ] && tail -1 "$out"
+  elif [ "$PER_SCRIPT_TIMEOUT_SECS" -gt 0 ] && fm_timed_out "$rc" &&
+    { [ "$rc" -eq 124 ] || [ $((SECONDS - started)) -ge "$PER_SCRIPT_TIMEOUT_SECS" ]; }; then
+    # 137 is the bound only once the bound has passed; before it, a KILL from
+    # elsewhere (the kernel's OOM killer) ended the script.
+    rc=124
     printf 'not ok - %s exceeded the per-script bound of %ss and was terminated\n' \
       "$script" "$PER_SCRIPT_TIMEOUT_SECS" >>"$out"
     [ "$stream" -eq 1 ] && tail -1 "$out"
   fi
-  if [ -n "$only_case" ] && [ ! -e "$marker" ] && ! detect_gate_skip "$out"; then
+  if [ -n "$only_case" ] && [ -z "$STOP_SIGNAL" ] && [ ! -e "$marker" ] && ! detect_gate_skip "$out"; then
     printf 'not ok - FM_TEST_ONLY=%s matched no case in %s\n' "$only_case" "$script" >>"$out"
     [ "$stream" -eq 1 ] && tail -1 "$out"
     [ "$rc" -ne 0 ] || rc=1
@@ -2445,6 +2543,7 @@ run_one_serial() {
 
 if [ "$JOBS" -eq 1 ]; then
   for script in "${SCRIPTS[@]}"; do
+    [ -z "$STOP_SIGNAL" ] || break
     run_one_serial "$script"
   done
 else
@@ -2477,6 +2576,11 @@ else
     active_workers=$((active_workers - 1))
     work="$RUN_TMP/w$idx"
     rc=$(cat "$work/exit" 2>/dev/null || echo 1)
+    if [ ! -s "$work/exit" ] && [ -n "$STOP_SIGNAL" ]; then
+      # The stop reached the worker before it could trap it.
+      rc=$(stop_status)
+      printf 'not ok - %s stopped by SIG%s before it finished\n' "$script" "$STOP_SIGNAL" >>"$work/output"
+    fi
     duration=$(cat "$work/duration_ms" 2>/dev/null || echo 0)
     out="$work/output"
     end_iso=$(now_iso)
@@ -2524,6 +2628,7 @@ else
   }
 
   for script in "${CONCURRENT_SCRIPTS[@]+"${CONCURRENT_SCRIPTS[@]}"}"; do
+    [ -z "$STOP_SIGNAL" ] || break
     if [ "$script" = "$CONCURRENT_PHASE_BREAK" ]; then
       while [ "$active_workers" -gt 0 ]; do
         wait_one_completed_job_worker
@@ -2543,7 +2648,13 @@ else
     printf 'FM_TEST_BEGIN %s %s family=%s expected_gate_skip=%s\n' \
       "$(now_iso)" "$script" "$family" "$expected"
     (
-      trap - EXIT HUP INT TERM
+      # The worker's own stop forwards to its script; the siblings are the
+      # runner's to stop.
+      trap - EXIT
+      trap 'request_stop TERM' TERM
+      trap 'request_stop INT' INT
+      trap 'request_stop HUP' HUP
+      WORKER_PIDS=()
       set +e
       export TMPDIR="$work/tmp"
       export TMP="$work/tmp"
@@ -2575,6 +2686,7 @@ else
   done
   # Unproven remainder, after every concurrent worker has finished.
   for script in "${SERIAL_TAIL_SCRIPTS[@]+"${SERIAL_TAIL_SCRIPTS[@]}"}"; do
+    [ -z "$STOP_SIGNAL" ] || break
     run_one_serial "$script"
   done
 fi
@@ -2607,7 +2719,10 @@ if [ -s "$RECORDS" ]; then
   done
 fi
 
-if [ -n "$JSON_PATH" ]; then
+if [ -n "$JSON_PATH" ] && [ -n "$STOP_SIGNAL" ]; then
+  # A stopped run's durations measure the stop, not the scripts.
+  log "timing artifact not written: the run was stopped by SIG$STOP_SIGNAL: $JSON_PATH"
+elif [ -n "$JSON_PATH" ]; then
   mkdir -p "$(dirname "$JSON_PATH")"
   # Families file may be unsorted; write_json reads as-is (deterministic sort in python).
   if [ -s "$FAMILIES_TSV" ]; then
@@ -2636,6 +2751,14 @@ if [ -n "$MAX_WALL_MS" ]; then
     log "wall-clock budget exceeded: ${RUN_DURATION}ms > ${MAX_WALL_MS}ms for $SELECTION_DESC"
     AGG_RC=1
   fi
+fi
+
+if [ -n "$STOP_SIGNAL" ]; then
+  not_run=$((${#SCRIPTS[@]} - TOTAL))
+  [ "$not_run" -ge 0 ] || not_run=0
+  printf 'FM_TEST_STOPPED signal=SIG%s not_run=%s\n' "$STOP_SIGNAL" "$not_run"
+  log "stopped by SIG$STOP_SIGNAL: the running script was ended and reported; $not_run script(s) not run"
+  exit "$(stop_status)"
 fi
 
 exit "$AGG_RC"

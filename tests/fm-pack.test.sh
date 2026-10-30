@@ -90,7 +90,8 @@ unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_DEV_SIZE FM_DISK_ROOM_MARGIN FM_DISK_ROOM_N
   FM_DISK_ROOM_WEVTUTIL FM_DISK_ROOM_POWERSHELL FM_DISK_ROOM_RESULTS_ROOT FM_DISK_ROOM_SAMPLES \
   FM_DISK_ROOM_C_FREE_MIN FM_DISK_ROOM_D_FREE_MIN FM_DISK_ROOM_BULK_MARGIN FM_STORAGE_MNT FM_STORAGE_CONFIG \
   FM_STORAGE_MOUNTINFO FM_STORAGE_RESULTS_ROOT FM_PACK_MOUNT FM_PACK_TEST_BEFORE_RECHECK \
-  FM_PACK_SLOT_LOCK FM_PACK_RETRY_LIMIT FM_PACK_RETRY_TEST_EVERY FM_PACK_RETRY_LOG FM_PACK_SELF FM_PACK_RUN
+  FM_PACK_SLOT_LOCK FM_PACK_SLOT_WAIT FM_PACK_TEST_IN_COMMIT FM_PACK_RETRY_LIMIT FM_PACK_RETRY_TEST_EVERY \
+  FM_PACK_RETRY_LOG FM_PACK_SELF FM_PACK_RUN
 TMP_ROOT=$(fm_test_tmproot fm-pack)
 PACK="$ROOT/bin/fm-pack.sh"
 GIB=1073741824
@@ -328,6 +329,121 @@ test_slot_waits() {
   assert_grep "command=test-holder" "$err" "the waiting line quotes the holder's command"
   assert_grep "command=fm-pack verify $R/unit-a.sqfs" "$lock" "the holder names itself in the slot"
   pass "a second caller prints one line and waits for the machine-wide slot"
+}
+
+# pid_gone PID: PID has exited (or is a reaped orphan).
+pid_gone() { ! kill -0 "$1" 2>/dev/null; }
+
+test_slot_wait_is_bounded() {
+  local lock="$TMP_ROOT/busy-slot.lock" ready="$TMP_ROOT/busy-ready" go="$TMP_ROOT/busy-go"
+  local err="$TMP_ROOT/busy.err" out holder hpid line began rc
+  flock "$lock" bash -c 'printf "pid=%s started=1 command=test-holder\n" "$$" >"$1"; : >"$2"; n=0
+    until [ -e "$3" ] || [ "$n" -ge 6000 ]; do sleep 0.05; n=$((n + 1)); done' _ "$lock" "$ready" "$go" \
+    </dev/null >/dev/null 2>&1 &
+  holder=$!
+  wait_for 30 test -e "$ready" || fail "the test holder never took the slot"
+  began=$SECONDS
+  out=$(FM_PACK_SLOT_WAIT=2 PACK_SLOT_LOCK=$lock run_pack pack job unit-busy "$SRC" 2>"$err"); rc=$?
+  expect_code 75 "$rc" "a pack that finds the slot held past its bound waits with 75"
+  [ $((SECONDS - began)) -ge 2 ] || fail "the pack gave up before its 2 s bound: $(cat "$err")"
+  [ $((SECONDS - began)) -lt 120 ] || fail "the pack waited far past its 2 s bound"
+  assert_equals "" "$out" "the busy pack prints no receipt"
+  assert_grep "waiting for the machine-wide pack slot $lock (at most 2 s), held by pid=" "$err" "one waiting line names the bound"
+  assert_grep "fm-pack: wait: pack-slot-busy: $lock still held after 2 s by pid=" "$err" "the wait line names the slot and the bound"
+  assert_grep "command=test-holder; nothing done" "$err" "the wait line names the holder and that nothing was done"
+  assert_absent "$R/unit-busy.sqfs" "the busy pack commits nothing"
+  assert_equals "" "$(pack_reservations)" "the busy pack holds no reservation"
+  out=$(FM_PACK_SLOT_WAIT=soon PACK_SLOT_LOCK=$lock run_pack verify "$R/unit-a.sqfs" 2>&1); rc=$?
+  expect_code 2 "$rc" "a bound that is not whole seconds is misuse"
+  assert_contains "$out" "FM_PACK_SLOT_WAIT must be whole seconds" "the refusal names the variable"
+
+  # stop signals only a holder named by pid and start time.
+  out=$(PACK_SLOT_LOCK=$lock run_pack stop 2>&1); rc=$?
+  expect_code 1 "$rc" "stop refuses a holder line without a start time"
+  assert_contains "$out" "has not named itself as pid=PID start=TICKS" "the refusal says why"
+  line=$(cat "$lock") hpid=${line#pid=} hpid=${hpid%% *}
+  printf 'pid=%s start=1 started=1 command=test-holder\n' "$hpid" >"$lock"
+  out=$(PACK_SLOT_LOCK=$lock run_pack stop 2>&1); rc=$?
+  expect_code 1 "$rc" "stop refuses a pid whose start time differs"
+  assert_contains "$out" "not the holder's 1; nothing signalled" "the refusal names the mismatch"
+  kill -0 "$hpid" 2>/dev/null || fail "a refused stop signalled the holder"
+  : >"$go"
+  wait "$holder"
+  out=$(PACK_SLOT_LOCK=$lock run_pack stop 2>&1); rc=$?
+  expect_code 0 "$rc" "stop with a free slot succeeds"
+  assert_contains "$out" "fm-pack: stop: the pack slot $lock is free" "stop says the slot is free"
+  out=$(PACK_SLOT_LOCK="$TMP_ROOT/never.lock" run_pack stop 2>&1); rc=$?
+  expect_code 0 "$rc" "stop with no slot file succeeds"
+  assert_contains "$out" "is free ($TMP_ROOT/never.lock does not exist)" "stop says no slot exists"
+  pass "a held slot makes a second pack wait its bound and exit 75, and stop refuses an unproven holder"
+}
+
+test_stop_finishes_the_commit() {
+  local lock="$TMP_ROOT/commit-slot.lock" src="$TMP_ROOT/stop-commit/unit-sc" ready="$TMP_ROOT/commit-ready"
+  local go="$TMP_ROOT/commit-go" err="$TMP_ROOT/commit.err" out="$TMP_ROOT/commit.out" pack stop rc
+  mkdir -p "${src%/*}"
+  make_src "$src"
+  PACK_SLOT_LOCK=$lock \
+    FM_PACK_TEST_IN_COMMIT=": >'$ready'; n=0; until [ -e '$go' ] || [ \$n -ge 6000 ]; do sleep 0.05; n=\$((n + 1)); done" \
+    run_pack pack job unit-sc "$src" </dev/null >"$out" 2>"$err" &
+  pack=$!
+  wait_for 120 test -e "$ready" || fail "the pack never reached its commit: $(cat "$err")"
+  PACK_SLOT_LOCK=$lock run_pack stop --wait 120 </dev/null >"$TMP_ROOT/commit-stop.out" 2>"$TMP_ROOT/commit-stop.err" &
+  stop=$!
+  wait_for 60 grep -F "sent SIGTERM to the pack slot holder pid" "$TMP_ROOT/commit-stop.err" >/dev/null ||
+    fail "stop never signalled the holder: $(cat "$TMP_ROOT/commit-stop.err")"
+  kill -0 "$pack" 2>/dev/null || fail "the pack ended inside its commit"
+  : >"$go"
+  wait "$stop"; rc=$?
+  expect_code 0 "$rc" "stop returns once the holder has stopped"
+  assert_grep "fm-pack: stop: the pack slot holder pid" "$TMP_ROOT/commit-stop.out" "stop says the holder stopped"
+  wait "$pack"; rc=$?
+  expect_code 0 "$rc" "a stop during the commit lets the pack finish"
+  assert_grep "fm-pack-receipt/v1 image=$R/unit-sc.sqfs " "$out" "the pack still prints its receipt"
+  assert_grep "a stop arrived during the commit of unit-sc; the unit was committed whole first" "$err" "the pack says a stop arrived"
+  for f in sqfs sqfs.sha256 members.sha256 tree.tsv json; do assert_present "$R/unit-sc.$f" "unit-sc.$f committed"; done
+  assert_absent "$R/.incoming" "no staging left"
+  assert_equals "" "$(pack_reservations)" "the pack reservation is released"
+  out=$(run_pack verify "$R/unit-sc.sqfs" --against "$src"); rc=$?
+  expect_code 0 "$rc" "the committed unit verifies against its source"
+  pass "stop during the commit ends the pack after the unit is whole"
+}
+
+test_stop_ends_a_running_step() {
+  local lock="$TMP_ROOT/step-slot.lock" src="$TMP_ROOT/stop-step/unit-ss" slow="$TMP_ROOT/slow-bin"
+  local ev="$TMP_ROOT/slow-ev" err="$TMP_ROOT/step.err" out real pack sleeper rc
+  real=$(command -v mksquashfs) || fail "no mksquashfs"
+  mkdir -p "${src%/*}" "$slow" "$ev"
+  make_src "$src"
+  cat >"$slow/mksquashfs" <<SH
+#!/usr/bin/env bash
+[ "\${1:-}" != -version ] || exec "$real" "\$@"
+sleep 600 </dev/null >/dev/null 2>&1 &
+printf '%s\n' "\$!" >"$ev/sleep.tmp" && mv "$ev/sleep.tmp" "$ev/sleep"
+wait
+SH
+  chmod +x "$slow/mksquashfs"
+  PATH="$slow:$PATH" PACK_SLOT_LOCK=$lock run_pack pack job unit-ss "$src" </dev/null >"$TMP_ROOT/step.out" 2>"$err" &
+  pack=$!
+  wait_for 120 test -e "$ev/sleep" || fail "the pack never reached mksquashfs: $(cat "$err")"
+  sleeper=$(cat "$ev/sleep")
+  out=$(PACK_SLOT_LOCK=$lock run_pack stop --wait 120 2>&1); rc=$?
+  expect_code 0 "$rc" "stop ends a pack inside a long step"
+  assert_contains "$out" "sent SIGTERM to the pack slot holder pid" "stop names the signal it sent"
+  assert_contains "$out" "fm-pack: stop: the pack slot holder pid" "stop says the holder stopped"
+  wait "$pack"; rc=$?
+  expect_code 143 "$rc" "a stopped pack exits 143"
+  assert_grep "fm-pack: stopped by SIGTERM" "$err" "the pack says it was stopped"
+  wait_for 30 pid_gone "$sleeper" || fail "the step's process group outlived the stop"
+  assert_equals "" "$(cat "$TMP_ROOT/step.out")" "a stopped pack prints no receipt"
+  assert_absent "$R/unit-ss.sqfs" "a stopped pack commits no image"
+  assert_absent "$R/unit-ss.json" "a stopped pack commits no sidecar"
+  assert_absent "$R/.incoming" "a stopped pack leaves no staging"
+  assert_equals "" "$(pack_reservations)" "a stopped pack holds no reservation"
+  out=$(PACK_SLOT_LOCK=$lock run_pack stop 2>&1); rc=$?
+  expect_code 0 "$rc" "the slot is free after the stop"
+  assert_contains "$out" "is free" "stop finds the slot free"
+  pass "stop ends a pack's running step and leaves the store as it was"
 }
 
 test_against_changed_source() {
@@ -1358,6 +1474,9 @@ test_no_publication_waits
 test_pack_round_trip
 test_machine_share
 test_slot_waits
+test_slot_wait_is_bounded
+test_stop_finishes_the_commit
+test_stop_ends_a_running_step
 test_against_changed_source
 test_source_change_refuses
 test_tampering_fails_verify

@@ -18,8 +18,11 @@
 #       takes only the oldest candidates up to SIZE. Nothing schedules a run.
 #       A run holds the one machine-wide pack slot it shares with fm-pack.sh
 #       (a flock on ~/.cache/fm-pack/slot.lock, taken after the home's lock)
-#       from before its scan until its batch ends, and waits, saying so once,
-#       while another pack or repack holds it.
+#       from before its scan until its batch ends. While another pack or
+#       repack holds it, the run waits at most FM_PACK_SLOT_WAIT seconds,
+#       saying so once with the holder's line, then exits 75. Line 1 of the
+#       slot names the holder in fm-pack.sh's format, so `fm-pack.sh stop`
+#       stops a run too.
 #   fm-repack.sh baseline --home HOME [--at EPOCH]
 #       Records EPOCH (default now) in HOME/state/fm-repack/baseline: files
 #       whose inode last changed at or before it are skipped, because a
@@ -54,8 +57,15 @@
 #       stopped there, the batch did not start, or it was stopped by a signal;
 #       every path holds its original or its verified copy;
 #   2   usage, configuration or precondition refusal, nothing written;
-#   75  held, nothing written: admission refused the batch's write, or
-#       another run for this home holds the lock.
+#   75  held, nothing written: admission refused the batch's write, another
+#       run for this home holds the lock, or the pack slot stayed held.
+#
+# Stopping (run): SIGTERM or SIGINT before the batch starts ends the run at
+# once, after any recovery in progress, with "stopped by SIG...; nothing was
+# written" and exit 1. During the batch, which runs in its own process group,
+# the run forwards SIGTERM to that group; the batch stops at its next file
+# boundary and reports "interrupted", and 20 s later the group is killed,
+# which the per-file protocol survives like a crash.
 #
 # Every command runs at nice 19 and ionice -c3; without ionice it refuses.
 #
@@ -70,6 +80,8 @@
 #   FM_REPACK_DISK_ROOM   fm-disk-room.sh to admit with (default: beside this);
 #   FM_IO_CAP             fm-io-cap command (default: fm-io-cap on PATH);
 #   FM_PACK_SLOT_LOCK     the machine-wide pack slot's lock file (tests);
+#   FM_PACK_SLOT_WAIT     seconds to wait for the pack slot before exit 75
+#                         (default 900; 0 does not wait);
 #   FM_REPACK_TEST_CRASH  before-swap or after-swap: exit there with no
 #                         cleanup (tests);
 #   FM_REPACK_TEST_DURING_COPY  command run with the path after the copy,
