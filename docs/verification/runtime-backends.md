@@ -2944,3 +2944,24 @@ The full run's native Ahoy cases depend on the model's own choices and failed wi
 
 A real `bin/fm-spawn.sh --scout --harness opencode --model opencode-go/deepseek-v4.1-flash` in a private tmux server recorded `opencode_version=1.18.20` (and `1.18.31` on the second release), launched the worker as `opencode --model opencode-go/deepseek-v4.1-flash --prompt <brief>` with no `--standalone`, and the worker answered its brief.
 `bin/fm-control.sh <task> exit` then resolved the typed `/exit` from that recorded major and returned both panes to the shell.
+
+## Wake-triage replay engine turns
+
+`bin/fm-wake-triage-replay.sh` runs each settle-listed row as one classify-only engine turn and reads the vendor's JSON output: claude's single `result` object (`result`, `total_cost_usd`, `is_error`, `num_turns`) and pi's `agent_end` event (the last assistant message's text, `usage.cost.total` and `stopReason`).
+It refuses a turn that used a tool: claude reports a tool round trip as `num_turns` above 1, and pi lists a `toolCall` content block and a `toolResult` message in `agent_end`.
+`tests/fm-wake-triage-replay-live-e2e.test.sh` replays two recorded loop-alert rows (one cleared, one still raised) through each installed engine and checks that both turns parse, carry a cost, use no tool, and relay the failed probe.
+
+Verified 2026-10-30 on Linux with Claude Code 2.1.312 (`claude-sonnet-5-5`) and pi 0.85.1 (`openai-codex/gpt-6.1-sol`), both at high effort.
+
+```sh
+FM_WAKE_TRIAGE_REPLAY_LIVE_E2E=1 bash tests/fm-wake-triage-replay-live-e2e.test.sh
+```
+
+```
+# claude 2.1.312 (Claude Code), claude-sonnet-5-5: h2 (pass) settle, h3 (fail) relay, costs 0.0055 and 0.0041
+# pi 0.85.1, openai-codex/gpt-6.1-sol: h2 (pass) settle, h3 (fail) relay, costs 0.0043 and 0.0043
+ok - the replay's real engine turns parse, use no tool and relay a failed probe (2 engine(s))
+```
+
+The same versions, given a tool (`claude -p ... --tools Read --output-format json` and `pi -p --tools read --mode json`) and asked to read a file, reported `num_turns` 2 and an `agent_end` holding `toolCall` and `toolResult` entries, which is what the refusal reads.
+The guard submits prompts, so it is opt-in; rerun it after every Claude or Pi upgrade.

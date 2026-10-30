@@ -369,6 +369,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/wake-triage/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/worker-guide/SKILL.md",
       "audience": "agent-runtime"
     },

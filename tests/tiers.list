@@ -139,6 +139,7 @@ full tests/fm-handoff-watch.test.sh
 full tests/fm-harness-precedence.test.sh
 full tests/fm-helper-consumers.test.sh
 full tests/fm-helper-equiv.test.sh
+full tests/fm-wake-triage-replay.test.sh
 full tests/fm-helper-selftest.test.sh
 full tests/fm-herdr-attached-viewer-live-e2e.test.sh
 full tests/fm-herdr-lab.test.sh
@@ -319,4 +320,5 @@ live tests/fm-sessionstart-instruction-refresh-live-e2e.test.sh
 live tests/fm-supervision-accounting-live.test.sh
 live tests/fm-supervision-host-attended-live-e2e.test.sh
 live tests/fm-supervision-host-live-e2e.test.sh
+live tests/fm-wake-triage-replay-live-e2e.test.sh
 live tests/fm-worker-account-live-e2e.test.sh
