@@ -838,6 +838,40 @@ tests/fm-afk-return.test.sh
 tests/fm-branch-supervision.test.sh
 ```
 
+### The WSL2 boot clock runs ahead of the wall clock, 2026-10-30
+
+This supports the park boundary's use of the boot clock in [supervision-host.md](../supervision-host.md#setting-the-boundary).
+It was measured on 2026-10-30 in a WSL2 guest on Windows (kernel `6.6.87.2-microsoft-standard-WSL2`) with Claude Code 2.1.312 as the primary, with the guest's wall clock kept in step with the Windows host.
+One sample of `/proc/uptime`, `CLOCK_MONOTONIC` and the wall clock was taken on each side of `sleep 300`:
+
+```sh
+sample() { python3 -I -c 'import time; print("uptime=%s monotonic=%.2f wall=%.2f" % (open("/proc/uptime").read().split()[0], time.monotonic(), time.time()))'; }
+sample; sleep 300; sample
+```
+
+```text
+uptime=406180.57 monotonic=406180.57 wall=1793351933.02
+uptime=406480.59 monotonic=406480.59 wall=1793352205.76
+```
+
+The boot and monotonic clocks advanced 300.02 s while the wall clock advanced 272.74 s, so they ran 10.0% ahead.
+
+The hook timer was then measured against that drift in an interactive `claude --model haiku --tools '' --setting-sources local --settings <probe>/settings.json` session, given one short prompt, in a scratch git project on a private tmux socket with no Firstmate hooks loaded.
+Its one async `Stop` hook logged its own `/proc/self/stat` start time, `/proc/uptime` and the wall clock at start, trapped `TERM`, and logged both clocks again when the timeout's `TERM` arrived:
+
+```json
+{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"<probe>/hook.sh","asyncRewake":true,"timeout":60}]}]}}
+```
+
+```text
+start pid=12230 starttime_ticks=40750329 uptime=407503.29 wall=1793353135.686210985
+term uptime=407563.32 wall=1793353190.256802014
+```
+
+The `TERM` came 60.03 boot-clock seconds after the hook process started (its start time, 40750329 ticks at 100 Hz, equals the uptime it logged at start) and 54.57 wall-clock seconds after, so Claude Code times the hook on the clock that runs ahead, counted from the hook process's start.
+The same guest's Claude Code ended a live async `Stop` hook with its 28,800 s timeout about 26,240 wall-clock seconds after the hook started, a ratio of 1.098.
+A park that counted only wall-clock seconds against its 27,000 s boundary was therefore killed short of it, and its exit 2 was dropped as the [record above](#claude-drops-the-exit-2-of-a-hook-it-timed-out-2026-09-23) shows.
+
 ## Wedge-alarm channels
 
 The two real notification channels were bounded manually on 2026-07-10 on macOS 26.5.2 with Herdr 0.7.3.

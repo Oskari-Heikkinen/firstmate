@@ -390,7 +390,7 @@ Each record includes:
 - Arm and watcher PIDs.
 - Start and end timestamps.
 - Exit code and signal.
-- Classified reason.
+- Classified reason: `watchdog-wedged` when the wedge watchdog's stop note ([turn-end guard](turnend-guard.md)) names the cycle's watcher by PID and identity, so its `watcher: FAILED` line says what was signalled and why instead of only the exit status.
 - Beacon age.
 - Lock identity before and after close.
 - Successor disposition.

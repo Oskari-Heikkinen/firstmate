@@ -221,6 +221,7 @@ At stop time the watchdog starts an independent, bounded process snapshot for it
 This is evidence of the last beat, not an inference about the blocking operation; throttled boundaries have no separate record.
 The snapshot omits the watchdog's own subtree, limits output to 32 descendants and 240 command bytes each, and reports unavailable on failure or timeout.
 It runs concurrently with termination, so children that exit or reparent during cleanup may already be absent, and a slow or failed `ps` cannot delay TERM or the existing KILL grace.
+Just before TERM the watchdog also writes one line, `state/.watch-watchdog-stop`, naming the watcher's PID, lock identity, beacon age, grace and last beat, from which the owning arm names the stop in its close; `watcher_watchdog_note` in [`bin/fm-watch.sh`](../bin/fm-watch.sh) owns its format.
 The watchdog signals only the pid this home's lock records with a matching identity, never a pattern match across homes.
 It exits once that pid is gone or the lock names another pid, but an identity read that cannot prove ownership while the lock still names the live watcher is logged and retried next interval rather than ending the watchdog.
 If the watchdog is gone too, a re-arm evicts the holder once its beacon passes the hard stall bound described below.

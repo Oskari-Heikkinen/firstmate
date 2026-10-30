@@ -118,7 +118,11 @@
 # with that close printed ahead of the line. The turn limit is the boundary
 # itself unless the owner sets FM_SUPERVISION_HOST_PARK_LIMIT later: Codex's
 # checkpoint, whose bound is the park itself rather than a harness timeout,
-# lets a turn that starts before the boundary finish after it.
+# lets a turn that starts before the boundary finish after it. The harness
+# times its hook on a monotonic clock that a VM guest (WSL2) can run several
+# percent ahead of the wall clock, so the park's elapsed time is the larger of
+# Bash's SECONDS and the boot clock (/proc/uptime) since the owner process
+# (FM_SUPERVISION_HOST_OWNER_PID, else the host) started.
 #
 # OWNERSHIP. Before activation, every successor cycle, and every engine turn
 # the host proves this session still holds the fleet lock
@@ -175,8 +179,9 @@
 # also opens a new one), FM_SUPERVISION_HOST_READY_TIMEOUT (25: how long a
 # successor cycle may take to verify), FM_SUPERVISION_HOST_POLL (1).
 # Park duration uses Bash's process-relative SECONDS counter (including Bash
-# 3.2), while durable timestamps still use epoch time. This is not a portable
-# monotonic-clock guarantee. Arm exit probes use a 0.5-second builtin read on
+# 3.2) and, where /proc/uptime exists, the boot clock since the owner's start
+# (THE PARK BOUNDARY), each read without a fork; durable timestamps still use
+# epoch time. Arm exit probes use a 0.5-second builtin read on
 # a private, unlinked FIFO on Bash 4+ (fractional read timeouts); Bash 3.2 keeps
 # ordinary 0.5-second child sleeps. Maintenance and boundary checks keep their
 # POLL cadence, and close observation still takes at most that probe interval
@@ -185,8 +190,10 @@
 # a foreground bookkeeping helper cannot defer shutdown. A FIFO setup or read
 # failure exits with a supervision-host wake instead of spinning.
 # FM_TEST_SUPERVISION_HOST_CLOCK names a file holding the park's elapsed
-# seconds, which the park and turn boundary checks read in place of SECONDS
-# only when FM_TEST_SEAM=1; tests/lib.sh arms the marker for isolated suites.
+# seconds, which the park and turn boundary checks read in place of SECONDS,
+# and FM_TEST_SUPERVISION_HOST_UPTIME names a file read in place of
+# /proc/uptime (unset beside the first, the boot clock is not read), both only
+# when FM_TEST_SEAM=1; tests/lib.sh arms the marker for isolated suites.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -299,6 +306,10 @@ WAIT_READING=0
 WAIT_SIGNAL=0
 ARM_LAUNCHING=0
 LAUNCH_SIGNAL=0
+# The first caught signal's exit status, and whether an exit path printed its
+# close (emit): the cleanup names an exit that did neither.
+HOST_SIGNALLED=
+HOST_EMITTED=0
 
 log_line() {  # <text>
   local tmp
@@ -568,6 +579,27 @@ stop_engine_turn() {
   [ -z "$ENGINE_SUBSHELL" ] || kill -KILL "$ENGINE_SUBSHELL" 2>/dev/null || true
 }
 
+# A host stopped by a signal, or one that exits without printing its close,
+# leaves a line saying so, with the park clocks and whether its owner is still
+# running: no later wake explains such a stop.
+log_stopped() {
+  local why owner=none
+  case "$HOST_SIGNALLED" in
+    '') [ "$HOST_EMITTED" -eq 0 ] || return 0
+        why='no close was printed (a HUP or TERM outside the park wait, or an unplanned exit)' ;;
+    129) why='signal HUP' ;;
+    130) why='signal INT' ;;
+    143) why='signal TERM' ;;
+    *) why="signal status $HOST_SIGNALLED" ;;
+  esac
+  if [ -n "$AUTOARM_OWNER" ]; then
+    owner="$AUTOARM_OWNER gone"
+    ! kill -0 "$AUTOARM_OWNER" 2>/dev/null || owner="$AUTOARM_OWNER alive"
+  fi
+  park_elapsed
+  log_line "stopped	$why	after ${PARK_ELAPSED}s wall=${PARK_WALL}s boot=${PARK_BOOT:-none}${PARK_BOOT:+s}	owner=$owner"
+}
+
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() {
   local rc=$? f
@@ -582,6 +614,7 @@ cleanup() {
   fi
   retire_arm "$SUCCESSOR_PID" "$SUCCESSOR_OUT"
   retire_arm "$ARM_PID" "$ARM_OUT"
+  log_stopped
   if [ "$GRANT_ACTIVE" -eq 1 ]; then
     "$SCRIPT_DIR/fm-wake-grant.sh" release "$GEN" >/dev/null 2>&1 || true
     "$SCRIPT_DIR/fm-wake-grant.sh" deactivate "$HOST_PID" "$GEN" >/dev/null 2>&1 || true
@@ -666,12 +699,52 @@ start_arm() {  # <pid-variable> <output-variable> <predecessor or empty> [arm fl
   fi
 }
 
-park_elapsed() {  # Sets PARK_ELAPSED without a production clock/helper fork.
-  if [ "${FM_TEST_SEAM:-}" = 1 ] && [ -n "${FM_TEST_SUPERVISION_HOST_CLOCK:-}" ]; then
-    PARK_ELAPSED=$(numeric_or "$(cat "$FM_TEST_SUPERVISION_HOST_CLOCK" 2>/dev/null)" 0)
-    return
+# The boot-clock second the owner process started (THE PARK BOUNDARY), read
+# once at startup from Linux /proc/<pid>/stat field 22; empty off Linux or
+# where there is no boot clock to read, and the park then runs on SECONDS
+# alone.
+PARK_UPTIME=/proc/uptime
+if [ "${FM_TEST_SEAM:-}" = 1 ]; then
+  if [ -n "${FM_TEST_SUPERVISION_HOST_UPTIME:-}" ]; then
+    PARK_UPTIME=$FM_TEST_SUPERVISION_HOST_UPTIME
+  elif [ -n "${FM_TEST_SUPERVISION_HOST_CLOCK:-}" ]; then
+    PARK_UPTIME=
   fi
-  PARK_ELAPSED=$((SECONDS - HOST_STARTED_SECONDS))
+fi
+PARK_BOOT_START=
+park_boot_start() {
+  local pid stat ticks hz
+  local -a fields
+  [ -n "$PARK_UPTIME" ] && [ "$_FM_UNAME" = Linux ] && [ -r /proc/uptime ] || return 0
+  hz=$(numeric_or "$(getconf CLK_TCK 2>/dev/null)" 100)
+  for pid in "$AUTOARM_OWNER" "$HOST_PID"; do
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    fm_file_text_to stat "/proc/$pid/stat" || continue
+    # After the final comm delimiter, array index 19 is proc stat field 22.
+    read -r -a fields <<< "${stat##*)}"
+    ticks=${fields[19]:-}
+    case "$ticks" in ''|*[!0-9]*) continue ;; esac
+    PARK_BOOT_START=$((ticks / hz))
+    return 0
+  done
+  log_line "park-clock	the owner's boot-clock start is unreadable; the park runs on the wall clock alone"
+}
+
+park_elapsed() {  # Sets PARK_ELAPSED, PARK_WALL and PARK_BOOT without a production clock/helper fork.
+  local up _
+  if [ "${FM_TEST_SEAM:-}" = 1 ] && [ -n "${FM_TEST_SUPERVISION_HOST_CLOCK:-}" ]; then
+    PARK_WALL=$(numeric_or "$(cat "$FM_TEST_SUPERVISION_HOST_CLOCK" 2>/dev/null)" 0)
+  else
+    PARK_WALL=$((SECONDS - HOST_STARTED_SECONDS))
+  fi
+  PARK_ELAPSED=$PARK_WALL
+  PARK_BOOT=
+  [ -n "$PARK_BOOT_START" ] || return 0
+  { IFS=' .' read -r up _ < "$PARK_UPTIME"; } 2>/dev/null || return 0
+  case "$up" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$up" -ge "$PARK_BOOT_START" ] || return 0
+  PARK_BOOT=$((up - PARK_BOOT_START))
+  [ "$PARK_BOOT" -le "$PARK_ELAPSED" ] || PARK_ELAPSED=$PARK_BOOT
 }
 
 boundary_reached() {
@@ -698,7 +771,7 @@ boundary_exit() {
   SUCCESSOR_OUT=
   "$SCRIPT_DIR/fm-watch-arm.sh" --stop >/dev/null 2>&1 || true
   park_elapsed
-  log_line "boundary	after ${PARK_ELAPSED}s"
+  log_line "boundary	after ${PARK_ELAPSED}s	wall=${PARK_WALL}s boot=${PARK_BOOT:-none}${PARK_BOOT:+s}"
   emit 'supervision-host: cycle boundary - the host ended its park at its bound; drain, acknowledge, and end the turn, and the next park starts on its own'
   exit 0
 }
@@ -738,6 +811,7 @@ host_stop_signals() {
 }
 
 host_signal() {  # <exit-status>
+  [ -n "$HOST_SIGNALLED" ] || HOST_SIGNALLED=$1
   if [ "$ARM_LAUNCHING" -eq 1 ]; then
     [ "$LAUNCH_SIGNAL" -ne 0 ] || LAUNCH_SIGNAL=$1
   elif [ "$WAIT_READING" -eq 1 ]; then
@@ -811,6 +885,7 @@ await_close() {
 # OUTPUT), so an owner reading a stream sees the whole exit at once.
 emit() {  # [line...]
   local text=$ARM_TEXT line
+  HOST_EMITTED=1
   for line in "$@"; do
     [ -n "$line" ] || continue
     text=${text:+$text$'\n'}$line
@@ -1300,9 +1375,10 @@ if ! host_still_owner; then
 fi
 trap cleanup EXIT
 host_stop_signals
-activate || { echo "supervision-host stood down: the host record could not be written"; exit 0; }
+activate || { HOST_EMITTED=1; echo "supervision-host stood down: the host record could not be written"; exit 0; }
 prepare_park_wait || { emit 'supervision-host: park timer could not be prepared; drain and re-arm supervision'; exit 1; }
 log_line "start	gen=$GEN	primary=$PRIMARY"
+park_boot_start
 fm_supervision_tick_loop_init "$STATE" "$CONFIG" "$STATE/.supervision-host-ticks" supervision-host half-second-wait-v1
 
 # The first cycle.
@@ -1341,6 +1417,14 @@ while :; do
       log_line "pass-through	attended	$ATTENDED_WHY	$(printf '%s\n' "$REASON" | head -n 1)"
       if [ "$ATTENDED_WHY" = main-only ]; then
         leave_successor_for_main || true
+      fi
+      # The owner delivers this close only while the recovery marker reads
+      # downtime, and a turn's acknowledgement can already have consumed the
+      # downtime of a close that landed during that turn.
+      if ! fm_recovery_marker_publish "$STATE/.watcher-down" downtime >/dev/null 2>&1; then
+        log_line "pass-through	downtime-unrestored	$(printf '%s\n' "$REASON" | head -n 1)"
+        emit "$ARM_START_FAILURE" 'supervision-host: watcher downtime could not be restored for the main hand-back'
+        exit 1
       fi
       emit "$ARM_START_FAILURE"
       exit 0

@@ -110,6 +110,7 @@ So a close reaches main off Pi exactly when it would on Pi: a check trigger, a d
 On that main-only pass-through the host starts the successor watcher cycle and leaves it running, then prints the close unchanged.
 That successor, like one a turn hands back at its start (see [Away](#away)), runs in a process group of its own, so the harness tearing down the hook's group after the rewake does not stop it.
 The host leaves the watcher's recovery marker reading downtime, confirming no handling handoff, because the re-arm owner delivers a close to main only while that marker reads downtime.
+It republishes that downtime before printing the close, because an acknowledgement in a turn the close arrived during can already have consumed it, and a failed republish adds a `supervision-host: watcher downtime could not be restored for the main hand-back` line and exits nonzero.
 The session's next park without `--restart` requests a take-over to restore a single host-owned arm; the [host header](../bin/fm-supervision-host.sh) owns successor persistence and cleanup, and the [arm header](../bin/fm-watch-arm.sh) owns take-over eligibility and fallback.
 OpenCode and omp still launch the host with `--restart`, which takes precedence over recorded take-over and lacks its acknowledgement-preserving handover; changing that first-cycle path remains a follow-up.
 The host-off Claude Stop hook's detached handling successor is also unchanged; see [Claude handling successor](watcher-continuity.md#claude-handling-successor).
@@ -231,7 +232,7 @@ Every path that cannot finish a wake the engine took hands that wake to main, wi
 Before handing it back, the host stops its successor cycle, and whenever a successor generation was recorded (confirmed or not), it explicitly republishes downtime for that generation.
 That publication is required even when the successor already exited, because no watcher cleanup remains to make the close deliverable to the arm owner.
 If that publication fails, the hand-back adds a `supervision-host: watcher downtime could not be restored` line and the host exits nonzero.
-On Claude, a Stop hook whose rewake is refused while the recovery marker is still `pending:handling` and no watcher is live commits the auto-arm failure notice once per failure episode (`failed-suppressed` after that) and still exits 2, so the hand-back reaches main; every other refused rewake stays silent as before.
+On Claude, a Stop hook whose rewake is refused after the host exited nonzero, or while the recovery marker is still `pending:handling` and no watcher is live, commits the auto-arm failure notice once per failure episode (`failed-suppressed` after that) and still exits 2, so the hand-back reaches main; every other refused rewake stays silent as before.
 So the owner's next arm starts from the same state as without the host, and the wake stays durable in the queue.
 
 ### Paths that hand the wake back
@@ -289,6 +290,7 @@ So it never stops the owner's host or watcher or releases its leases.
 
 ### A host that dies without a close
 
+A host stopped by a signal, or one that exits without printing a close, logs one `stopped` line in `state/.supervision-host.log` naming the signal, how long it had parked on each clock, and whether its owner was still alive.
 The host's owner retries it.
 Grok's model and Codex's checkpoint see it as a failed cycle and start the next one.
 Before it arms, the next host does two things:
@@ -308,6 +310,7 @@ But a host absorbs its own wakes, so it ends its park itself before that registr
 
 `FM_SUPERVISION_HOST_PARK_SECONDS` sets that boundary (default 27,000).
 A value that is not a positive integer below 28,800 is treated as the default.
+The harness times its hook on a monotonic clock, which a WSL2 guest was measured running about 10% ahead of the wall clock ([verification](verification/supervision.md#the-wsl2-boot-clock-runs-ahead-of-the-wall-clock-2026-10-30)), so the park counts the further along of the wall clock and the boot clock since the hook started; the [host header](../bin/fm-supervision-host.sh) owns that clock.
 The OpenCode, omp, and Grok owners have no hook timeout and keep the same default, so their parks end on the same cadence.
 
 ### At the boundary
