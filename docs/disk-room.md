@@ -36,6 +36,11 @@ A home sets it durably in `config/disk-room-margin`, and `FM_DISK_ROOM_MARGIN` o
 Sizes are binary (G = GiB), matching what Windows Explorer shows as GB.
 `status` also reports an external SSD's room and which root fetched results use, read from the file [`docs/storage.md`](storage.md) describes.
 
+A home can turn on strict C: terms in its storage admission site policy (`config/storage-admission`, format owned by `bin/fm-storage-admission-lib.sh`).
+Then `bin/fm-storage-c-terms.py` reads the swap file, shadow storage and pagefile terms, and they replace the shadow storage and swap file readings in the Windows drive's figure; [`storage.md`](storage.md#c-terms) owns the term rules.
+There, an unknown, failed or unproven term makes status and every Linux and C: admission a failed reading that waits instead of reserving 0, while D: admissions never read C:.
+Without the policy file nothing changes.
+
 ### Shadow storage headroom
 
 Windows restore points keep their copy-on-write data in the system drive's shadow storage (diff area).
@@ -83,6 +88,10 @@ The script header owns the kind options, history and pending-attempt formats, qu
 Consumers must group comparable inputs and keep declaring larger known writes rather than treating a historical high as a bound.
 Legacy calls without a kind keep their original exec and declaration behavior.
 Mandatory D: bulk uses the separate per-filesystem admission interface documented in [storage.md](storage.md#mandatory-bulk-admission), leaving this Linux/C: admission unchanged.
+`reserve-token` and `release-token` are the generation-token admissions behind the [`fm-storage/v2`](storage.md#fm-storagev2-draft) facade.
+They take the same state lock and share the same record pools as `run`, `reserve` and `reserve-bulk`, so legacy and token admissions charge each other.
+`admission-status --json` is their read-only reading of every pool for `fm-storage.sh status --json`: it takes no lock and prunes or writes nothing.
+All three are inert until the site policy turns admission on; the script header ("Interface v3") owns their rules, codes, fields and record format.
 
 This replaces fixed floors on raw Windows free space, which either stop a job that still has room or admit one whose own write breaks the margin.
 
@@ -254,7 +263,7 @@ The interface version does not accept anything by itself.
 It is a compatibility signal for the consumer's review of each new version, which checks the calls the consumer makes against the version it pins, and it marks a change that drops a pinned version as a planned migration.
 
 The script header is the authoritative list of commands, exit codes, fields with units, and measurement limits for each interface.
-V2 adds opt-in job-kind write history and v3 adds the storage admission site policy and token admissions.
+V2 adds opt-in job-kind write history and v3 adds the storage admission site policy, token admissions and the additive `admission-status --json` reading.
 Without a policy file, untyped v1 commands, JSON fields, and the v1 and v2 self-tests remain supported unchanged.
 An incompatible change requires a new version and removal of support for the broken version; additive functionality may advertise a new latest version while retaining older supported versions.
 Human-readable wording not listed in the header may change within a version.
@@ -273,8 +282,9 @@ A probe fails explicitly if its required measurement is unavailable.
 A consumer that pins bytes may run them as `bash -c TEXT PATH ARG...`, with PATH the file it hashed.
 The script then finds its sibling helpers beside PATH, never in the working directory, and runs `bin/fm-vhdx-bat.py` only from bytes matching the digest embedded in `fm-disk-room.sh`, so a pin on `fm-disk-room.sh` covers the reader and a missing or changed reader leaves reclaimable unknown.
 `--self-test` works in that mode too and probes the same bytes.
+The storage admission library `bin/fm-storage-admission-lib.sh` loads only from bytes matching the digest embedded in `fm-disk-room.sh` as well, so a pin on `fm-disk-room.sh` covers it; any other copy reads as "cannot load", which refuses every token admission and, with a policy present, every admission.
 
-`tests/fm-disk-room.test.sh` checks every interface through the executable, including failed writers, capacity boundaries, unreadable counters, concurrent attempts, append failures and recovery, corrupt history, and the unchanged v1 contract.
+`tests/fm-disk-room.test.sh` checks every interface through the executable, including failed writers, capacity boundaries, unreadable counters, concurrent attempts, append failures and recovery, corrupt history, and the unchanged v1 contract; `tests/fm-storage-admission.test.sh` checks the v3 site policy, strict C: terms, token admissions and `admission-status`.
 
 ## Limits
 

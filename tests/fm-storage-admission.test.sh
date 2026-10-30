@@ -752,6 +752,91 @@ test_changed_library_refuses() {
 
 # wait_blocked_or_done N DIR PID...: until N owners wait on the state lock
 # (the flock shim marked them in DIR) or have exited.
+# as_try: runs admission-status --json; AS is its one stdout object.
+as_try() { try admission-status --json; AS=$OUT; }
+asj() { printf '%s\n' "$AS" | jq -r "$1"; }
+
+test_admission_status() {
+  local tok before
+  setup_world
+  rm -f "$POLICY"
+  as_try
+  expect_err 2 "fm-storage: refused: not-activated: no storage admission policy at $POLICY" "admission-status needs a policy"
+  write_policy admission=on c-terms=off
+  as_try
+  expect_err 2 "fm-storage: refused: not-activated: admission-status needs c-terms=strict in $POLICY" "admission-status needs strict C: terms"
+  strict_policy
+  try admission-status
+  expect_err 2 "fm-storage: refused: invalid-argument: admission-status needs --json" "admission-status takes only --json"
+  setup_d
+  lin a $((2 * GIB)); expect_token "a Linux token"
+  hostc h "$GIB"; expect_token "a host-c token"
+  dvol dd $((3 * GIB)); expect_token "a D: token"
+  # A token from another boot has lapsed; admission-status must keep it.
+  tok=$(hex64 e)
+  v2_record "$STATE/reservations/token@$tok" "$tok" "$MY_START" boot-b linux lapsed $((4 * GIB))
+  before=$(ls -A "$STATE/reservations")
+  exec 8>"$STATE/.lock"
+  flock 8
+  FM_DISK_ROOM_LOCK_WAIT=1 as_try
+  flock -u 8; exec 8>&-
+  expect_code 0 "$RC" "admission-status with every reading ok, while the owner lock is held"
+  assert_equals '' "$ERRT" "an ok admission-status prints no stderr"
+  assert_equals '["c_terms","reasons","schema","volumes"]' "$(asj 'keys | tostring')" "the object has exactly its four keys"
+  assert_equals fm-disk-room-admission-status/v1 "$(asj .schema)" "the schema names the object"
+  assert_equals "ok $((20 * GIB)) $GIB $GIB $((11 * GIB)) null" \
+    "$(asj '.volumes["host-c"] | "\(.state) \(.free_bytes) \(.reserved_bytes) \(.margin_bytes) \(.room_bytes) \(.reason)"')" \
+    "host-c room is C: free less host-c tokens, the Linux charge and the swap, shadow and pagefile terms"
+  assert_equals "ok $((10 * GIB)) $((2 * GIB)) $GIB $((8 * GIB)) null" \
+    "$(asj '.volumes.linux | "\(.state) \(.free_bytes) \(.reserved_bytes) \(.margin_bytes) \(.room_bytes) \(.reason)"')" \
+    "linux room is the smaller of Linux free less its charge and the host-c room"
+  assert_equals "ok $((100 * GIB)) $((3 * GIB)) $((50 * GIB)) $((97 * GIB)) null" \
+    "$(asj '.volumes.d | "\(.state) \(.free_bytes) \(.reserved_bytes) \(.margin_bytes) \(.room_bytes) \(.reason)"')" \
+    "d room is D: free less its pool, with the bulk margin"
+  assert_equals "measured $((2 * GIB)) $((2 * GIB)) $((10 * GIB))" \
+    "$(asj '.c_terms.ext4_vhdx | "\(.state) \(.reserved_bytes) \(.linux_pending_bytes) \(.linux_free_bytes)"')" \
+    "ext4_vhdx carries the Linux pool's live charge"
+  assert_equals "$((3 * GIB)) []" "$(asj '"\(.c_terms.pagefile.reserved_bytes) \(.reasons | tostring)"')" "the measurer's terms pass through"
+  assert_equals "$before" "$(ls -A "$STATE/reservations")" "admission-status prunes no lapsed record"
+  assert_present "$STATE/reservations/token@$tok" "the lapsed record stays for the next locked admission"
+  # Mutating owner calls still prune it.
+  lin b 1; expect_token "a locked admission"
+  assert_absent "$STATE/reservations/token@$tok" "the next locked admission prunes the lapsed record"
+
+  CT_PF_STATE=unknown CT_PF_REASON='pagefile size not readable' write_cterms "$GIB" $((2 * GIB)) 0
+  as_try
+  expect_code 75 "$RC" "an unknown C: term waits"
+  assert_equals "fm-storage: wait: cannot-measure: host-c:pagefile: pagefile size not readable" "$ERRT" "one wait line names the term"
+  assert_equals "unknown null unknown null ok" \
+    "$(asj '"\(.volumes["host-c"].state) \(.volumes["host-c"].room_bytes) \(.volumes.linux.state) \(.volumes.linux.room_bytes) \(.volumes.d.state)"')" \
+    "an unknown C: term leaves host-c and linux unknown and D: informative"
+  assert_equals "$((20 * GIB)) $((2 * GIB + 1))" \
+    "$(asj '"\(.volumes["host-c"].free_bytes) \(.volumes.linux.reserved_bytes)"')" "the readings that succeeded stay reported"
+  assert_equals '[{"code":"cannot-measure","volume":"host-c","term":"pagefile","detail":"host-c:pagefile: pagefile size not readable"}]' \
+    "$(asj '.reasons | tostring')" "one reason per failed term"
+  assert_equals unknown "$(asj .c_terms.pagefile.state)" "the unknown term is reported as unknown"
+
+  write_cterms "$GIB" $((2 * GIB)) $((3 * GIB))
+  rm "$CFG/results-root"
+  as_try
+  expect_code 75 "$RC" "an offline D: waits"
+  case "$ERRT" in "fm-storage: wait: storage-offline: "*) ;; *) fail "the wait names the offline D:: $ERRT" ;; esac
+  assert_equals "ok ok offline null" \
+    "$(asj '"\(.volumes.linux.state) \(.volumes["host-c"].state) \(.volumes.d.state) \(.volumes.d.room_bytes)"')" \
+    "an offline D: leaves Linux and C: readings intact"
+  setup_d
+
+  mkdir "$STATE/reservations/token@$(hex64 f)"
+  as_try
+  expect_code 1 "$RC" "an unreadable pool is an owner-state failure"
+  assert_equals "fm-storage: refused: owner-state: reservation $STATE/reservations/token@$(hex64 f) is not a regular file" "$ERRT" \
+    "the owner-state line names the record"
+  assert_equals "unknown unknown ok" \
+    "$(asj '"\(.volumes.linux.state) \(.volumes["host-c"].state) \(.volumes.d.state)"')" "the pool failure leaves D: informative"
+  rmdir "$STATE/reservations/token@$(hex64 f)"
+  pass "admission-status reports every pool read-only, with unknown readings, D: independence and exact exits"
+}
+
 wait_blocked_or_done() {
   local n=$1 dir=$2 pid f seen done_n deadline=$(( $(date +%s) + 60 ))
   shift 2
@@ -816,4 +901,5 @@ test_token_semantics
 test_owner_state_failures
 test_malformed_policy
 test_changed_library_refuses
+test_admission_status
 test_concurrent_admissions

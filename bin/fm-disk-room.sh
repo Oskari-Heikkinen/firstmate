@@ -64,6 +64,9 @@
 #       print only the token. See Interface v3.
 #   fm-disk-room.sh release-token TASK --token TOKEN
 #       Release one of TASK's token admissions. See Interface v3.
+#   fm-disk-room.sh admission-status --json
+#       Read-only reading of the Linux, C: and D: admission pools for
+#       fm-storage.sh status --json. See Interface v3.
 #   fm-disk-room.sh watch-line
 #       For a firstmate custom watcher check: print one line only when real
 #       room is under the margin (repeated only after a further 5 GiB drop or
@@ -243,6 +246,28 @@
 #       repeat is 0; 2 with invalid-argument, invalid-token or wrong-task; 1
 #       with owner-state when the lock, a pool or the record cannot be read or
 #       the record cannot be removed. Needs no policy and no D: drive.
+#   admission-status --json  needs admission=on and c-terms=strict (else 2
+#       with not-activated or policy, stdout empty). Takes no lock and prunes
+#       or writes nothing: a lapsed record is skipped, not removed. Prints one
+#       JSON object on one line, schema fm-disk-room-admission-status/v1, with
+#       exactly schema, volumes, c_terms and reasons. volumes has linux, host-c
+#       and d, each state (ok, unknown or offline), free_bytes, reserved_bytes,
+#       margin_bytes, room_bytes (integers or null when unread; room may be
+#       negative) and reason ("CODE: DETAIL" or null). Room is before any new
+#       admission and the margin is not subtracted: host-c is C: free minus
+#       host-c tokens, the Linux charge and the swap_vhdx, vss and pagefile
+#       reserved bytes; linux is the smaller of Linux free minus the Linux
+#       charge and the host-c room, so it is ok only while host-c is; d is the
+#       verified D: filesystem's free minus its pool, with the bulk margin.
+#       c_terms is the measurer's object, every term unknown when it gave none,
+#       with ext4_vhdx's linux_free_bytes, linux_pending_bytes,
+#       growth_reserved_bytes and reserved_bytes set to Linux free and the
+#       Linux charge. reasons is [{code, volume, term, detail}], one per failed
+#       reading: cannot-measure (term the c_terms key or null),
+#       storage-offline (d) or owner-state. Exit 0 with no reasons; else 75
+#       with one stderr wait line naming the first reason, or 1 with one
+#       owner-state refusal line when a pool cannot be read; the JSON is
+#       printed either way. A D: reading never waits on C:, or C: on D:.
 #   Token records are STATE/reservations/token@TOKEN (linux, host-c) or
 #   STATE/reservations-d/DEVICE/token@TOKEN (d), eleven lines: bytes, pid,
 #   start, format=fm-storage-admission/v1, token, task, class, volume, name,
@@ -354,7 +379,7 @@ BAT_CACHE_SECS=300
 VHDX_BAT_SHA256=bc4917f5d8a697c8916671307d6d909219fe16fd45574bb89718ecd92fe69c03
 # sha256 of bin/fm-storage-admission-lib.sh; only a library with exactly these
 # bytes loads.
-ADM_LIB_SHA256=c39b10edcfb59a9d0db79f1d2c3e21511243607416807679b4d7d2dd2eda717d
+ADM_LIB_SHA256=81cc748bafe3d7f1f57b4505acba79c655bbe6cb68275d587f8997e264c890d6
 INTERFACE=v3
 # The storage admission site policy; absent, nothing below loads it.
 POLICY=${FM_DISK_ROOM_POLICY:-${FM_CONFIG_OVERRIDE:-${FM_HOME:-${SCRIPT_DIR%/*}}/config}/storage-admission}
@@ -1965,6 +1990,140 @@ cmd_release_token() {
   return 0
 }
 
+# AS_JQ builds admission-status's object from the readings (--arg values,
+# "" for an unreadable number) and the reason lines "CODE<tab>VOLUME<tab>
+# TERM<tab>DETAIL" on stdin. With no c_terms object it reports every term
+# unknown, and it charges ext4_vhdx the Linux pool's live charge.
+# shellcheck disable=SC2016
+AS_JQ='
+def num: if . == "" then null else tonumber end;
+def vol($s; $f; $r; $m; $room; $why): {state: $s, free_bytes: ($f | num), reserved_bytes: ($r | num),
+  margin_bytes: ($m | num), room_bytes: ($room | num), reason: (if $why == "" then null else $why end)};
+def unknown($why): {state: "unknown", source: null, sampled_at: null, reason: $why, reserved_bytes: null};
+[inputs | select(. != "") | split("\t") | {code: .[0], volume: .[1], term: (if .[2] == "" then null else .[2] end), detail: .[3]}] as $reasons
+| ($ct | fromjson) as $c
+| (if $c == null then
+     {ext4_vhdx: (unknown($ctwhy) + {path: null, file_bytes: null, linux_free_bytes: null, linux_pending_bytes: null, growth_reserved_bytes: null}),
+      swap_vhdx: (unknown($ctwhy) + {path: null, configured_bytes: null, file_bytes: null, hosting_volume: null}),
+      vss: (unknown($ctwhy) + {cap_bytes: null, allocated_bytes: null, used_bytes: null, cap_proven: false}),
+      pagefile: (unknown($ctwhy) + {mode: "unknown", allocation_bytes: null, maximum_bytes: null,
+        operator_growth_reservation_bytes: null, policy_id: null, hosting_volumes: null})}
+   else $c end) as $terms
+| ($terms.ext4_vhdx | if $res == "" and .state != "unknown" then . + {state: "unknown", reason: $poolwhy, reserved_bytes: null} else . end
+   | . + {linux_free_bytes: ($lfree | num), linux_pending_bytes: ($res | num), growth_reserved_bytes: ($res | num)}
+   | if .state == "unknown" then . else . + {reserved_bytes: ($res | num)} end) as $ext4
+| {schema: "fm-disk-room-admission-status/v1",
+   volumes: {linux: vol($ls; $lfree; $res; $margin; $lroom; $lwhy), "host-c": vol($hs; $hfree; $hostc; $margin; $hroom; $hwhy),
+     d: vol($ds; $dfree; $dres; $dmargin; $droom; $dwhy)},
+   c_terms: ($terms + {ext4_vhdx: $ext4}), reasons: $reasons}
+'
+
+# as_reason CODE VOLUME TERM DETAIL: one admission-status reason line.
+as_reason() {
+  local detail=${4//[^[:print:]]/?}
+  AS_REASONS="$AS_REASONS$1"$'\t'"$2"$'\t'"$3"$'\t'"${detail:0:300}"$'\n'
+}
+
+# admission-status --json: one read-only reading of the Linux, C: and D:
+# admission pools for fm-storage.sh status --json. Takes no lock, prunes and
+# writes nothing. See Interface v3.
+cmd_admission_status() {
+  local host lfree hfree='' res='' hostc='' margin='' dmargin='' dfree='' dres='' device='' out line t why
+  local ls=unknown hs=unknown ds=unknown lwhy='' hwhy='' dwhy='' lroom='' hroom='' droom='' poolwhy='' ctwhy=''
+  local results=${FM_STORAGE_MNT:-/mnt}/d/lattice-data/tetjet-results
+  AS_REASONS=''
+  adm_load_lib || { printf 'fm-storage: refused: owner-state: cannot load %s\n' "$SCRIPT_DIR/fm-storage-admission-lib.sh" >&2; return 1; }
+  [ "$#" -eq 1 ] && [ "$1" = --json ] || { adm_say refused invalid-argument "admission-status needs --json"; return; }
+  command -v jq >/dev/null 2>&1 || { adm_say refused owner-state "jq is not installed"; return; }
+  adm_init
+  case "$ADM" in
+    none) adm_say refused not-activated "no storage admission policy at $POLICY"; return ;;
+    bad) adm_say refused policy "$POL_ERR"; return ;;
+  esac
+  [ "$POL_ADMISSION" = on ] || { adm_say refused not-activated "admission=off in $POLICY"; return; }
+  [ "$POL_CTERMS" = strict ] || { adm_say refused not-activated "admission-status needs c-terms=strict in $POLICY"; return; }
+  # Linux and C: share one pool; each failed reading is named once.
+  if resolve_margin; then margin=$MARGIN
+  else as_reason cannot-measure linux '' "margin: $ERR"; lwhy="cannot-measure: margin: $ERR" hwhy="cannot-measure: margin: $ERR"; fi
+  lfree=$(df_field "${FM_DISK_ROOM_ROOT:-/}" avail)
+  case "$lfree" in ''|*[!0-9]*|???????????????????*) lfree=''
+    as_reason cannot-measure linux '' "linux-free: cannot read Linux free space on ${FM_DISK_ROOM_ROOT:-/}"
+    lwhy=${lwhy:-"cannot-measure: linux-free: cannot read Linux free space"} ;;
+  esac
+  host=$(host_mount)
+  [ -n "$host" ] && [ -d "$host" ] && hfree=$(df_field "$host" avail)
+  case "$hfree" in ''|*[!0-9]*|???????????????????*) hfree=''
+    as_reason cannot-measure host-c '' "host-c-free: cannot read free space on ${host:-the host drive}"
+    hwhy=${hwhy:-"cannot-measure: host-c-free: cannot read free space on ${host:-the host drive}"} ;;
+  esac
+  if adm_collect "$(state_dir)/reservations" '' c keep; then
+    res=$ADM_SUM hostc=$ADM_HOSTC
+  else
+    poolwhy="owner-state: $ADM_ERR"
+    as_reason owner-state linux '' "$ADM_ERR"
+    lwhy=${lwhy:-$poolwhy} hwhy=${hwhy:-$poolwhy}
+  fi
+  if ! adm_cterms; then
+    ctwhy="$CT_TERM: $CT_WHY"
+    out=$(printf '%s\n' "$CT_JSON" | jq -r 'select(type == "object") | to_entries[] | select(.value.state == "unknown")
+      | [.key, (.value.reason // "unknown" | tostring)] | @tsv' 2>/dev/null)
+    if [ -n "$out" ]; then
+      while IFS=$'\t' read -r t why; do as_reason cannot-measure host-c "$t" "host-c:$t: $why"; done <<<"$out"
+    else
+      t=${CT_TERM#*:}
+      case "$t" in ext4_vhdx|swap_vhdx|vss|pagefile) ;; *) t='' ;; esac
+      as_reason cannot-measure "${CT_TERM%%:*}" "$t" "$ctwhy"
+    fi
+    hwhy=${hwhy:-"cannot-measure: $ctwhy"}
+  elif [ -n "$hfree" ] && [ -n "$res" ] && [ -n "$margin" ]; then
+    hs=ok hroom=$(( hfree - hostc - CT_VSS - CT_SWAP - CT_PAGEFILE - res ))
+  fi
+  if [ "$hs" = ok ] && [ -n "$lfree" ]; then
+    ls=ok lroom=$(( lfree - res ))
+    [ "$lroom" -le "$hroom" ] || lroom=$hroom
+  else
+    lwhy=${lwhy:-$hwhy}
+  fi
+  # D: never waits on a C: reading.
+  if ! dmargin=$(to_bytes "${FM_DISK_ROOM_BULK_MARGIN:-50G}"); then
+    dmargin='' dwhy="cannot-measure: bad FM_DISK_ROOM_BULK_MARGIN"
+    as_reason cannot-measure d '' "bad FM_DISK_ROOM_BULK_MARGIN"
+  elif ! out=$(FM_STORAGE_RESULTS_ROOT="${FM_DISK_ROOM_RESULTS_ROOT:-${FM_STORAGE_RESULTS_ROOT:-}}" \
+      "$SCRIPT_DIR/fm-storage.sh" verify-bulk-root 2>&1 >/dev/null); then
+    out=${out%%$'\n'*}; out=${out#fm-storage: wait: }
+    ds=offline dwhy="storage-offline: $out"
+    as_reason storage-offline d '' "$out"
+  else
+    device=$(stat -c %d -- "$results" 2>/dev/null)
+    dfree=$(df_field "$results" avail)
+    case "$device:$dfree" in
+      :*|*[!0-9:]*) ds=offline dwhy="storage-offline: the D: results directory has no filesystem identity"
+        as_reason storage-offline d '' "the D: results directory has no filesystem identity" ;;
+      *:|*:???????????????????*) dfree='' dwhy="cannot-measure: d-free: cannot read free space on $results"
+        as_reason cannot-measure d '' "d-free: cannot read free space on $results" ;;
+      *) if adm_collect "$(state_dir)/reservations-d/$device" '' d keep; then
+          ds=ok dres=$ADM_SUM droom=$(( dfree - ADM_SUM ))
+        else
+          dfree='' dwhy="owner-state: $ADM_ERR"
+          as_reason owner-state d '' "$ADM_ERR"
+        fi ;;
+    esac
+  fi
+  out=$(printf '%s' "$AS_REASONS" | jq -cnR --arg ct "$CT_JSON" --arg ctwhy "${ctwhy:-not measured}" --arg poolwhy "$poolwhy" \
+    --arg ls "$ls" --arg lfree "$lfree" --arg res "$res" --arg margin "$margin" --arg lroom "$lroom" --arg lwhy "$lwhy" \
+    --arg hs "$hs" --arg hfree "$hfree" --arg hostc "$hostc" --arg hroom "$hroom" --arg hwhy "$hwhy" \
+    --arg ds "$ds" --arg dfree "$dfree" --arg dres "$dres" --arg dmargin "$dmargin" --arg droom "$droom" --arg dwhy "$dwhy" \
+    "$AS_JQ" 2>/dev/null) || { adm_say refused owner-state "cannot encode the admission status"; return; }
+  printf '%s\n' "$out"
+  [ -n "$AS_REASONS" ] || return 0
+  # One stderr line: the first owner-state failure, else the first wait.
+  while IFS= read -r line; do
+    case "$line" in owner-state$'\t'*) adm_say refused owner-state "${line##*$'\t'}"; return ;; esac
+  done <<<"$AS_REASONS"
+  line=${AS_REASONS%%$'\n'*}
+  adm_say wait "${line%%$'\t'*}" "${line##*$'\t'}"
+}
+
 cmd_watch_line() {
   local rec t last_kind last_t last_room msg='' kind='' measured=1 storage=''
   rec="$(state_dir)/alert"
@@ -2220,6 +2379,7 @@ case "${1:-}" in
   release) shift; cmd_release "$@" ;;
   reserve-token) shift; cmd_reserve_token "$@" ;;
   release-token) shift; cmd_release_token "$@" ;;
+  admission-status) shift; cmd_admission_status "$@" ;;
   watch-line) shift; cmd_watch_line ;;
   growth) shift; cmd_growth "$@" ;;
   mb-groups) shift; cmd_mb_groups "$@" ;;
