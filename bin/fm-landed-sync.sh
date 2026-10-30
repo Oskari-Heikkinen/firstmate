@@ -4,8 +4,10 @@
 # Usage: fm-landed-sync.sh <project-dir-or-name>
 #
 # Called by every landing path so no agent has to remember it: a confirmed PR
-# merge (bin/fm-merge-outcome-lib.sh, detached), task cleanup (bin/fm-teardown.sh),
-# and a clean merge-queue landing (bin/fm-procevent-merge-queue.sh).
+# merge (bin/fm-merge-outcome-lib.sh, detached), and task cleanup
+# (bin/fm-teardown.sh, after it has released its project and control locks),
+# which also covers a clean merge-queue landing, since that path tears its task
+# down through bin/fm-teardown.sh.
 #
 # The main home is this home's root, resolved through fm_firstmate_root_home in
 # bin/fm-wake-lib.sh (a secondmate on a remote route is its own root). The clone
@@ -28,7 +30,9 @@
 #     with the captain's word removes it. A lock that is young or held is left to
 #     its owner and the refresh runs as usual.
 #   - Report once. A stale lock, a STUCK refresh (dirty, diverged, or off the
-#     default branch), and a failed fetch or fast-forward each append one
+#     default branch), and a failed fetch or fast-forward (a fetch or refresh
+#     stopped at its bound in bin/fm-fleet-sync.sh or
+#     bin/fm-fleet-provenance.py counts as failed) each append one
 #     `check:` wake with key landed-sync-<project> to the main home's durable wake
 #     queue. The report is recorded in <main home>/state/landed-sync/<project>.reported
 #     and is not repeated while the same kind of problem persists; the next
@@ -144,7 +148,7 @@ if [ -n "$problem" ]; then
   report_once stuck "the main clone was not refreshed: ${problem#*: STUCK: }" || true
   exit 0
 fi
-problem=$(printf '%s\n' "$OUT" | grep -m1 -E ': skipped: (fetch failed|fast-forward failed)') || problem=
+problem=$(printf '%s\n' "$OUT" | grep -m1 -E ': skipped: (fetch failed|fast-forward failed|refresh (lock wait )?timed out)') || problem=
 if [ -n "$problem" ]; then
   report_once failed "the main clone was not refreshed: ${problem#*: skipped: }" || true
   exit 0

@@ -968,6 +968,252 @@ test_direct_push_landed_on_origin_main_allows() {
   pass "direct-push worktree whose head landed on origin/main is torn down with no PR recorded"
 }
 
+# A landed pool-slot teardown whose final clone refresh hangs in its fetch must
+# no longer hold the project or control lock: a spawn-side acquire of the same
+# project's lock succeeds at once while the teardown is still in that fetch.
+test_landed_sync_fetch_hang_holds_no_project_or_control_lock() {
+  local case_dir wt rc real_git project_lock control_lock landed_head td_pid waited
+  case_dir=$(make_case landed-sync-fetch-hang)
+  wt_commit_file "$case_dir" feature.txt landed "direct-push work"
+  git -C "$case_dir/wt" push -q origin HEAD:main
+  landed_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  wt=$(move_case_to_pool_slot "$case_dir" 3)
+  write_meta "$case_dir" direct-push ship "$wt"
+  seed_backlog_in_flight "$case_dir"
+  project_lock=$(FM_HOME="$case_dir" bash -c '. "$1/bin/fm-wake-lib.sh"; fm_treehouse_project_lock_path "$2"' \
+    _ "$ROOT" "$case_dir/project") || fail "landed-sync-fetch-hang: could not resolve the project lock path"
+  control_lock="$case_dir/state/.control-task-x1.lock"
+  # The return records that it ran under this very lock, so the acquire below
+  # tests the lock teardown really takes, not a path nobody holds.
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+[ "\${1:-}" != return ] || [ ! -d "$project_lock" ] || : > "$case_dir/returned-locked"
+exit 0
+SH
+  # Only the clone refresh's fetch carries --prune; teardown's own proof fetches
+  # do not. That fetch waits until the test releases it (or a hang guard ends).
+  real_git=$(command -v git)
+  cat > "$case_dir/fakebin/git" <<SH
+#!/usr/bin/env bash
+case " \$* " in
+  *' fetch '*' --prune '*)
+    : > "$case_dir/fetch-hung"
+    n=0
+    while [ ! -e "$case_dir/fetch-release" ] && [ "\$n" -lt 3000 ]; do sleep 0.1; n=\$((n + 1)); done ;;
+esac
+exec "$real_git" "\$@"
+SH
+  chmod +x "$case_dir/fakebin/treehouse" "$case_dir/fakebin/git"
+
+  FM_HOME="$case_dir" FM_FLEET_SYNC_FETCH_TIMEOUT=600 run_teardown "$case_dir" \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" &
+  td_pid=$!
+  # Hang guard only: the wait ends when the refresh's fetch starts or teardown exits.
+  waited=0
+  while [ ! -e "$case_dir/fetch-hung" ] && kill -0 "$td_pid" 2>/dev/null && [ "$waited" -lt 3000 ]; do
+    sleep 0.1; waited=$((waited + 1))
+  done
+  release_fetch() { : > "$case_dir/fetch-release"; }
+  [ -e "$case_dir/fetch-hung" ] || {
+    release_fetch; wait "$td_pid" 2>/dev/null || true
+    fail "landed-sync-fetch-hang: teardown never reached the clone refresh's fetch: $(cat "$case_dir/stderr")"
+  }
+  kill -0 "$td_pid" 2>/dev/null || { release_fetch; fail "landed-sync-fetch-hang: teardown exited while its fetch was held"; }
+  [ -e "$case_dir/returned-locked" ] \
+    || { release_fetch; fail "landed-sync-fetch-hang: the return did not run under the resolved project lock"; }
+  rc=0
+  ROOT="$ROOT" FM_HOME="$case_dir" PROJECT_LOCK="$project_lock" CONTROL_LOCK="$control_lock" bash -c '
+    . "$ROOT/bin/fm-wake-lib.sh"
+    fm_lock_try_acquire "$PROJECT_LOCK" || exit 3
+    fm_lock_try_acquire "$CONTROL_LOCK" || { fm_lock_release "$PROJECT_LOCK"; exit 4; }
+    fm_lock_release "$CONTROL_LOCK"
+    fm_lock_release "$PROJECT_LOCK"
+  ' || rc=$?
+  kill -0 "$td_pid" 2>/dev/null || { release_fetch; fail "landed-sync-fetch-hang: teardown left its fetch before the acquire was checked"; }
+  release_fetch
+  [ "$rc" -ne 3 ] || { wait "$td_pid" 2>/dev/null || true; fail "landed-sync-fetch-hang: teardown held the project lock across its clone refresh's fetch"; }
+  [ "$rc" -ne 4 ] || { wait "$td_pid" 2>/dev/null || true; fail "landed-sync-fetch-hang: teardown held the control lock across its clone refresh's fetch"; }
+  expect_code 0 "$rc" "landed-sync-fetch-hang: the parallel lock acquire failed"
+
+  rc=0; wait "$td_pid" || rc=$?
+  expect_code 0 "$rc" "landed-sync-fetch-hang: teardown should finish once the fetch returns: $(cat "$case_dir/stderr")"
+  assert_equals "$landed_head" "$(git -C "$case_dir/project" rev-parse HEAD)" \
+    "landed-sync-fetch-hang: the released fetch still refreshed the main home's clone"
+  pass "a teardown in its clone refresh's fetch holds no project or control lock"
+}
+
+# Run teardown in the background under fm_hang_guarded_wait (tests/lib.sh),
+# which fails the case unless a fm_fake_hanging_tool call was made and stopped
+# at teardown's own bound. Args: case_dir label
+run_teardown_hang_guarded() {
+  local case_dir=$1 label=$2 td_pid
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" &
+  td_pid=$!
+  fm_hang_guarded_wait "$td_pid" "$case_dir" "$label" "$case_dir/stderr"
+}
+
+# Squash-merged history (setup_squash_rebased_history rebased) after which main
+# rewords the shared lines again, so the content check is inconclusive and only
+# the forge's merged record can prove the work landed. Echoes: <pr_head>
+setup_inconclusive_squash_history() {
+  local case_dir=$1 pr_head tmp
+  pr_head=$(setup_squash_rebased_history "$case_dir" rebased)
+  tmp="$case_dir/_main_later"
+  git clone -q "$case_dir/origin.git" "$tmp"
+  printf '%s\n' base main-edit feature-edit-reworded > "$tmp/shared.txt"
+  git -C "$tmp" add -- shared.txt
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "main rewords shared"
+  git -C "$tmp" push -q origin main
+  rm -rf "$tmp"
+  printf '%s\n' "$pr_head"
+}
+
+# A direct-push task's open-PR lookup that the forge never answers stops at
+# teardown's remote bound and refuses, keeping the record that may be the only
+# tracker of an open PR, instead of skipping the check.
+test_direct_push_open_pr_lookup_hang_refuses() {
+  local case_dir rc head
+  case_dir=$(make_case direct-push-open-pr-hang)
+  write_meta "$case_dir" direct-push ship
+  wt_commit_file "$case_dir" feature.txt pr "work shipped as a PR"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  mv "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh-axi-answer"
+  fm_fake_hanging_tool "$case_dir/fakebin" gh-axi "*' pr list --state open '*" "$case_dir/fakebin/gh-axi-answer" "$case_dir"
+
+  rc=0
+  FM_TEARDOWN_REMOTE_TIMEOUT=2 run_teardown_hang_guarded "$case_dir" direct-push-open-pr-hang || rc=$?
+
+  expect_code 1 "$rc" "direct-push-open-pr-hang: teardown should refuse"
+  assert_grep "the open-PR lookup for its branch fm/task-x1 got no answer within 2s" "$case_dir/stderr" \
+    "direct-push-open-pr-hang: refusal did not name the unanswered lookup"
+  assert_refusal_retained_task_state "$case_dir" direct-push-open-pr-hang "$head"
+  pass "a direct-push open-PR lookup that never answers stops at the bound and refuses"
+}
+
+# The Forgejo record read teardown makes under its locks takes the same bound:
+# a tea read that never answers is an honest unknown, so an inconclusive
+# content check refuses instead of waiting on the forge.
+test_forgejo_read_hang_is_bounded_and_refuses() {
+  local case_dir rc pr_head
+  case_dir=$(make_case forgejo-read-hang)
+  write_meta "$case_dir" no-mistakes ship
+  pr_head=$(setup_inconclusive_squash_history "$case_dir")
+  printf '%s\n' \
+    'pr=https://git.example.org/team/repo/pulls/7' \
+    "pr_head=$pr_head" >> "$case_dir/state/task-x1.meta"
+  add_gh_axi_error "$case_dir"
+  add_tea_pull_for_head "$case_dir" true "$pr_head"
+  mv "$case_dir/fakebin/tea" "$case_dir/fakebin/tea-answer"
+  fm_fake_hanging_tool "$case_dir/fakebin" tea "' api '*" "$case_dir/fakebin/tea-answer" "$case_dir"
+
+  rc=0
+  FM_TEARDOWN_REMOTE_TIMEOUT=2 run_teardown_hang_guarded "$case_dir" forgejo-read-hang || rc=$?
+
+  expect_code 1 "$rc" "forgejo-read-hang: teardown should refuse when the merged record cannot be read"
+  assert_grep REFUSED "$case_dir/stderr" "forgejo-read-hang: no REFUSED line in stderr"
+  [ -e "$case_dir/state/task-x1.meta" ] || fail "forgejo-read-hang: refusal erased the task record"
+  pass "a Forgejo record read that never answers stops at the bound and the proof refuses"
+}
+
+# The default-branch fetch behind the landed-work proof takes the bound too: a
+# fetch that never returns refuses rather than judging a stale ref, where the
+# same history with an answering remote is torn down
+# (test_content_in_default_fallback_allows).
+test_proof_fetch_hang_is_bounded_and_refuses() {
+  local case_dir rc head
+  case_dir=$(make_case proof-fetch-hang)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  land_on_origin_main "$case_dir" feature.txt hello
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  fm_fake_hanging_tool "$case_dir/fakebin" git "*' fetch --quiet origin +refs/heads/main:refs/remotes/origin/main '*" "$(command -v git)" "$case_dir"
+
+  rc=0
+  FM_TEARDOWN_REMOTE_TIMEOUT=2 run_teardown_hang_guarded "$case_dir" proof-fetch-hang || rc=$?
+
+  expect_code 1 "$rc" "proof-fetch-hang: teardown should refuse when the default branch cannot be fetched"
+  assert_grep REFUSED "$case_dir/stderr" "proof-fetch-hang: no REFUSED line in stderr"
+  assert_refusal_retained_task_state "$case_dir" proof-fetch-hang "$head"
+  pass "a landed-work proof fetch that never returns stops at the bound and refuses"
+}
+
+# The GitHub merged-PR read takes the bound too: a gh pr view that never
+# answers is an honest unknown, so the inconclusive content check refuses.
+test_github_pr_view_hang_is_bounded_and_refuses() {
+  local case_dir rc pr_head
+  case_dir=$(make_case github-pr-view-hang)
+  write_meta "$case_dir" no-mistakes ship
+  pr_head=$(setup_inconclusive_squash_history "$case_dir")
+  printf '%s\n' \
+    'pr=https://github.com/example/repo/pull/7' \
+    "pr_head=$pr_head" >> "$case_dir/state/task-x1.meta"
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+  mv "$case_dir/fakebin/gh" "$case_dir/fakebin/gh-answer"
+  fm_fake_hanging_tool "$case_dir/fakebin" gh "' pr view '*" "$case_dir/fakebin/gh-answer" "$case_dir"
+
+  rc=0
+  FM_TEARDOWN_REMOTE_TIMEOUT=2 run_teardown_hang_guarded "$case_dir" github-pr-view-hang || rc=$?
+
+  expect_code 1 "$rc" "github-pr-view-hang: teardown should refuse when the merged PR cannot be read"
+  assert_grep REFUSED "$case_dir/stderr" "github-pr-view-hang: no REFUSED line in stderr"
+  assert_refusal_retained_task_state "$case_dir" github-pr-view-hang "$pr_head"
+  pass "a GitHub merged-PR read that never answers stops at the bound and the proof refuses"
+}
+
+# With no PR recorded, the branch lookup that finds one takes the bound too.
+test_pr_branch_lookup_hang_is_bounded_and_refuses() {
+  local case_dir rc pr_head
+  case_dir=$(make_case pr-branch-lookup-hang)
+  write_meta "$case_dir" no-mistakes ship
+  pr_head=$(setup_inconclusive_squash_history "$case_dir")
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+  mv "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh-axi-answer"
+  fm_fake_hanging_tool "$case_dir/fakebin" gh-axi "*' pr list --state all '*" "$case_dir/fakebin/gh-axi-answer" "$case_dir"
+
+  rc=0
+  FM_TEARDOWN_REMOTE_TIMEOUT=2 run_teardown_hang_guarded "$case_dir" pr-branch-lookup-hang || rc=$?
+
+  expect_code 1 "$rc" "pr-branch-lookup-hang: teardown should refuse when no PR can be looked up"
+  assert_grep REFUSED "$case_dir/stderr" "pr-branch-lookup-hang: no REFUSED line in stderr"
+  assert_refusal_retained_task_state "$case_dir" pr-branch-lookup-hang "$pr_head"
+  pass "a PR lookup by branch that never answers stops at the bound and the proof refuses"
+}
+
+# A merged PR head that is not yet local is fetched from refs/pull under the
+# bound: a fetch that never returns refuses, where the same history with an
+# answering remote is torn down
+# (test_squash_merged_pr_allows_when_head_ancestor_of_pr_head).
+test_pr_head_fetch_hang_is_bounded_and_refuses() {
+  local case_dir rc head pr_head tmp
+  case_dir=$(make_case pr-head-fetch-hang)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_pr_meta_url "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  tmp="$case_dir/_pr_head"
+  git clone -q "$case_dir/origin.git" "$tmp"
+  git -C "$tmp" fetch -q "$case_dir/wt" fm/task-x1
+  git -C "$tmp" checkout -q --detach FETCH_HEAD
+  git -C "$tmp" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "pipeline follow-up"
+  pr_head=$(git -C "$tmp" rev-parse HEAD)
+  git -C "$tmp" push -q origin "HEAD:refs/pull/7/head"
+  rm -rf "$tmp"
+  ! git -C "$case_dir/wt" cat-file -e "$pr_head^{commit}" 2>/dev/null \
+    || fail "pr-head-fetch-hang: test setup bug, the PR head is already local"
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+  fm_fake_hanging_tool "$case_dir/fakebin" git "*' fetch --quiet origin refs/pull/7/head '*" "$(command -v git)" "$case_dir"
+
+  rc=0
+  FM_TEARDOWN_REMOTE_TIMEOUT=2 run_teardown_hang_guarded "$case_dir" pr-head-fetch-hang || rc=$?
+
+  expect_code 1 "$rc" "pr-head-fetch-hang: teardown should refuse when the PR head cannot be fetched"
+  assert_grep REFUSED "$case_dir/stderr" "pr-head-fetch-hang: no REFUSED line in stderr"
+  assert_refusal_retained_task_state "$case_dir" pr-head-fetch-hang "$head"
+  pass "a merged PR head fetch that never returns stops at the bound and refuses"
+}
+
 test_direct_push_unlanded_refuses() {
   local case_dir rc
   case_dir=$(make_case direct-push-unlanded)
@@ -8641,6 +8887,13 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_no_mistakes_origin_remote_allows \
   test_no_mistakes_truly_unpushed_refuses \
   test_direct_push_landed_on_origin_main_allows \
+  test_landed_sync_fetch_hang_holds_no_project_or_control_lock \
+  test_direct_push_open_pr_lookup_hang_refuses \
+  test_forgejo_read_hang_is_bounded_and_refuses \
+  test_proof_fetch_hang_is_bounded_and_refuses \
+  test_github_pr_view_hang_is_bounded_and_refuses \
+  test_pr_branch_lookup_hang_is_bounded_and_refuses \
+  test_pr_head_fetch_hang_is_bounded_and_refuses \
   test_direct_push_unlanded_refuses \
   test_direct_push_with_open_pr_refuses \
   test_pr_mode_fork_branch_with_open_pr_allows \

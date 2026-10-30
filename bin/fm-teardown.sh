@@ -75,6 +75,15 @@
 # by itself causes a false refusal of landed work.
 # A gh lookup error falls back to the content check; if that is also inconclusive,
 # teardown refuses rather than risk discarding unlanded work.
+# Every remote or forge read these proofs make (the fetches and the gh, gh-axi
+# and tea lookups) runs under teardown_remote's bound, FM_TEARDOWN_REMOTE_TIMEOUT
+# seconds (default 120) with Git and gh prompts off, because it runs while
+# teardown holds the task's control lock and the shared Treehouse project lock.
+# A read that hits the bound is a failed read: the proof it served is
+# inconclusive and teardown refuses or falls back exactly as for any other
+# failed read. Every lock teardown holds is released once the task record is
+# gone and before the final clone refresh (bin/fm-landed-sync.sh), so a slow
+# fetch there never holds up a spawn, park, adoption or merge in the project.
 # Uncommitted changes are never landed; dirty refusals distinguish untracked-only
 # leftovers from tracked edits and list at most ten non-exempt untracked paths.
 # local-only projects additionally accept work merged into the local default
@@ -541,6 +550,7 @@ DESCENDANT_REASSIGNED_SLOTS=()
 teardown_release_locks() {
   local status=$? i
   [ -z "$TEARDOWN_EVIDENCE_SCAN" ] || rm -rf -- "$TEARDOWN_EVIDENCE_SCAN"
+  TEARDOWN_EVIDENCE_SCAN=
   if declare -F teardown_release_herdr_locks >/dev/null 2>&1; then
     teardown_release_herdr_locks || true
   fi
@@ -1553,13 +1563,24 @@ remove_pr_poll_artifacts() {
     "$state_dir/$id.merge-authority" "$state_dir/$id.check-trust" || return 1
 }
 
+# teardown_remote <command...>: run one remote or forge read under the bound
+# the header names, with Git and gh prompts off; 124 means the bound was hit.
+# bin/fm-timeout-lib.sh owns the bound (reached through fm-classify-lib.sh).
+TEARDOWN_REMOTE_TIMEOUT=${FM_TEARDOWN_REMOTE_TIMEOUT:-120}
+case "$TEARDOWN_REMOTE_TIMEOUT" in ''|0*|*[!0-9]*) TEARDOWN_REMOTE_TIMEOUT=120 ;; esac
+# The shared Forgejo record read in bin/fm-pr-lib.sh takes the same bound.
+FM_PR_FORGE_READ_TIMEOUT=$TEARDOWN_REMOTE_TIMEOUT
+teardown_remote() {  # <command...>
+  fm_run_timed "$TEARDOWN_REMOTE_TIMEOUT" env GIT_TERMINAL_PROMPT=0 GH_PROMPT_DISABLED=1 "$@"
+}
+
 # Resolve the PR number for a worktree branch via gh-axi. Echoes the number on a
 # single match and returns 0; returns non-zero on no match or any lookup failure,
 # so the caller treats it as "no PR found" (fail-safe).
 pr_number_from_branch() {
   local branch=$1 out n
   [ -n "$branch" ] && [ "$branch" != HEAD ] || return 1
-  out=$( cd "$WT" && gh-axi pr list --state all --head "$branch" --limit 1 2>/dev/null ) || return 1
+  out=$( cd "$WT" && teardown_remote gh-axi pr list --state all --head "$branch" --limit 1 2>/dev/null ) || return 1
   n=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1)
   [ -n "$n" ] || return 1
   printf '%s' "$n"
@@ -1591,7 +1612,7 @@ ensure_commit_object() {
   git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null && return 0
   n=$(pr_number_from_target "$target") || return 1
   git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
-  git -C "$WT" fetch --quiet origin "refs/pull/$n/head" >/dev/null 2>&1 || return 1
+  teardown_remote git -C "$WT" fetch --quiet origin "refs/pull/$n/head" >/dev/null 2>&1 || return 1
   git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null
 }
 
@@ -1649,7 +1670,7 @@ pr_is_merged() {
     fm_pr_head_valid "$head" || return 1
     resolved_url=$FM_PR_URL
   else
-    view=$(cd "$WT" && gh pr view "$target" --json state,headRefOid,url -q '.state + "\t" + .headRefOid + "\t" + .url' 2>/dev/null) || return 1
+    view=$(cd "$WT" && teardown_remote gh pr view "$target" --json state,headRefOid,url -q '.state + "\t" + .headRefOid + "\t" + .url' 2>/dev/null) || return 1
     state=${view%%$'\t'*}
     remainder=${view#*$'\t'}
     [ "$state" != "$view" ] || return 1
@@ -1686,7 +1707,7 @@ fresh_default_ref() {
   name=${BASE_BRANCH:-}
   [ -n "$name" ] || name=$(default_branch) || return 1
   if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
-    git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
+    teardown_remote git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
     printf '%s' "refs/remotes/origin/$name"
   elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
     printf '%s' "refs/heads/$name"
@@ -2728,7 +2749,7 @@ released_slot_work_is_landed() {
   [ -n "$branch" ] && [ -d "$PROJ" ] || return 1
   if head=$(git -C "$PROJ" rev-parse --quiet --verify "refs/heads/$branch^{commit}" 2>/dev/null); then
     :
-  elif git -C "$PROJ" fetch --quiet origin "+refs/heads/$branch:refs/remotes/origin/$branch" >/dev/null 2>&1 \
+  elif teardown_remote git -C "$PROJ" fetch --quiet origin "+refs/heads/$branch:refs/remotes/origin/$branch" >/dev/null 2>&1 \
     && head=$(git -C "$PROJ" rev-parse --quiet --verify "refs/remotes/origin/$branch^{commit}" 2>/dev/null); then
     :
   else
@@ -3818,14 +3839,26 @@ fi
 # this refusal cleanup would erase the only record tracking that unmerged PR.
 # The refusal is confined to mode=direct-push: a PR-mode task's branch pushed to
 # a fork for an upstream contribution keeps tearing down as landed. A lookup
-# that cannot complete leaves cleanup as it was rather than refusing.
+# that fails leaves cleanup as it was rather than refusing; one the forge never
+# answers refuses at teardown_remote's bound, as the open-ended wait it replaces
+# never let cleanup go ahead.
 if [ "$KIND" = ship ] && [ "$MODE" = direct-push ] && teardown_owns_worktree && [ -d "$WT" ] \
     && [ "$FORCE" != "--force" ] && command -v gh-axi >/dev/null 2>&1; then
   DIRECT_PUSH_BRANCH=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
   [ -n "$DIRECT_PUSH_BRANCH" ] && [ "$DIRECT_PUSH_BRANCH" != HEAD ] \
     || DIRECT_PUSH_BRANCH=$(grep '^branch=' "$META" | tail -1 | cut -d= -f2- || true)
-  if [ -n "$DIRECT_PUSH_BRANCH" ] && [ "$DIRECT_PUSH_BRANCH" != HEAD ] \
-      && DIRECT_PUSH_OPEN_PRS=$(cd "$WT" && gh-axi pr list --state open --head "$DIRECT_PUSH_BRANCH" --limit 1 2>/dev/null); then
+  DIRECT_PUSH_LOOKUP_RC=1
+  if [ -n "$DIRECT_PUSH_BRANCH" ] && [ "$DIRECT_PUSH_BRANCH" != HEAD ]; then
+    DIRECT_PUSH_LOOKUP_RC=0
+    DIRECT_PUSH_OPEN_PRS=$(cd "$WT" && teardown_remote gh-axi pr list --state open --head "$DIRECT_PUSH_BRANCH" --limit 1 2>/dev/null) \
+      || DIRECT_PUSH_LOOKUP_RC=$?
+  fi
+  if fm_timed_out "$DIRECT_PUSH_LOOKUP_RC"; then
+    echo "REFUSED: task $ID records mode=direct-push, and the open-PR lookup for its branch $DIRECT_PUSH_BRANCH got no answer within ${TEARDOWN_REMOTE_TIMEOUT}s, so cleanup cannot rule out an open PR that only this record tracks." >&2
+    echo "Run the teardown again once the forge answers." >&2
+    exit 1
+  fi
+  if [ "$DIRECT_PUSH_LOOKUP_RC" -eq 0 ]; then
     DIRECT_PUSH_OPEN_PR=$(printf '%s\n' "$DIRECT_PUSH_OPEN_PRS" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1)
     if [ -n "$DIRECT_PUSH_OPEN_PR" ]; then
       echo "REFUSED: task $ID records mode=direct-push, but PR #$DIRECT_PUSH_OPEN_PR is open and unmerged on its branch $DIRECT_PUSH_BRANCH." >&2
@@ -4237,6 +4270,10 @@ else
 fi
 fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
+# The task's own work is finished, so nothing below needs a lock: release the
+# control and project locks (and the rest) now, before the refresh fetches, so
+# no other lifecycle action in this project waits on a remote.
+teardown_release_locks || true
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   # Refreshes this home's clone and, through the guarded fleet-sync path, the
   # main home's clone, reporting a stuck clone or a stale lock there once.

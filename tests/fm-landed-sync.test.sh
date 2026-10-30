@@ -8,7 +8,8 @@
 # provably stale index.lock is reported once and never removed, while a young
 # one is left to its owner and never called stale; that a secondmate home
 # refreshes its own clone and the main home's clone, reporting into the main
-# home only; and that a recorded merge launches the refresh without waiting.
+# home only; that a recorded merge launches the refresh without waiting; and that
+# a refresh stopped at its fetch or child bound is reported once as failed.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -204,6 +205,41 @@ test_recorded_merge_launches_refresh() {
   pass "a recorded merge refreshes an explicit clone outside projects/ in the background"
 }
 
+# A refresh stopped at a bound is a failed refresh: reported once, and cleared
+# by the next good one. Both the fetch bound and the refresh child's bound count.
+test_bounded_refresh_reported_once() {
+  local h url out hangbin
+  h=$(new_home)
+  url=$(build_origin p8)
+  git clone -q "$url" "$h/projects/p8"
+  advance_origin p8 v1
+  hangbin="$h/hangbin"; mkdir -p "$hangbin"
+  cat > "$hangbin/git" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = fetch ]; then
+    n=0
+    while [ ! -e "$h/release" ] && [ "\$n" -lt 3000 ]; do sleep 0.1; n=\$((n + 1)); done
+    break
+  fi
+done
+exec "$(command -v git)" "\$@"
+SH
+  chmod +x "$hangbin/git"
+  out=$(PATH="$hangbin:$PATH" FM_FLEET_SYNC_FETCH_TIMEOUT=2 run_landed "$h" p8)
+  assert_contains "$out" "reported failed" "${FUNCNAME[0]}:$LINENO"
+  assert_grep "check: landed-sync p8: the main clone was not refreshed: fetch failed: timed out after 2s" "$h/state/.wake-queue" "${FUNCNAME[0]}:$LINENO"
+  out=$(PATH="$hangbin:$PATH" FM_FLEET_SYNC_FETCH_TIMEOUT=600 FM_FLEET_SYNC_CHILD_TIMEOUT=10 run_landed "$h" p8)
+  assert_contains "$out" "p8: skipped: refresh timed out after 10s" "${FUNCNAME[0]}:$LINENO"
+  assert_contains "$out" "failed already reported" "${FUNCNAME[0]}:$LINENO"
+  assert_equals 1 "$(wake_rows "$h" p8)" "${FUNCNAME[0]}:$LINENO"
+  : > "$h/release"
+  out=$(PATH="$hangbin:$PATH" run_landed "$h" p8)
+  assert_contains "$out" "main clone current" "${FUNCNAME[0]}:$LINENO"
+  assert_absent "$h/state/landed-sync/p8.reported" "${FUNCNAME[0]}:$LINENO"
+  pass "a refresh stopped at its fetch or child bound is reported once as failed"
+}
+
 test_behind_clone_fast_forwards_silently
 test_dirty_clone_reported_once_per_episode
 test_diverged_clone_reported
@@ -212,3 +248,4 @@ test_young_index_lock_is_not_called_stale
 test_secondmate_refreshes_both_and_reports_to_main
 test_unknown_project_and_bad_name
 test_recorded_merge_launches_refresh
+test_bounded_refresh_reported_once

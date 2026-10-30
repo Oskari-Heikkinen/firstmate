@@ -196,7 +196,7 @@ wait_for handled_is "$H" 1 || fail "cleanup killed its runner before acknowledge
 assert_grep "cleanup-returned t1" "$CALLS" "cancelling the adopted watch during cleanup returns without killing its own runner"
 assert_present "$(compgen -G "$H/state/procevent-inbox/$sid.*.result" | head -1)" "terminal retirement preserves captured evidence"
 wait_for grep -q "^teardown t1" "$CALLS" || fail "cleanup was not run"
-assert_grep "fleet-sync $H/project" "$CALLS" "the project clone is refreshed"
+assert_no_grep "fleet-sync" "$CALLS" "a clean landing leaves the clone refresh to cleanup, so the clone is fetched once"
 assert_absent "$H/state/t1.status" "successful cleanup never recreates an orphan status log"
 assert_grep "done [at=" "$TMP_ROOT/status-at-cleanup" "cleanup reads the task's completion line"
 assert_grep "landed $MAIN on main through the merge queue" "$TMP_ROOT/status-at-cleanup" "the done line names the main commit"
@@ -243,6 +243,7 @@ pe "$H" reconcile >/dev/null
 wait_for grep -qs "procevent merge-queue $sid" "$H/state/.wake-queue" || fail "a refused cleanup did not wake firstmate"
 assert_grep "blocked [key=merge-queue-cleanup]" "$H/state/t1.status" "the refusal is recorded on the task"
 assert_grep "uncommitted changes" "$H/state/t1.status" "the refusal names why"
+assert_grep "fleet-sync $H/project" "$CALLS" "a refused cleanup never reached its own refresh, so settle refreshes the landed clone"
 assert_grep "task t1 head $HEAD_A landed on main at $MAIN but cleanup refused" "$P/state/mate1.status" \
   "the refusal reaches the parent channel with the actual landing commit"
 assert_contains "$(tail -1 "$H/state/t1.status")" "blocked [key=merge-queue-cleanup]" "cleanup refusal overrides the pre-cleanup completion line"

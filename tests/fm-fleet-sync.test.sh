@@ -942,6 +942,52 @@ test_non_signature_fetch_failure_is_not_retried() {
   pass "a non-packed-refs.lock fetch failure keeps today's behavior (no retry)"
 }
 
+# A fetch that never returns is stopped at FM_FLEET_SYNC_FETCH_TIMEOUT with
+# Git's prompt off, reported as a fetch failure, and leaves the clone as it was;
+# an invalid bound is reported once and falls back to the default.
+test_hung_fetch_is_bounded() {
+  local home fakebin clone out err before pid waited
+  home=$(new_home)
+  fakebin="$home/fb-hang"; mkdir -p "$fakebin"
+  clone=$(build_pair "$home" hang)
+  advance_origin "$home" hang C1
+  before=$(head_sha "$clone")
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [ "\$a" = fetch ]; then
+    printf '%s %s\\n' "\$\$" "\${GIT_TERMINAL_PROMPT:-unset}" > "$home/hang-fetch"
+    n=0
+    while [ ! -e "$home/hang-release" ] && [ "\$n" -lt 3000 ]; do sleep 0.1; n=\$((n + 1)); done
+    break
+  fi
+done
+exec "\${REAL_GIT_FOR_TEST:?}" "\$@"
+SH
+  chmod +x "$fakebin/git"
+  out="$home/out-hang"; err="$home/err-hang"
+
+  FM_FLEET_SYNC_FETCH_TIMEOUT=2 run_sync_guarded "$home" "$fakebin" "$out" "$err" hang || true
+  : > "$home/hang-release"
+
+  assert_contains "$(cat "$out")" "hang: skipped: fetch failed: timed out after 2s" \
+    "hung fetch: the bound did not stop the fetch and report it"
+  assert_equals "$before" "$(head_sha "$clone")" "hung fetch: the clone moved without a fetch"
+  [ -s "$home/hang-fetch" ] || fail "hung fetch: the fetch never started"
+  pid=$(cut -d' ' -f1 "$home/hang-fetch")
+  assert_equals 0 "$(cut -d' ' -f2 "$home/hang-fetch")" "hung fetch: the fetch could prompt for credentials"
+  # Hang guard only: the bound's group kill has already ended the fetch.
+  waited=0
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 300 ]; do sleep 0.1; waited=$((waited + 1)); done
+  kill -0 "$pid" 2>/dev/null && fail "hung fetch: the timed-out fetch was left running"
+
+  FM_FLEET_SYNC_FETCH_TIMEOUT=soon run_sync_guarded "$home" "$fakebin" "$out" "$err" hang || true
+  assert_contains "$(cat "$out")" "hang: synced" "invalid bound: the refresh did not fall back to the default bound"
+  assert_equals 1 "$(grep -c "invalid fetch timeout 'soon'" "$err")" \
+    "invalid bound: the invalid value was not reported exactly once"
+  pass "a hung fetch is stopped at its bound with prompts off, and an invalid bound falls back once"
+}
+
 test_detached_clean_ancestor_recovers
 test_detached_unique_commit_is_stuck_untouched
 test_detached_clean_ancestor_with_diverged_local_default_is_stuck_untouched
@@ -973,6 +1019,7 @@ test_live_packed_refs_lock_is_never_removed
 test_live_git_cwd_in_clone_dir_blocks_removal
 test_transient_packed_refs_lock_self_clears
 test_non_signature_fetch_failure_is_not_retried
+test_hung_fetch_is_bounded
 test_non_clone_dir_never_syncs_the_enclosing_repo
 test_non_clone_dir_named_directly_never_syncs_the_enclosing_repo
 test_symlinked_clone_still_syncs
