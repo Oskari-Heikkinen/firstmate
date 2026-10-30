@@ -46,7 +46,11 @@
 #   fm-storage.sh install-timer [--notify FILE]
 #       Write storage.conf (notification file, kept min_free and min_size), then
 #       write and enable the user-level fm-storage.timer (every 5 minutes,
-#       Nice=19, idle IO). No root. The removed --fallback option exits 2.
+#       Nice=19, idle IO). Its service's TimeoutStartSec=20min stays above a
+#       check's worst case (60 s lock wait, three 30 s listings and their
+#       backoff, the 600 s speed test), so only a hung check is stopped and the
+#       next tick is not skipped for good. No root. The removed --fallback
+#       option exits 2.
 #   fm-storage.sh uninstall-timer
 #       Disable and remove that timer; the config and results-root stay.
 #
@@ -639,7 +643,7 @@ cmd_install_timer() {
   self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
   dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
   mkdir -p "$dir" || die "cannot create $dir"
-  printf '[Unit]\nDescription=Publish the fetched-results root on the external SSD\n\n[Service]\nType=oneshot\nNice=19\nIOSchedulingClass=idle\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin:%s\nExecStart=%s check\n' "$PS_DIR" "$self" \
+  printf '[Unit]\nDescription=Publish the fetched-results root on the external SSD\n\n[Service]\nType=oneshot\nTimeoutStartSec=20min\nNice=19\nIOSchedulingClass=idle\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin:%s\nExecStart=%s check\n' "$PS_DIR" "$self" \
     | write_atomic "$dir/$UNIT.service" || die "could not write $dir/$UNIT.service"
   printf '[Unit]\nDescription=Check the external SSD every 5 minutes\n\n[Timer]\nOnBootSec=1min\nOnUnitActiveSec=5min\nAccuracySec=30s\n\n[Install]\nWantedBy=timers.target\n' \
     | write_atomic "$dir/$UNIT.timer" || die "could not write $dir/$UNIT.timer"

@@ -541,6 +541,14 @@
       "audience": "operator-example"
     },
     {
+      "path": "docs/examples/claude-update/claude-update.service",
+      "audience": "operator-example"
+    },
+    {
+      "path": "docs/examples/claude-update/claude-update.timer",
+      "audience": "operator-example"
+    },
+    {
       "path": "docs/examples/heavy-slot-mem-guard.patch",
       "audience": "operator-example"
     },
