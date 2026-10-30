@@ -30,6 +30,7 @@ HEAD = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], stdout=subp
 CREW = "bin/fm-classify-lib.sh:3709"
 DRAIN = "bin/fm-afk-return.sh:784"
 SNAPSHOT = "bin/fm-fleet-view.sh:29"
+MEM = next(site for site in rec.EXCLUDED_SITES if site.startswith("bin/fm-mem-guard.sh:"))
 T0 = 5_000_000_000
 WALL = 1_700_000_000_000_000_000
 counter = [0]
@@ -432,7 +433,7 @@ class Admission(unittest.TestCase):
     def test_admission_refusals(self):
         base = admission()
         home = base["manifest"]["homes"][0]
-        cases = dict(caller=dict(callers=["bin/fm-mem-guard.sh:490"]), label=dict(label="a:b"),
+        cases = dict(caller=dict(callers=[MEM]), label=dict(label="a:b"),
                      value=dict(values=dict(t=["not-a-task"])), placeholder=dict(values=dict(T=["x"])),
                      root=dict(roots=base["roots"][1:]), relative=dict(destination="captures"),
                      state=dict(roots=[dict(base["roots"][0], path="/elsewhere")] + base["roots"][1:]),
@@ -851,7 +852,7 @@ class Finalize(unittest.TestCase):
         world.change(world.status, T0 + 31_000_000_000, b"done\n", ident="r2", commit="c1")
         world.request("late", start=T0 + 61_000_000_000, identity=(4244, 99, 1))
         world.request("other", caller=DRAIN, identity=(4245, 99, 1))
-        world.request("mem", caller="bin/fm-mem-guard.sh:490", identity=(4246, 99, 1))
+        world.request("mem", caller=MEM, identity=(4246, 99, 1))
         finalizer, workload, bindings, provenance = world.finalize()
         self.assertEqual(finalizer.losses(), [])
         model = accounting.bound_workload(workload, bindings)
@@ -868,7 +869,7 @@ class Finalize(unittest.TestCase):
         self.assertEqual(provenance["g5"], "open")
         self.assertFalse(provenance["whole_workload_coverage"])
         self.assertIn(dict(caller=DRAIN, count=1), provenance["excluded_callers"])
-        self.assertIn(dict(caller="bin/fm-mem-guard.sh:490", count=1), provenance["excluded_callers"])
+        self.assertIn(dict(caller=MEM, count=1), provenance["excluded_callers"])
         self.assertTrue(model.summary())
 
     def test_appends_and_directory_images_rebuild_full_objects(self):
