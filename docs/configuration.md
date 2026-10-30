@@ -694,7 +694,7 @@ The watcher holds routine wakes in one batch and wakes the supervisor once per b
 The window is `FM_WAKE_BATCH_SECS`, else the number in the optional local `config/wake-batch-secs`, else `180` seconds; `0` restores the immediate wake, and a value that is not a whole number fails to `0`.
 Routine status lines (`working:`, `done:`, `paused:`, `note:`, `resolved:`), bare turn-ends, declared-wait rechecks, and `check: rearm-resurface` join the batch, which opens with the first held item and wakes when it is a window old.
 A `needs-decision:`, `blocked:`, or `failed:` line, a captain-held declaration, a pending-reply escalation, any other captain-relevant line except a plain `done:`, and an unreadable status log wake at once, and that wake classifies every held signal line with it.
-A declared-wait recheck for a changed or unreadable lane, for a declared time that has passed, or for a wait at the standing-waits ceiling still wakes at once.
+A declared-wait recheck for a changed or unreadable lane, for a declared time that has passed, for the periodic reminder of an untagged wait whose declared time lies beyond the cadence, or for a wait at the standing-waits ceiling still wakes at once.
 A rearm-resurface wakes at once when a queued row's task has such a line the supervisor has not been shown yet, or the queue holds anything other than signal rows and declared-wait rechecks.
 Held signals keep their seen markers unmoved, the batch start is kept in `state/.wake-batch-since`, and a held rearm-resurface in `state/.wake-batch-resurface`, so a restarted watcher holds the same items to the same deadline and never loses one.
 Batching is off while the away-mode daemon owns triage.

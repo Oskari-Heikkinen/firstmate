@@ -445,12 +445,17 @@ PAUSE_RESURFACE_SECS=${FM_PAUSE_RESURFACE_SECS:-$FM_PAUSE_RESURFACE_SECS_DEFAULT
 # wake this watcher raises for any other reason. Only when neither happens does
 # it wake on its own, once a pending wait has gone STANDING_WAITS_CEILING_SECS
 # without being shown to the supervisor, so a forgotten wait still cannot rot
-# invisibly. A lane whose fingerprint changed and the first recheck after a
-# paused wait's declared `until` time passes are delivered when due, still
-# coalesced with whatever else is pending. While the away-mode daemon owns
-# triage it owns this whole schedule too: the watcher hands it each due recheck
-# as the plain stale wake it classifies itself, and leaves the fingerprint
-# baseline and the delivery time it compares against untouched.
+# invisibly. A lane whose fingerprint changed, the first recheck after a
+# paused wait's declared `until` time passes, and the periodic reminder of an
+# untagged wait whose declared time lies beyond PAUSE_RESURFACE_SECS are
+# delivered when due, still coalesced with whatever else is pending. Every
+# such periodic reminder not yet due joins any recheck delivery or other wake
+# and restarts its cadence from it (recheck_flush), so the reminders of many
+# waits share one wake per cadence and none arrives later than its own due
+# time. While the away-mode daemon owns triage it owns this whole schedule too:
+# the watcher hands it each due recheck as the plain stale wake it classifies
+# itself, and leaves the fingerprint baseline and the delivery time it compares
+# against untouched.
 RECHECK_WARM_SECS=3300
 STANDING_WAITS_CEILING_SECS=${FM_STANDING_WAITS_CEILING_SECS:-$FM_STANDING_WAITS_CEILING_SECS_DEFAULT}
 case "$STANDING_WAITS_CEILING_SECS" in ''|*[!0-9]*|0) STANDING_WAITS_CEILING_SECS=$FM_STANDING_WAITS_CEILING_SECS_DEFAULT ;; esac
@@ -1869,7 +1874,31 @@ queue_park_proven() {  # <task>
 # no declaring verb left on the log, keeps the external-wait wording it always had.
 # The reason carries @AGE@ in place of the wait's age, filled in at delivery so a
 # recheck that waited for a warm supervisor still reports how old the wait is.
+#
+# A periodic reminder of an untagged wait whose declared time lies beyond the
+# cadence is the one recheck that is only ever a repeat of an unchanged state.
+# While that reminder is not yet due, this records it in
+# .recheck-upcoming-<key> (window, status mtime, reason, declaration scope)
+# so recheck_flush can deliver it early with any recheck it delivers, and
+# removes the record on every other verdict. The record is rewritten only when
+# its content changes, so a standing parked window costs no write per poll.
+RECHECK_UPCOMING=
 handle_paused_stale() {  # <window> <task> <hash>
+  local key have rc=0
+  RECHECK_UPCOMING=
+  paused_stale_classify "$@" || rc=$?
+  window_key_to key "$1"
+  if [ -n "$RECHECK_UPCOMING" ] && ! afk_present; then
+    fm_file_text_to have "$STATE/.recheck-upcoming-$key" || have=
+    [ "$have" = "$RECHECK_UPCOMING" ] \
+      || printf '%s\n' "$RECHECK_UPCOMING" > "$STATE/.recheck-upcoming-$key" || exit 1
+  else
+    fm_rm_present "$STATE/.recheck-upcoming-$key"
+  fi
+  return "$rc"
+}
+
+paused_stale_classify() {  # <window> <task> <hash>
   local win=$1 task=$2 h=$3 key statusf mtime age detail reason declaration last until now min_age kind=due base
   local wait_rc=2 wait_cond='' agent_state='' compare_rc=0
   window_key_to key "$win"
@@ -1951,16 +1980,21 @@ handle_paused_stale() {  # <window> <task> <hash>
     detail="captain-held, awaiting the captain"
     reason="captain-held @AGE@s, awaiting the captain - verified hold transfer, rechecked on a long cadence not a wedge; answer the held decision or release the hold"
   elif status_wait_untagged "$last" && until=$(status_paused_until "$last"); then
-    if [ "$now" -lt "$until" ] && [ "$age" -lt "$PAUSE_RESURFACE_SECS" ]; then
-      recheck_baseline "$key" "$task" "$base" once
-      triage_log "absorbed stale (paused until $(( until - now ))s from now, declared time not reached): $win"
-      return 0
-    elif [ "$now" -lt "$until" ]; then
+    if [ "$now" -lt "$until" ]; then
       # A prose ETA is not positive machine-checkable evidence. Do not let an
-      # unchanged fingerprint extend its periodic four-hour bound.
+      # unchanged fingerprint extend its periodic PAUSE_RESURFACE_SECS bound.
       kind=until
       detail="paused, declared time beyond recheck cadence"
       reason="paused @AGE@s, awaiting external - the declared time is beyond the recheck cadence; confirm the wait still holds"
+      RECHECK_UPCOMING="$win
+$mtime
+$reason
+$declaration"
+      if [ "$age" -lt "$PAUSE_RESURFACE_SECS" ]; then
+        recheck_baseline "$key" "$task" "$base" once
+        triage_log "absorbed stale (paused until $(( until - now ))s from now, declared time not reached): $win"
+        return 0
+      fi
     else
       # The declared time has passed: recheck now, once per declaration, then
       # hold the cadence. The worker named this moment, so its first recheck
@@ -1990,7 +2024,8 @@ handle_paused_stale() {  # <window> <task> <hash>
   fi
   case "$kind" in
     due) recheck_fingerprint_due "$win" "$key" "$task" "$age" "$mtime" "$reason" "$declaration" "$base" ;;
-    until) recheck_baseline "$key" "$task" "$base" refresh
+    until) RECHECK_UPCOMING=
+      recheck_baseline "$key" "$task" "$base" refresh
       recheck_queue "$win" "$key" "$age" "$mtime" urgent "stale: $win ($reason)" "$declaration" ;;
     held) recheck_queue "$win" "$key" "$age" "$mtime" due "stale: $win ($reason)" "$declaration" ;;
   esac
@@ -2093,11 +2128,24 @@ supervisor_turn_age() {
 # dropped instead. Each delivered row is its own durable stale record for its
 # window, so acknowledgement and away-mode classification see exactly the rows
 # a single recheck used to produce.
+#
+# Once a set is being delivered, and on every other wake even with no recheck
+# queued, every recorded periodic reminder (.recheck-upcoming-*, written by
+# handle_paused_stale) joins it and has its throttle reset to this delivery, so
+# the reminders share one phase instead of each waking on its own, and one that
+# rode along is not sent again at its old due time. A recorded reminder is not
+# yet due and is due at most PAUSE_RESURFACE_SECS after its status write or last
+# recheck, so each one falls due within the next cadence and is delivered
+# early, never late. One is dropped instead when its window no longer maps to a
+# task, its status changed since it was recorded, or the declared time has
+# come, which the time-reached recheck owns. Reminders never make a set fire,
+# and none join while the away-mode daemon owns triage.
 RECHECK_FLUSHING=0
 WAKE_QUEUE_LOCK_HELD=0
 recheck_flush() {  # <poll|ride>
   local mode=$1 append f key kind win anchor reason task last now fire=0 standing=0 urgent=0 i n=0 first=''
-  local -a keys=() wins=() reasons=() held_keys=() held_wins=() held_reasons=()
+  local scope until pulled=0
+  local -a keys=() wins=() reasons=() scopes=() held_keys=() held_wins=() held_reasons=()
   [ "$RECHECK_FLUSHING" -eq 0 ] || return 0
   now=$(date +%s)
   for f in "$STATE"/.recheck-due-* "$STATE"/.recheck-absorbed-*; do
@@ -2136,7 +2184,7 @@ recheck_flush() {  # <poll|ride>
       keys+=("${held_keys[$i]}"); wins+=("${held_wins[$i]}"); reasons+=("${held_reasons[$i]}")
     done
   fi
-  [ "${#keys[@]}" -gt 0 ] || return 0
+  [ "${#keys[@]}" -gt 0 ] || [ "$mode" = ride ] || return 0
   if [ "$mode" = poll ] && [ "$fire" -eq 0 ]; then
     if afk_present || [ "$(supervisor_turn_age)" -lt "${FM_TEST_RECHECK_WARM_SECS:-$RECHECK_WARM_SECS}" ]; then
       fire=1
@@ -2158,6 +2206,31 @@ recheck_flush() {  # <poll|ride>
     fi
     wake_batch_close
   fi
+  if ! afk_present; then
+    for f in "$STATE"/.recheck-upcoming-*; do
+      [ -f "$f" ] || continue
+      key=${f##*/.recheck-upcoming-}
+      for i in ${keys[@]+"${!keys[@]}"}; do
+        [ "${keys[$i]}" != "$key" ] || continue 2
+      done
+      win='' anchor='' reason='' scope='' task='' last='' until=''
+      { IFS= read -r win; IFS= read -r anchor; IFS= read -r reason; IFS= read -r scope; } 2>/dev/null < "$f" || true
+      [ -z "$win" ] || task=$(window_to_task "$win" "$STATE")
+      [ -z "$task" ] || status_declared_wait_line_to last "$STATE/$task.status"
+      case "$anchor" in ''|*[!0-9]*) task= ;; esac
+      if [ -z "$task" ] || [ -z "$reason" ] || ! status_wait_untagged "$last" \
+        || ! until=$(status_paused_until "$last") || [ "$now" -ge "$until" ] \
+        || [ "$(declared_wait_scope "$STATE" "$task")" != "$scope" ]; then
+        rm -f "$f"
+        triage_log "dropped upcoming declared-wait reminder (wait changed or no longer declared): ${win:-$key}"
+        continue
+      fi
+      scopes[${#keys[@]}]=$scope; keys+=("$key"); wins+=("$win")
+      reasons+=("${reason//@AGE@/$(( now - anchor ))}; brought forward to group with this wake")
+      pulled=$((pulled + 1))
+    done
+  fi
+  [ "${#keys[@]}" -gt 0 ] || return 0
   append=fm_wake_append
   [ "$WAKE_QUEUE_LOCK_HELD" -eq 0 ] || append=fm_wake_append_locked
   RECHECK_FLUSHING=1
@@ -2168,14 +2241,16 @@ recheck_flush() {  # <poll|ride>
       return 1
     fi
     afk_present || date +%s > "$STATE/.recheck-surfaced-${keys[$i]}"
-    rm -f "$STATE/.recheck-due-${keys[$i]}" "$STATE/.recheck-absorbed-${keys[$i]}"
+    [ -z "${scopes[$i]-}" ] || printf '%s' "${scopes[$i]}" > "$STATE/.paused-resurfaced-${keys[$i]}"
+    rm -f "$STATE/.recheck-due-${keys[$i]}" "$STATE/.recheck-absorbed-${keys[$i]}" "$STATE/.recheck-upcoming-${keys[$i]}"
     n=$((n + 1))
     [ -n "$first" ] || first=${reasons[$i]}
   done
   if [ "$mode" = ride ]; then
-    triage_log "queued $n declared-wait recheck(s) with another wake"
+    triage_log "queued $n declared-wait recheck(s) with another wake ($pulled reminder(s) brought forward)"
     return 0
   fi
+  [ "$pulled" -eq 0 ] || triage_log "brought $pulled declared-wait reminder(s) forward into this wake"
   if [ "$standing" -eq 1 ]; then
     first="$first [standing-waits digest: $n declared wait(s) queued with this wake]"
   elif [ "$n" -gt 1 ]; then
@@ -2309,7 +2384,8 @@ EOF
 # later declaration.
 recheck_sweep() {  # <space-delimited declared window keys>
   local declared=$1 f key
-  for f in "$STATE"/.recheck-due-* "$STATE"/.recheck-absorbed-* "$STATE"/.recheck-fp-* "$STATE"/.recheck-surfaced-*; do
+  for f in "$STATE"/.recheck-due-* "$STATE"/.recheck-absorbed-* "$STATE"/.recheck-fp-* "$STATE"/.recheck-surfaced-* \
+    "$STATE"/.recheck-upcoming-*; do
     [ -e "$f" ] || continue
     key=${f##*/.recheck-}
     key=${key#*-}
@@ -2392,7 +2468,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
 clear_pause_state() {  # <window-key>
   local key=$1
   rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key" \
-    "$STATE/.quiet-wait-seen-$key" "$STATE/.quiet-wait-probe-$key"
+    "$STATE/.quiet-wait-seen-$key" "$STATE/.quiet-wait-probe-$key" "$STATE/.recheck-upcoming-$key"
 }
 
 clear_pause_tracking() {  # <window-key>

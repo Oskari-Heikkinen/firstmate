@@ -213,6 +213,7 @@ full tests/fm-wake-file-ident-renumber.test.sh
 full tests/fm-wake-queue.test.sh
 full tests/fm-watch-dated-rules.test.sh
 full tests/fm-watch-quiet-waits.test.sh
+full tests/fm-watch-reminder-group.test.sh
 full tests/fm-worker-account.test.sh
 full tests/fm-wsl-reclaim.test.sh
 
