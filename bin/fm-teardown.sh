@@ -651,6 +651,7 @@ DESCENDANT_TREEHOUSE_LOCK_PATHS=()
 DESCENDANT_REASSIGNED_SLOTS=()
 teardown_release_locks() {
   local status=$? i
+  teardown_discard_evidence
   if declare -F teardown_release_herdr_locks >/dev/null 2>&1; then
     teardown_release_herdr_locks || true
   fi
@@ -687,7 +688,6 @@ teardown_release_locks() {
     TREEHOUSE_PROJECT_LOCK_HELD=0
   fi
   fm_lease_guard_release || true
-  teardown_discard_evidence
   return "$status"
 }
 trap teardown_release_locks EXIT
