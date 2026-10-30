@@ -420,15 +420,21 @@ def cmd_replay(args):
         raise Refused("--out's folder does not exist: %s" % os.path.dirname(out))
     kept, retried = [], 0
     if os.path.exists(out):
+        lines = []
         for line in read_text(out, "existing --out").split("\n"):
             if not line:
                 continue
             d = parse_shadow(line)
             if d is None:
                 raise Refused("existing --out %s has a line that is not a shadow log line: %s" % (out, clean(line, 80)))
+            lines.append((line, d))
+        # Every line's model before any line's fingerprint: a code-routed line
+        # names no model but its fingerprint still differs under another one.
+        for line, d in lines:
             if d.get("model") not in ("code", model_tag):
                 raise Refused("existing --out %s was written by model %s, not %s; name another --out"
                               % (out, d.get("model"), model_tag))
+        for line, d in lines:
             if d.get("run") != run_id:
                 raise Refused("existing --out %s was written under other settings (run %s, not %s: effort, skill, "
                               "settle list, probe lag or audit differ); name another --out"
