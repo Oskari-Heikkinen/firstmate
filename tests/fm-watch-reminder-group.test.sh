@@ -309,7 +309,9 @@ test_ride_along_restarts_the_reminder_cadence() {
 }
 
 # A reminder recorded while its wait still held is not delivered once the wait
-# changed, its window stopped mapping to a task, or its declared time came. The
+# changed, its task was torn down, or its declared time came. A torn-down task
+# leaves no status log; deleting only its .meta would not do, because
+# window_to_task still maps an fm-<id> window to <id> by name. The
 # records are left by one watcher run and an unrelated wake opens the next one,
 # before that run polls any window, so only the delivery-time check stands
 # between each out-of-date reminder and the supervisor.
@@ -335,11 +337,11 @@ test_out_of_date_reminders_are_dropped() {
   for t in a b g d; do
     [ -f "$state/.recheck-upcoming-test_fm-$t" ] || fail "$why: lane $t recorded no upcoming reminder, so the case checks nothing"
   done
-  # b's wait changes, g's window stops mapping to a task, and d's time comes.
+  # b's wait changes, g's task is torn down, and d's time comes.
   printf 'paused: parked until %s - waiting for the second vendor reply; resume on reply\n' \
     "$(iso_utc_at "$(( $(date +%s) + 30 * 86400 ))")" >> "$state/b.status"
   printf '%s' "$(seen_sig "$state/b.status")" > "$state/.seen-b_status"
-  rm -f "$state/g.meta"
+  rm -f "$state/g.meta" "$state/g.status" "$state/.seen-g_status"
   t=0
   while [ "$(date +%s)" -le "$until" ]; do
     [ "$t" -lt 300 ] || fail "$why: the clock never passed lane d's declared time"
@@ -347,7 +349,7 @@ test_out_of_date_reminders_are_dropped() {
   done
   printf 'window=test:fm-c\nkind=ship\n' > "$state/c.meta"
   printf 'needs-decision: pick a release channel\n' > "$state/c.status"
-  group_watch "$dir" "$(printf 'fm-a\nfm-b\nfm-g\nfm-d')"
+  group_watch "$dir" "$(printf 'fm-a\nfm-b\nfm-d')"
   wait_for_exit "$GROUP_PID" 100 || { reap "$GROUP_PID"; fail "$why: the unrelated wake never fired"; }
   grep -F 'signal: ' "$dir/watch.out" >/dev/null || fail "$why: the watcher did not exit on the unrelated signal: $(cat "$dir/watch.out")"
   [ "$(queued_rows "$state" 0 test:fm-a 'brought forward to group with this wake')" -eq 1 ] \
@@ -360,7 +362,7 @@ test_out_of_date_reminders_are_dropped() {
       || fail "$why: lane $t's out-of-date reminder was not dropped at delivery: $(cat "$state/.watch-triage.log")"
   done
   ack_stopped_cycle "$state" || fail "$why: could not acknowledge the unrelated wake"
-  pass "a reminder whose wait changed, whose window went, or whose declared time came is dropped, not delivered"
+  pass "a reminder whose wait changed, whose task was torn down, or whose declared time came is dropped, not delivered"
 }
 
 # While the away-mode daemon owns triage it owns the whole recheck schedule, so
