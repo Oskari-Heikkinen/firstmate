@@ -630,7 +630,7 @@ def main(argv):
         print(f"fm-handoff-actors: {args.actor!r} is not <kind>:<name> with kind systemd-timer, "
               "systemd-service, fm-check, cron or process", file=sys.stderr)
         return USAGE
-    refusal = not_a_home(args)
+    refusal = None
     if refusal:
         print(f"fm-handoff-actors: {refusal}", file=sys.stderr)
         return USAGE
