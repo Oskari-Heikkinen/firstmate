@@ -73,8 +73,7 @@
 # The robustness shell from the prior always-inject version is preserved:
 # single-instance lock (portable helper, no flock dependency), crash-loop
 # backoff, pane-gone guard, and a signal-trapped shutdown that flushes buffered
-# escalations before exit. Every loop wait is an interruptible background sleep
-# (daemon_nap), so a TERM stops an idle daemon at once and leaves no sleep child.
+# escalations before exit.
 #
 # Usage: fm-supervise-daemon.sh
 #          Long-lived background loop. Normally started by the /afk skill, which
