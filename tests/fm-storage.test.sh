@@ -525,6 +525,22 @@ test_no_fallback_needed() {
   pass "no command needs, publishes or honours a C: fallback"
 }
 
+test_install_timer_bounds_a_check() {
+  reset
+  local xdg="$TMP_ROOT/xdg" sbin="$TMP_ROOT/systemctl-bin" out
+  rm -rf "$xdg" "$sbin"
+  mkdir -p "$sbin"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s/calls"\n' "$sbin" >"$sbin/systemctl"
+  chmod +x "$sbin/systemctl"
+  out=$(PATH="$sbin:$PATH" XDG_CONFIG_HOME="$xdg" run install-timer 2>&1) || fail "install-timer exits 0: $out"
+  assert_grep "TimeoutStartSec=" "$xdg/systemd/user/fm-storage.service" "the written check service has a start limit"
+  assert_grep "Type=oneshot" "$xdg/systemd/user/fm-storage.service" "the written check service is a oneshot"
+  assert_grep "--user enable --now fm-storage.timer" "$sbin/calls" "install-timer enables the timer"
+  PATH="$sbin:$PATH" XDG_CONFIG_HOME="$xdg" run uninstall-timer >/dev/null 2>&1
+  assert_absent "$xdg/systemd/user/fm-storage.service" "uninstall-timer removes the service"
+  pass "install-timer writes a check service whose hung run is stopped"
+}
+
 test_named_roots() {
   reset
   listing "$(ssd_vol D exFAT)"
@@ -674,3 +690,4 @@ test_marker_identity_without_listing
 test_marker_checks_fall_back
 test_reader_rules
 test_no_fallback_needed
+test_install_timer_bounds_a_check
