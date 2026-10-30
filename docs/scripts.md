@@ -13,9 +13,9 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-operational-input.sh` | Construct and parse the canonical cross-language operational-input protocol |
 | `fm-bootstrap.sh`        | Detect toolchain and fleet problems, run the locked session-start sweeps, and install approved tools |
 | `fm-startup-network.sh`  | Run session start's network checks and inactive-outcome scan off its blocking path, retaining reports and durable findings |
-| `fm-fleet-sync.sh`       | Refresh project clones with safe fast-forwards (to `origin/<default>`, or a clone-local `fm.syncRef` branch), self-heals, `STUCK:` reports, branch pruning, and bounded recovery from an orphaned `.git/packed-refs.lock` |
+| `fm-fleet-sync.sh`       | Refresh project clones with safe fast-forwards (to `origin/<default>`, or a clone-local `fm.syncRef` branch), self-heals, `STUCK:` reports, branch pruning, bounded fetches, and bounded recovery from an orphaned `.git/packed-refs.lock` |
 | `fm-fleet-snapshot.sh`   | Print structured fleet snapshot JSON and refresh only its parent-side remote-ledger cache (schema `fm-fleet-snapshot.v1`) |
-| `fm-fleet-provenance.py` | Coordinate per-clone fleet-sync receipts and coalesce overlapping refresh requests |
+| `fm-fleet-provenance.py` | Coordinate per-clone fleet-sync receipts and coalesce overlapping refresh requests, with bounded lock waits and refresh runs |
 | `fm_receipt_io.py`      | Shared local IO for fleet-sync receipts, the fleet board and usage audit |
 | `fm-account.sh`         | Inspect subscription accounts and select or rebalance Claude logins |
 | `fm-account-lib.sh`     | Shared account registry, quota-read and spawn account-selection contract |

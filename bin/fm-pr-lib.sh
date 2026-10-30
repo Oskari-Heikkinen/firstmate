@@ -1165,6 +1165,19 @@ fm_pr_forgejo_login() {  # <host>
 # "tea api" exits 0 on an HTTP error and prints the error body instead, so
 # only a record whose state, merged, and head.sha fields all have the expected
 # types is accepted; anything else returns 1 for an honest unknown.
+# A caller that holds a lock across this read (bin/fm-teardown.sh) sets
+# FM_PR_FORGE_READ_TIMEOUT to a positive number of seconds with
+# bin/fm-timeout-lib.sh loaded; the read then runs under that bound, and a read
+# that hits it is the same honest unknown.
+fm_pr_forge_read() {  # <command...>
+  case "${FM_PR_FORGE_READ_TIMEOUT:-}" in
+    ''|0*|*[!0-9]*) "$@" ;;
+    *)
+      command -v fm_run_timed >/dev/null 2>&1 || return 1
+      fm_run_timed "$FM_PR_FORGE_READ_TIMEOUT" "$@"
+      ;;
+  esac
+}
 fm_pr_forgejo_read_record() {  # <host> <path> <number>
   local host=$1 path=$2 number=$3 login json fields line
   local total=0 named=0 state='' merged='' head=''
@@ -1177,7 +1190,7 @@ fm_pr_forgejo_read_record() {  # <host> <path> <number>
   esac
   login=$(fm_pr_forgejo_login "$host") || return 1
   [ -n "$login" ] || return 1
-  if ! json=$(tea api --login "$login" --repo "$path" \
+  if ! json=$(fm_pr_forge_read tea api --login "$login" --repo "$path" \
       "/repos/{owner}/{repo}/pulls/$number" 2>/dev/null) || [ -z "$json" ]; then
     return 1
   fi

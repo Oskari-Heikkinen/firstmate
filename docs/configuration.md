@@ -1742,6 +1742,13 @@ On that signature only, `fm-fleet-sync.sh` retries the fetch with a bounded wait
 
 It never removes a live lock, leaves any other failure shape untouched, and prints every wait, retry, and removal to stderr plus a one-line `recovered:` summary to stdout on success so that this session-start relay still surfaces the recovery.
 
+**Bounded refresh**
+
+No refresh waits on a remote or on another refresh without a bound, so a hung fetch cannot hold up later refreshes, landings or the lifecycle actions waiting on them.
+Each `fm-fleet-sync.sh` fetch runs with Git's terminal prompt off under `FM_FLEET_SYNC_FETCH_TIMEOUT`, and a fetch stopped at the bound is the skip `fetch failed: timed out after <n>s`.
+[`bin/fm-fleet-provenance.py`](../bin/fm-fleet-provenance.py) bounds the whole per-clone refresh and the wait for that clone's refresh lock, and its header owns those outcomes.
+`fm-teardown.sh` releases its project and control locks before its final clone refresh, and bounds each forge or Git read it makes under those locks by `FM_TEARDOWN_REMOTE_TIMEOUT`; a read stopped at the bound counts as a failed read, so the landed-work proof falls back or refuses as it does for any other read failure, and a direct-push task's open-PR lookup stopped there refuses the cleanup rather than skipping the check.
+
 **Secondmate sync at startup**
 
 The same deferred network stage performs guarded tracked-file sync and propagates declared inherited local material into each validated live home under that sequencing contract.
@@ -2837,6 +2844,7 @@ FM_CREW_STATE_NM_TIMEOUT=10   # seconds allowed per no-mistakes query inside fm-
 FM_TEARDOWN_NM_TIMEOUT=10    # seconds allowed per no-mistakes query or abort inside fm-teardown.sh
 FM_CREW_STATE_RUNS_LIMIT=200  # plain runs-ledger rows scanned for fallback attribution; does not change the CLI's AXI overview window (selection owner: bin/fm-nm-run-lib.sh)
 FM_TEARDOWN_NM_RUNS_LIMIT=200  # recent no-mistakes run rows scanned to prove an unresolved-head parked run belongs to teardown's task
+FM_TEARDOWN_REMOTE_TIMEOUT=120  # seconds allowed per forge or Git network read fm-teardown.sh makes while it holds the project and control locks; a read stopped at the bound is a failed read; zero or invalid values use 120
 FM_CREW_STATE_BIN=bin/fm-crew-state.sh   # test override for the current-state reader used by watcher triage: the working/paused classification, and the wedge timer's parked-gate wait evidence
 FM_MAIL_USER=      # mail-plane IMAP/SMTP login, from .env or environment (docs/configuration.md "Mail plane")
 FM_MAIL_PASS=      # mail-plane IMAP/SMTP password
@@ -2910,6 +2918,10 @@ FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=   # legacy alias for FM_TREEHOUSE_RETURN
 FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRIES=3        # fetch retries after fm-fleet-sync.sh hits the orphaned .git/packed-refs.lock signature
 FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=1 # seconds fm-fleet-sync.sh waits before each of those retries
 FM_FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS=30       # min mtime age before fm-fleet-sync.sh treats a leftover packed-refs.lock as provably stale
+FM_FLEET_SYNC_FETCH_TIMEOUT=120    # seconds one fm-fleet-sync.sh origin fetch may take before it is stopped and reported as a timed-out fetch failure; zero or invalid values use 120
+FM_FLEET_SYNC_CHILD_TIMEOUT=       # seconds one per-clone refresh may take in bin/fm-fleet-provenance.py before its process group is stopped; unset, zero or invalid uses six fetch bounds plus 180
+FM_FLEET_SYNC_LOCK_WAIT=           # seconds a refresh waits for another refresh of the same clone before skipping; unset, zero or invalid uses the refresh bound plus 60
+FM_FLEET_SYNC_GIT_TIMEOUT=60       # seconds each local git read in bin/fm-fleet-provenance.py may take; a read stopped at the bound reads as unknown and is never coalesced
 FM_BUSY_REGEX=          # optional override for rendered delivery guards and Grok's isolated task-state fallback; converted worker state ignores it
 FM_COMPOSER_IDLE_RE=    # optional fleet-wide idle-placeholder regex override (bin/fm-composer-lib.sh); a match alone does not prove emptiness because shape-specific position and ANSI de-emphasis safety gates still apply
 FM_COMPOSER_LEFTBAR_FOOTER_RE=   # optional fleet-wide override of the opencode left-bar mode/model footer's regex (bin/fm-composer-lib.sh's FM_COMPOSER_LEFTBAR_FOOTER_RE_DEFAULT, matched against both the ghost-stripped and the ANSI-stripped form of a run's LAST row); an override that cannot match the de-emphasised 1.19.0 footer puts the false `pending` back on an idle pane, so keep the default's required space after the separator and its exact `Build`/`Plan` mode words rather than widening it - widening it is the one path that turns typed text into the `empty` verdict which authorizes typing into a live session; see [runtime backend verification](verification/runtime-backends.md#2026-10-14-opencode-1190-de-emphasised-modefooter-row-in-the-left-bar-composer)

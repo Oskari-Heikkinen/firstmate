@@ -612,7 +612,8 @@ TS
 # uses to crash the process under test deterministically. fm_fake_version_tool
 # drops a stub for a tool whose installed version bootstrap gates, so a fixture
 # cannot be reported as an unparseable build simply for answering `--version`
-# with nothing.
+# with nothing. fm_fake_hanging_tool and fm_hang_guarded_wait stand in for a
+# remote call that never answers and prove the code under test bounded it.
 
 fm_fakebin() {
   local dir=$1 fakebin="$1/fakebin"
@@ -711,6 +712,50 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/$tool"
+}
+
+# fm_fake_hanging_tool <fakebin> <tool> <case-pattern> <fallback> <record-dir>
+# Drops a <tool> stub whose call, when " $* " matches the shell case pattern,
+# appends its pid to <record-dir>/hung-pids and waits until
+# <record-dir>/hang-release exists (capped at 300 s), standing in for a remote
+# that never answers; every call then goes on to <fallback> with its argv.
+# fm_hang_guarded_wait reads both files.
+fm_fake_hanging_tool() {
+  local fakebin=$1 tool=$2 pattern=$3 fallback=$4 record=$5
+  cat > "$fakebin/$tool" <<SH
+#!/usr/bin/env bash
+case " \$* " in
+  $pattern)
+    printf '%s\n' "\$\$" >> "$record/hung-pids"
+    n=0
+    while [ ! -e "$record/hang-release" ] && [ "\$n" -lt 3000 ]; do sleep 0.1; n=\$((n + 1)); done ;;
+esac
+exec "$fallback" "\$@"
+SH
+  chmod +x "$fakebin/$tool"
+}
+
+# fm_hang_guarded_wait <pid> <record-dir> <label> [detail-file]
+# Wait for the background <pid> (a child of this shell) to exit and return its
+# status; a failure quotes [detail-file], such as the command's stderr. The 120 s cap is only a hang guard: on reaching it every hung
+# fm_fake_hanging_tool call is released and the case fails. Afterwards the hung
+# call must have been made and none may still be running, so a pass proves the
+# code under test stopped the call at its own bound.
+fm_hang_guarded_wait() {
+  local pid=$1 record=$2 label=$3 detail=${4:-} waited=0 rc=0 hung
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 1200 ]; do sleep 0.1; waited=$((waited + 1)); done
+  if kill -0 "$pid" 2>/dev/null; then
+    : > "$record/hang-release"
+    wait "$pid" 2>/dev/null || true
+    fail "$label: the command did not finish while its call hung"
+  fi
+  wait "$pid" || rc=$?
+  : > "$record/hang-release"
+  [ -s "$record/hung-pids" ] || fail "$label: the hanging call was never made${detail:+: $(cat "$detail" 2>/dev/null)}"
+  while IFS= read -r hung; do
+    ! kill -0 "$hung" 2>/dev/null || fail "$label: hung call $hung outlived its bound"
+  done < "$record/hung-pids"
+  return "$rc"
 }
 
 # fm_fake_claude_outside_read_gate <fakebin>

@@ -20,8 +20,8 @@ It refreshes the main home's clone of a project only through `bin/fm-fleet-sync.
 No agent runs it by hand after a landing; every landing path calls it:
 
 - A recorded PR merge, whether this home merged it or its merge poll saw it, starts it in the background.
-- Task cleanup runs it after refreshing this home's own clone, which covers direct-push and merge-queue landings too.
-- A clean merge-queue landing runs it before cleanup, so the main clone is current even if cleanup refuses.
+- Task cleanup runs it last, after releasing its project and control locks, so a slow remote never holds up a spawn, park pickup or slot return in that project; this covers direct-push and merge-queue landings too.
+- A merge-queue landing whose cleanup refuses runs it after reporting the refusal, so the main clone is current even then.
 
 A secondmate's landing refreshes the main home's clone as well as its own, and reports only into the main home.
 
@@ -35,5 +35,6 @@ The wake names one problem with the main home's clone; it is reported once and n
   Tell the captain its path and age.
   Never remove it yourself; removing it is a project operation that needs the captain's concrete word under hard rule 1.
 - `not refreshed: fetch failed` or `fast-forward failed`: read the quoted git error; a transient network failure clears at the next landing, and anything else goes to the captain as a blocker.
+  `fetch failed: timed out after <n>s`, `refresh timed out after <n>s` and `refresh lock wait timed out after <n>s` mean the remote or another refresh of the same clone did not finish within its bound; treat a single one as a transient network failure, and a repeated one as a blocker naming the remote.
 
 Once the cause is gone, `bin/fm-landed-sync.sh <project>` refreshes the clone and clears the report; nothing else needs acknowledging beyond the wake itself.

@@ -42,10 +42,10 @@ For the exact adopted queue park only, the runner retires its durably captured t
 Cancellation outside that handler still uses ordinary guarded retirement.
 It wakes nothing for the outcomes the glue settles itself:
 
-- A clean landing (every file identical, none differing or dropped) records the per-file counts and evidence path in the task note before cleanup, preserving its existing body, refreshes the clones through `landed-sync`, and runs guarded cleanup.
+- A clean landing (every file identical, none differing or dropped) records the per-file counts and evidence path in the task note before cleanup, preserving its existing body, and runs guarded cleanup, whose own `landed-sync` refreshes the clones.
   The task's `done: landed <main> on <branch> through the merge queue (...)` line is appended before guarded cleanup, so cleanup reads it and closes the backlog itself.
   After cleanup the glue publishes only its parent-channel landed line and never recreates the retired task status log.
-  A cleanup refusal appends a blocker to the still-existing task status naming the landed head, main commit and refusal.
+  A cleanup refusal appends a blocker to the still-existing task status naming the landed head, main commit and refusal, and then refreshes the clones through `landed-sync` itself, because the refused cleanup never reached its refresh.
 - A `culprit` or `conflict` relaunches the worker in its existing copy with the RESULT line and its resume note; the relaunched worker fixes the problem, pushes a new head, and hands it over again.
 - A `precheck-unavailable` (the train could not complete the head's precheck, for example its run budget ran out) is final and landed nothing, but it is no code verdict: it relaunches the worker the same way, with a note saying execution was unavailable, that the queue never retries that head, and to diagnose and hand over a new head.
 - A `dropped` head fails the task with the queue's reason; only the train's exact `superseded by <sha>` note is silent.

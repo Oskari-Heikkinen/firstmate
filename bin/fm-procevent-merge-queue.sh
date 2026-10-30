@@ -53,10 +53,13 @@
 #
 # What settle does, per outcome:
 #   landed-clean     outcome=landed with files=N identical=N and no differ or
-#                    dropped file. Refreshes this home's and the main home's
-#                    project clone through bin/fm-landed-sync.sh, records the
-#                    per-file counts and evidence path in the task's note before
-#                    guarded bin/fm-teardown.sh. Before cleanup it appends
+#                    dropped file. Records the per-file counts and evidence
+#                    path in the task's note before guarded bin/fm-teardown.sh,
+#                    whose own landed-sync refreshes this home's and the main
+#                    home's project clone once its locks are released. Only
+#                    when cleanup refuses (and so never reached that refresh)
+#                    does settle refresh them itself through
+#                    bin/fm-landed-sync.sh, after reporting the refusal. Before cleanup it appends
 #                      done: landed <main40> on <branch> through the merge queue (...)
 #                    so cleanup can read the completion and close the backlog.
 #                    Only after successful cleanup does the glue publish its
@@ -513,9 +516,9 @@ settle_landed_clean() {  # <task> <head> <line>
   fi
   project=$(meta_value "$task" project)
   branch=main
+  # No clone refresh before cleanup: its own landed-sync refreshes the clone
+  # after it releases the project lock, so a refresh here would fetch twice.
   if [ -n "$project" ] && [ -d "$project" ]; then
-    FM_HOME=$FM_HOME "$FLEET_SYNC_BIN" "$project" >/dev/null 2>&1 \
-      || printf 'warning: could not refresh the project clone %s\n' "$project" >&2
     branch=$(default_branch_of "$project")
   fi
   landed="landed $main on $branch through the merge queue (head ${head:0:8}; $check)"
@@ -527,6 +530,12 @@ settle_landed_clean() {  # <task> <head> <line>
     append_status "$task" "blocked [key=merge-queue-cleanup]: head $head landed on main at $main but cleanup refused: $reason" || true
     parent_report "blocked [key=merge-queue-cleanup-$task]: task $task head $head landed on main at $main but cleanup refused: $reason" || true
     printf 'cleanup refused for %s: %s\n' "$task" "$reason" >&2
+    # The refusal stopped cleanup before its refresh, so the landed clone is
+    # refreshed here instead.
+    if [ -n "$project" ] && [ -d "$project" ]; then
+      FM_HOME=$FM_HOME "$FLEET_SYNC_BIN" "$project" >/dev/null 2>&1 \
+        || printf 'warning: could not refresh the project clone %s\n' "$project" >&2
+    fi
     return 1
   fi
   parent_report "done [key=merge-queue-landed-$task-${head:0:8}]: task $task $landed"; rc=$?
