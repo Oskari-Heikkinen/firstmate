@@ -693,7 +693,6 @@ cmd_reserve() {
   local -a args=("$@")
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --root) v2_say refused invalid-argument "--root is not a reserve option: the class map chooses the root"; return ;;
       --volume|--class|--name|--bytes|--pid) [ "$#" -ge 2 ] || break
         case "$1" in --volume) volume=$2 ;; --class) class=$2 ;; esac
         shift 2 ;;
