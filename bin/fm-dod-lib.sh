@@ -677,7 +677,8 @@ EOF
 # CI runs on ci/** pushes (.github/workflows/ci.yml), and homes follow the
 # green pointer that main's passing CI advances (bin/fm-green-pointer.sh), so
 # a landed commit reaches no home until main's CI has passed on it.
-# Its helper-consumer line runs bin/fm-helper-consumers.sh pending --candidate
+# Its step 4 is the helper landing gate (docs/helper-consumers.md), and its
+# helper-consumer line runs bin/fm-helper-consumers.sh pending --candidate
 # before a landing candidate's push and pending right after a landing, against
 # the supervising home (the caller's FM_HOME) so the note reaches that home's root.
 fm_dod_firstmate_direct_push_body() {  # <task-id> <branch> <landing-ref>
@@ -703,8 +704,9 @@ Landing loop:
 1. \`git fetch origin\`, then \`git rebase origin/<default-branch>\`, resolving any conflict in keeping with the task.
 2. Push that head to \`$ci\` and wait for its run. If it goes red, fix it as above and push the fix to \`$ci\` without rebasing, until a run is green.
 3. \`git fetch origin\` again. If \`git merge-base --is-ancestor origin/<default-branch> HEAD\` fails, the default branch moved: go back to step 1, because a rebased head needs its own exact-head \`$ci\` run.
+4. Run \`bin/fm-helper-consumers.sh check-land origin/<default-branch> HEAD\`, the helper landing gate. On exit 3 a declared consumer has not accepted the helper bytes this head lands: do not push; park until it accepts as \`$landing_ref\` says under "Helper acceptance wait", then go back to step 3. On any other exit but 0, append \`blocked [at=<epoch>]: helper landing gate failed: {its last line}\` and stop.
 EOF
-  fm_dod_direct_push_landing_steps 4 "$landing_ref"
+  fm_dod_direct_push_landing_steps 5 "$landing_ref"
   cat <<EOF
 Never push to the default branch a head whose exact-head \`$ci\` run did not pass on top of the current \`origin/<default-branch>\`.
 Before you push a landing candidate to \`$ci\` and before the landing push, run \`${pending_env}bin/fm-helper-consumers.sh pending --candidate HEAD\` from this worktree (\`bin/fm-ci-push.sh land\` runs it for you); right after a landing push succeeds, run \`${pending_env}bin/fm-helper-consumers.sh pending HEAD\` from this worktree. Neither output changes whether the task lands.

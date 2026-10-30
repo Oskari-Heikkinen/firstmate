@@ -18,12 +18,21 @@
 #   - land --rebased-from allows a fast-forward only when the commit list,
 #     each commit's verbatim patch id, the tested run and the main run all
 #     pass, and names every condition that failed.
+#   - land and land --rebased-from refuse a head that lands helper bytes a
+#     declared consumer has not accepted (a rebase that changed them included),
+#     pass it once the declaration accepts or --allow-helper-break names the
+#     consumer, whose logged break then also passes the plain gate the landing
+#     push runs, refuse when the gate fails any other way, log the gate's
+#     records, and never gate a head that leaves helper bytes alone. Every
+#     case reads fixture declarations only.
 #   - rerun-infra reruns failed jobs once when the classifier classes them
 #     all infra, refuses otherwise or without a classifier, refuses while the
 #     run is going, and raises a blocked line for a job that already reran.
 #   - Unreadable or failed gh output refuses; every gh call names the repo.
-#   - land prints and logs the candidate-time consumer notice before the push
-#     and is otherwise unchanged; the landed record is the notice's directory.
+#   - land prints and logs the candidate-time consumer notice before the
+#     landing gate decides, on a head the gate holds too, and is otherwise
+#     unchanged; a failed or hung notice changes no exit; the landed record is
+#     the notice's directory.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -78,14 +87,22 @@ esac
 EOF
 chmod +x "$FAKEBIN/gh"
 
+sha_of_file() { { sha256sum 2>/dev/null || shasum -a 256; } <"$1" | awk '{print $1}'; }
+
 CASE_N=0
-# new_case: a fresh origin with one main commit, a task clone of it, a home
-# whose state holds the task's status file, and an empty run list.
+# new_case: a fresh origin whose main carries the nine-line helper h.sh, a
+# task clone of it, a home whose state holds the task's status file, an empty
+# run list, and an empty fixture declaration folder (DECL), so the helper
+# landing gate never reads a real declaration.
 new_case() {
   CASE_N=$((CASE_N + 1))
   C="$TMP_ROOT/case$CASE_N"
-  mkdir -p "$C"
+  mkdir -p "$C/decl"
+  DECL="$C/decl"
   fm_git_init_commit "$C/seed" >/dev/null
+  printf 'line %s\n' 1 2 3 4 5 6 7 8 9 >"$C/seed/h.sh"
+  git -C "$C/seed" add h.sh
+  git -C "$C/seed" commit -q -m "add h.sh"
   git clone -q --bare "$C/seed" "$C/origin.git"
   git -C "$C/origin.git" config uploadpack.allowAnySHA1InWant true
   git clone -q "$C/origin.git" "$C/work"
@@ -130,6 +147,17 @@ add_run() {
       created_at: $created, event: "push", run_attempt: $att, head_repository: {full_name: $repo}}]' \
     "$GHD/runs.json" >"$GHD/runs.json.new"
   mv "$GHD/runs.json.new" "$GHD/runs.json"
+}
+
+# declare_h <consumer> <accepted sha256>...: a fixture declaration of h.sh as
+# the other clone holds it, the same project as the task's clone.
+declare_h() {
+  local id=$1 sha
+  shift
+  {
+    printf '%s\n' 'schema=fm-helper-consumer/v1' "consumer=$id" 'owner=other-mate' "helper=$C/other/h.sh"
+    for sha in "$@"; do printf 'accept=%s\n' "$sha"; done
+  } >"$DECL/$id.conf"
 }
 
 run_push() {  # <args...>: sets RC, OUT, ERR
@@ -267,6 +295,97 @@ expect_code 0 "$RC" "land replaces a diverged head on its own ci branch"
 assert_equals "$(head_sha)" "$(remote_sha "ci/$T")" "the new head is on ci/<task>"
 assert_grep "refused as non-fast-forward" "$HOMEDIR/state/$T.ci-push.log" "the delete-and-push is logged"
 pass "a non-fast-forward refusal deletes the task's own ci branch and pushes again"
+
+# --- helper landing gate -----------------------------------------------------
+
+new_case
+H1=$(sha_of_file "$WORK/h.sh")
+declare_h pinned "$H1"
+printf 'line 0\n' >"$WORK/h.sh"
+git -C "$WORK" commit -q -am "task: change h.sh"
+H2=$(sha_of_file "$WORK/h.sh")
+run_push land "$T"
+expect_code 1 "$RC" "land refuses a head whose helper bytes a consumer has not accepted"
+assert_contains "$OUT" "helper gate: hold"$'\t'"$C/other/h.sh"$'\t'"$H2"$'\t'"pinned" "the hold names the helper, version and consumer"
+assert_contains "$ERR" "check-land --condition $(git -C "$WORK" rev-parse origin/main) $(head_sha) exits 0" "the refusal names the park condition"
+assert_equals "" "$(remote_sha "ci/$T")" "an unaccepted helper change is not pushed"
+assert_grep "helper gate (exit 3)" "$HOMEDIR/state/$T.ci-push.log" "the gate's hold is logged"
+pass "land refuses a head that lands helper bytes a declared consumer has not accepted"
+
+declare_h pinned "$H1" "$H2"
+run_push land "$T"
+expect_code 0 "$RC" "land pushes once the declaration accepts the head's helper bytes"
+assert_equals "$(head_sha)" "$(remote_sha "ci/$T")" "the accepted head is on ci/<task>"
+pass "land passes a helper change once every declared consumer accepts it"
+
+new_case
+declare_h pinned "$(sha_of_file "$WORK/h.sh")"
+printf 'line 0\n' >"$WORK/h.sh"
+git -C "$WORK" commit -q -am "task: change h.sh"
+run_push try "$T" --allow-helper-break pinned
+expect_code 2 "$RC" "--allow-helper-break is a land option only"
+run_push land "$T" --allow-helper-break
+expect_code 2 "$RC" "--allow-helper-break without a consumer is a usage error"
+run_push land "$T" --allow-helper-break ../pinned
+expect_code 2 "$RC" "--allow-helper-break with a consumer that is not an id is a usage error"
+assert_equals "" "$(remote_sha "ci/$T")" "a usage error pushes nothing"
+run_push land "$T" --allow-helper-break pinned
+expect_code 0 "$RC" "the operator's break lets an unaccepted helper change land"
+assert_contains "$OUT" "helper gate: break"$'\t'"$C/other/h.sh" "the break is reported"
+assert_grep "helper gate (exit 0): break" "$HOMEDIR/state/$T.ci-push.log" "the break is logged"
+assert_equals "$(head_sha)" "$(remote_sha "ci/$T")" "the broken-through head is on ci/<task>"
+RC=0
+(cd "$WORK" && FM_HOME="$HOMEDIR" FM_HELPER_CONSUMERS="$DECL" FM_HELPER_VERSIONS="$C/versions" \
+  "$ROOT/bin/fm-helper-consumers.sh" check-land --repo . origin/main HEAD) >/dev/null 2>&1 || RC=$?
+expect_code 0 "$RC" "the logged break lets the Definition of done's own gate pass the landing push"
+pass "land --allow-helper-break lets the named consumer's hold through and logs it"
+
+new_case
+declare_h pinned "$(sha_of_file "$WORK/h.sh")"
+printf 'line 0\n' >"$WORK/h.sh"
+git -C "$WORK" commit -q -am "task: change h.sh"
+mkdir -p "$C/versions/holds.log"
+run_push land "$T" --allow-helper-break pinned
+expect_code 1 "$RC" "a gate failure other than a hold refuses the landing"
+assert_contains "$ERR" "the helper landing gate failed (exit 2)" "the failed gate is named"
+assert_grep "helper gate (exit 2)" "$HOMEDIR/state/$T.ci-push.log" "the failed gate is logged"
+assert_equals "" "$(remote_sha "ci/$T")" "nothing is pushed when the gate fails"
+pass "land refuses when the helper landing gate fails, here on a break it cannot log"
+
+new_case
+declare_h pinned
+printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=typo' 'owner=x' "helper=$C/other/h.sh" 'acept=abc' >"$DECL/typo.conf"
+commit_file a.txt one "task: add a"
+run_push land "$T"
+expect_code 0 "$RC" "a head that leaves helper bytes alone is not gated"
+assert_not_contains "$OUT" "helper gate: hold" "an untouched helper is not held"
+assert_not_contains "$OUT" "helper gate: unproven" "an untouched helper is not held by a malformed declaration"
+assert_equals "$(head_sha)" "$(remote_sha "ci/$T")" "the untouched head is on ci/<task>"
+pass "land never gates a head that leaves every declared helper's bytes alone"
+
+new_case
+declare_h pinned "$(sha_of_file "$WORK/h.sh")"
+mv "$C/other" "$C/other-moved"
+printf 'line 0\n' >"$WORK/h.sh"
+git -C "$WORK" commit -q -am "task: change h.sh"
+run_push land "$T"
+expect_code 1 "$RC" "a head changing a file named like a helper that cannot be located refuses"
+assert_contains "$OUT" "helper gate: malformed"$'\t'"$DECL/pinned.conf" "the stale declaration is named"
+assert_contains "$OUT" "helper gate: unproven"$'\t'"$C/other/h.sh" "the same-named change holds"
+assert_equals "" "$(remote_sha "ci/$T")" "nothing is pushed when a stale declaration holds"
+mv "$C/other-moved" "$C/other"
+pass "land holds a head that may change a helper whose declaration is stale"
+
+new_case
+declare_h pinned "$(sha_of_file "$WORK/h.sh")"
+mv "$C/other" "$C/other-moved"
+commit_file a.txt one "task: add a"
+run_push land "$T"
+expect_code 0 "$RC" "a stale declaration never holds a head that changes no same-named file"
+assert_contains "$OUT" "helper gate: malformed"$'\t'"$DECL/pinned.conf" "the stale declaration is named on a passing head"
+assert_equals "$(head_sha)" "$(remote_sha "ci/$T")" "the unrelated head is on ci/<task>"
+mv "$C/other-moved" "$C/other"
+pass "land passes a head unrelated to a helper whose declaration is stale"
 
 # --- land --full --------------------------------------------------------------
 
@@ -406,6 +525,41 @@ run_push land "$T" --rebased-from "$TESTED"
 expect_code 1 "$RC" "a dropped commit is refused"
 assert_contains "$ERR" "commit-list FAILED: the tested range has 2 commits" "the count mismatch is named"
 pass "land --rebased-from refuses a range with a different commit count"
+
+# A clean rebase whose patch ids are unchanged still changes the helper bytes
+# the head lands when main changed the same helper far from the task's hunk.
+rebased_case
+TESTED_H=$(git -C "$WORK" rev-parse origin/main)
+git -C "$WORK" reset -q --hard "$TESTED"
+printf 'line 0\n' >"$WORK/h.sh.new"
+sed 1d "$WORK/h.sh" >>"$WORK/h.sh.new"
+mv "$WORK/h.sh.new" "$WORK/h.sh"
+git -C "$WORK" commit -q -am "task: change h.sh line 1"
+TESTED=$(head_sha)
+add_run 204 "ci/$T" "$TESTED" completed success
+HT=$(sha_of_file "$WORK/h.sh")
+git -C "$C/other" pull -q --ff-only origin main
+sed 's/^line 9$/line nine/' "$C/other/h.sh" >"$C/other/h.sh.new"
+mv "$C/other/h.sh.new" "$C/other/h.sh"
+git -C "$C/other" commit -q -am "main: change h.sh line 9"
+git -C "$C/other" push -q origin HEAD:main
+HM=$(sha_of_file "$C/other/h.sh")
+git -C "$WORK" fetch -q origin
+git -C "$WORK" rebase -q origin/main
+MAIN=$(git -C "$WORK" rev-parse origin/main)
+add_run 205 main "$MAIN" completed success
+declare_h pinned "$(git -C "$WORK" show "$TESTED_H:h.sh" | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')" "$HT" "$HM"
+run_push land "$T" --rebased-from "$TESTED"
+expect_code 1 "$RC" "a rebase that changed accepted helper bytes is refused"
+assert_contains "$OUT" "patch-id ok" "the rebase left the patches unchanged"
+assert_contains "$OUT" "main-run ok" "main is green"
+assert_contains "$ERR" "helper-acceptance FAILED" "the helper-acceptance condition is named"
+assert_contains "$ERR" "failed: helper-acceptance" "the refusal names only the helper condition"
+declare_h pinned "$HT" "$HM" "$(sha_of_file "$WORK/h.sh")"
+run_push land "$T" --rebased-from "$TESTED"
+expect_code 0 "$RC" "the rebased bytes land once accepted"
+assert_contains "$OUT" "helper-acceptance ok" "the helper condition passes"
+pass "land --rebased-from needs a new acceptance when the rebase changed the helper bytes"
 
 # --- unreadable gh ------------------------------------------------------------
 
@@ -634,20 +788,27 @@ assert_absent "$C/versions" "land with no declarations writes no record"
 git -C "$WORK" push -q origin ":refs/heads/ci/$T"
 declare_disk_room
 run_push land "$T"
-expect_code 0 "$RC" "land with an unaccepted helper change still pushes"
+expect_code 1 "$RC" "the landing gate holds an unaccepted helper change"
 NEW_SHA=$(sha256_of "$WORK/bin/fm-disk-room.sh")
 NOTICE="helper-candidate: bin/fm-disk-room.sh@${NEW_SHA:0:12} unaccepted by pinned; landing holds every home's update until they accept"
-assert_equals "$NOTICE"$'\n'"$BASE_OUT" "$OUT" "land output is the notice followed by the unchanged output"
+assert_equals "$NOTICE" "$(printf '%s\n' "$OUT" | head -n 1)" "the notice comes before the gate's hold"
+assert_contains "$OUT" "helper gate: hold"$'\t'"$C/other/bin/fm-disk-room.sh"$'\t'"$NEW_SHA"$'\t'"pinned" "the gate holds the noticed version"
+assert_equals "" "$(remote_sha "ci/$T")" "the held head is not pushed"
+run_push land "$T" --allow-helper-break pinned
+expect_code 0 "$RC" "land with the operator's break pushes the unaccepted helper change"
+assert_contains "$OUT" "helper gate: break"$'\t'"$C/other/bin/fm-disk-room.sh" "the break is reported"
+assert_equals "$NOTICE"$'\n'"$BASE_OUT" "$(printf '%s\n' "$OUT" | grep -v '^fm-ci-push: helper gate: ')" \
+  "apart from the gate's lines, land output is the notice followed by the unchanged output"
 assert_equals "$BASE_ERR" "$ERR" "land stderr is unchanged"
 assert_equals "$(head_sha)" "$(remote_sha "ci/$T")" "the head is pushed"
-pass "land output and exit are unchanged apart from the candidate notice"
+pass "land prints the candidate notice before the landing gate decides, and its output is otherwise unchanged"
 
 # Acceptance: the notice comes before the push, and the post-landing record is
 # the directory the notice wrote.
 helper_case
 declare_disk_room
-run_push land "$T"
-expect_code 0 "$RC" "the fixture ship lands on its ci branch"
+run_push land "$T" --allow-helper-break pinned
+expect_code 0 "$RC" "the fixture ship lands on its ci branch with the operator's break"
 NEW_SHA=$(sha256_of "$WORK/bin/fm-disk-room.sh")
 RECORD="$C/versions/fm-disk-room.sh/$NEW_SHA"
 assert_equals "$(head_sha)" "$(jq -r .candidate "$RECORD/pending.json")" "the notice recorded the candidate head"
@@ -666,8 +827,8 @@ assert_equals "1" "$(find "$C/versions" -name pending.json | wc -l | tr -d ' ')"
 [ -f "$RECORD/note-filed" ] || fail "the post-landing record lost its note-filed marker"
 pass "a fixture ship touching bin/fm-disk-room.sh gets the notice before its push, and lands into the same record"
 
-# land --rebased-from runs the same notice right before its verdict, and its
-# output and exit are otherwise unchanged.
+# land --rebased-from runs the same notice right before its verdict, on a head
+# the landing gate holds too, and its output is otherwise unchanged.
 helper_case
 TESTED=$(head_sha)
 add_run 211 "ci/$T" "$TESTED" completed success
@@ -679,24 +840,30 @@ expect_code 0 "$RC" "--rebased-from with no declarations"
 BASE_OUT=$OUT BASE_ERR=$ERR
 declare_disk_room
 run_push land "$T" --rebased-from "$TESTED"
-expect_code 0 "$RC" "--rebased-from with an unaccepted helper change is still allowed"
+expect_code 1 "$RC" "--rebased-from holds an unaccepted helper change"
 NEW_SHA=$(sha256_of "$WORK/bin/fm-disk-room.sh")
 NOTICE="helper-candidate: bin/fm-disk-room.sh@${NEW_SHA:0:12} unaccepted by pinned; landing holds every home's update until they accept"
-assert_equals "$(printf '%s\n' "$BASE_OUT" | sed '$d')"$'\n'"$NOTICE"$'\n'"$(printf '%s\n' "$BASE_OUT" | tail -n 1)" "$OUT" \
-  "--rebased-from output is the unchanged output with the notice before its verdict"
+assert_contains "$OUT" "$NOTICE" "--rebased-from notices a head the gate holds"
+assert_contains "$ERR" "failed: helper-acceptance" "the refusal names the helper condition"
+assert_grep "land $NOTICE" "$HOMEDIR/state/$T.ci-push.log" "--rebased-from logs the notice on a held head"
+run_push land "$T" --rebased-from "$TESTED" --allow-helper-break pinned
+expect_code 0 "$RC" "--rebased-from with the operator's break allows the unaccepted helper change"
+assert_equals "$(printf '%s\n' "$BASE_OUT" | sed '$d')"$'\n'"$NOTICE"$'\n'"$(printf '%s\n' "$BASE_OUT" | tail -n 1)" \
+  "$(printf '%s\n' "$OUT" | grep -v '^fm-ci-push: helper gate: ')" \
+  "apart from the gate's lines, --rebased-from output is the unchanged output with the notice before its verdict"
 assert_equals "$BASE_ERR" "$ERR" "--rebased-from stderr is unchanged"
-assert_grep "land $NOTICE" "$HOMEDIR/state/$T.ci-push.log" "--rebased-from logs the notice"
 assert_equals "" "$(remote_sha "ci/$T")" "--rebased-from still pushes nothing"
-pass "land --rebased-from prints and logs the candidate notice and is otherwise unchanged"
+pass "land --rebased-from prints and logs the candidate notice, held or not, and is otherwise unchanged"
 
 # A notice run that fails or hangs still changes neither land's nor land
-# --rebased-from's exit: a copy of this script beside a consumers stub.
-FAILED_LINE="helper-candidate: notice failed (exit 2); the landing goes ahead, and the post-landing record still runs"
+# --rebased-from's exit: a copy of this script beside a consumers stub that
+# fails or hangs on pending only and hands the landing gate to the real script.
+FAILED_LINE="helper-candidate: notice failed (exit 2); the helper landing gate decides the landing, and the post-landing record still runs"
 STUBBIN="$TMP_ROOT/stubbin"
 mkdir -p "$STUBBIN"
 cp "$ROOT/bin/fm-ci-push.sh" "$ROOT/bin/fm-pr-lib.sh" "$ROOT/bin/fm-timeout-lib.sh" "$STUBBIN/"
-printf '%s\n' '#!/usr/bin/env bash' "echo 'fm-helper-consumers: stub failure' >&2" 'exit 2' \
-  >"$STUBBIN/fm-helper-consumers.sh"
+printf '%s\n' '#!/usr/bin/env bash' "[ \"\$1\" = pending ] || exec '$ROOT/bin/fm-helper-consumers.sh' \"\$@\"" \
+  "echo 'fm-helper-consumers: stub failure' >&2" 'exit 2' >"$STUBBIN/fm-helper-consumers.sh"
 chmod +x "$STUBBIN/fm-helper-consumers.sh"
 REAL_PUSH=$PUSH
 helper_case
@@ -728,7 +895,8 @@ expect_code 0 "$RC" "--rebased-from with a failing notice run is still allowed"
 assert_equals "$(printf '%s\n' "$BASE_OUT" | sed '$d')"$'\n'"fm-helper-consumers: stub failure"$'\n'"$FAILED_LINE"$'\n'"$(printf '%s\n' "$BASE_OUT" | tail -n 1)" "$OUT" \
   "--rebased-from output is the unchanged output with the failure lines before its verdict"
 assert_equals "$BASE_ERR" "$ERR" "--rebased-from stderr is unchanged by a failing notice run"
-printf '%s\n' '#!/usr/bin/env bash' 'sleep 30' >"$STUBBIN/fm-helper-consumers.sh"
+printf '%s\n' '#!/usr/bin/env bash' "[ \"\$1\" = pending ] || exec '$ROOT/bin/fm-helper-consumers.sh' \"\$@\"" 'sleep 30' \
+  >"$STUBBIN/fm-helper-consumers.sh"
 helper_case
 run_push land "$T"
 expect_code 0 "$RC" "land with no declarations"
@@ -740,7 +908,7 @@ run_push land "$T"
 unset FM_TEST_HELPER_NOTICE_TIMEOUT
 PUSH=$REAL_PUSH
 expect_code 0 "$RC" "land with a hung notice run still pushes"
-assert_equals "helper-candidate: notice stopped after 1s; the landing goes ahead, and the post-landing record still runs"$'\n'"$BASE_OUT" "$OUT" \
+assert_equals "helper-candidate: notice stopped after 1s; the helper landing gate decides the landing, and the post-landing record still runs"$'\n'"$BASE_OUT" "$OUT" \
   "land output is the stop line followed by the unchanged output"
 assert_equals "$BASE_ERR" "$ERR" "land stderr is unchanged by a hung notice run"
 assert_equals "$(head_sha)" "$(remote_sha "ci/$T")" "the head is pushed despite the hung notice run"
