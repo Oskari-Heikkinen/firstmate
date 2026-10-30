@@ -39,6 +39,7 @@ It selects the tests its head commit names in `Fm-Try:` trailers (test files or 
 Without such a trailer it runs the changed-area selection over the `gate`, `full` and `weekly` tiers, lists any changed path the map cannot place, and skips it.
 A try run never escalates to a wider layout, and its timing never becomes a packing baseline.
 A static failure on a try run is annotated as a landing guard, because the same head would fail it on `ci/<task>`.
+Every layout but `skip` also runs the helper contract self-test job when the plan names a pinned helper to check: on `ci` and `try` the ones the push changes, on `full` and `weekly` all of them; [`helper-consumers.md`](helper-consumers.md#the-contract-self-test-gate) owns the gate.
 Lint and test jobs wait only on `plan`, the static job waits on nothing, and the timing aggregate and the weekly alert wait on the test jobs.
 
 `main` runs the full suite on every push that did not already pass it, and `green-pointer.yml` advances only on a successful `push` run, so a weekly run never moves the green pointer.
@@ -112,7 +113,7 @@ A job that reaches its tier bound needs investigation and a distribution or runt
 
 | Tier | Jobs | Bound | Rationale |
 |---|---|---|---|
-| Fast | plan, static checks, timing aggregate, weekly alert | 5 to 10 minutes | Seconds-long work, so the tripwire only catches a hung runner. |
+| Fast | plan, static checks, helper contract self-tests, timing aggregate, weekly alert | 5 to 10 minutes | Seconds-long work, so the tripwire only catches a hung runner. |
 | Normal | lint partitions, test shards, changed area, macOS stock Bash, test-file lint | 30 minutes, one value shared by every job in the tier | One shared hang tripwire keeps every ordinary test and lint job on the same policy instead of letting packing estimates or one-off caps set the bound. |
 | Heavy | Herdr | family-run step 20 minutes under a 75-minute job-level last-resort backstop | The step tripwire fails a wedged suite while the `always()` cleanup and timing upload still run, and the job cap only catches a hang outside that step. |
 

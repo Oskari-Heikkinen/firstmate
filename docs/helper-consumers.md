@@ -13,6 +13,15 @@ A consumer accepts a version through an independent review of those exact bytes;
 Landing does not wait for acceptance: a change to the helper lands on the default branch once its own gates pass, and [the update gate](#the-update-gate) then holds every update that would deploy it until its consumers accept it.
 Never pin a Firstmate checkout without a declaration: an undeclared pin is invisible to Firstmate, and the next update that touches the helper stops it.
 
+## The contract self-test gate
+
+A pinned helper that serves an interface version also ships an executable contract for each version it serves, its `--self-test VERSION`.
+CI runs every version the changed helper's own copy still serves through that self-test on any head that changes the helper or a file it loads under a pin, hermetically, and fails naming each failing version, so a new byte version cannot land without passing every contract it claims.
+The `helper-selftest` job of `.github/workflows/ci.yml` runs it on each `ci/**` push that changes a gated helper, which includes the exact-head run a landing needs, and on every full and weekly run; a push that changes none skips the job without a runner.
+A version the helper's `--interface VERSION` answers with exit 1 is reported as not served and is not run: dropping a version is a planned migration under [the rule](#the-rule), never a gate failure.
+Passing the gate is evidence for each consumer's review, never acceptance.
+`bin/fm-helper-selftest.sh` owns the gated helpers and the files each pins, the protocol a gated helper serves, the hermetic run and the output in its header.
+
 ## Declarations
 
 A consumer declares itself in one file, `<consumer-id>.conf`, in `${XDG_CONFIG_HOME:-$HOME/.config}/firstmate/helper-consumers.d/` (`FM_HELPER_CONSUMERS` overrides the directory).

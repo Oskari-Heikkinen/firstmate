@@ -42,7 +42,10 @@
 # changed (true when the ci layout's changed-area job has portable tests);
 # herdr_paths (the real-Herdr selection, space-separated; --from-list entries
 # on try); try_list (the try shards' --from-list entries, space-separated, and
-# empty on every other layout).
+# empty on every other layout); helpers (the pinned helpers whose contract
+# self-tests run, space-separated: on ci and try the ones the push changes, as
+# bin/fm-helper-selftest.sh select decides, every gated helper when that
+# cannot be read and on the full and weekly layouts, none on skip).
 #
 # A ci/try/** selection comes from the head commit's trailers:
 #   Fm-Try: <token>[,<token>...]
@@ -86,6 +89,7 @@ set -f
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 RUNNER="$ROOT/bin/fm-test-run.sh"
+SELFTEST="$ROOT/bin/fm-helper-selftest.sh"
 
 EVENT=
 REF=
@@ -469,6 +473,21 @@ case "$layout:$REF" in
   full:refs/heads/main) lint='["1of3","2of3","3of3"]' ;;
   full:*) lint='["changed","1of3","2of3","3of3"]' ;;
 esac
+helpers=
+case "$layout" in
+  ci|try)
+    if ! helpers=$("$SELFTEST" select --base "$BASE" --sha "$HEAD_SHA"); then
+      summary "Could not read which pinned helpers changed: every helper's contract self-tests run."
+      helpers=$("$SELFTEST" select --all) || refuse "bin/fm-helper-selftest.sh could not list the gated helpers"
+    fi
+    ;;
+  full|weekly)
+    helpers=$("$SELFTEST" select --all) || refuse "bin/fm-helper-selftest.sh could not list the gated helpers"
+    ;;
+esac
+helpers=$(printf '%s\n' "$helpers" | grep . | tr '\n' ' ' || true)
+helpers=${helpers% }
+summary "Helper contract self-tests: ${helpers:-none (no gated helper changed)}"
 summary "Layout: $layout (event $EVENT, ref $REF)"
 out layout "$layout"
 out tiers "$tiers"
@@ -477,4 +496,5 @@ out lint "$lint"
 out changed "$changed"
 out herdr_paths "$herdr_paths"
 out try_list "$try_list"
+out helpers "$helpers"
 [ -z "$RECORD" ] || write_record

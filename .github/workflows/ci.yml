@@ -38,6 +38,7 @@ jobs:
       changed: ${{ steps.layout.outputs.changed }}
       herdr_paths: ${{ steps.layout.outputs.herdr_paths }}
       try_list: ${{ steps.layout.outputs.try_list }}
+      helpers: ${{ steps.layout.outputs.helpers }}
       baseline: ${{ steps.baseline.outputs.found }}
     steps:
       - uses: actions/checkout@v6
@@ -252,6 +253,27 @@ jobs:
             ${{ runner.temp }}/fm-lint/lint-${{ matrix.scope }}.tsv
             ${{ runner.temp }}/fm-lint/lint-${{ matrix.scope }}.roots.tsv
           if-no-files-found: warn
+
+  # Every interface version each pinned helper the push changes still serves,
+  # through the helper's own --self-test; bin/fm-helper-selftest.sh owns the
+  # gated helpers, the protocol and the hermetic run. No changed helper: the
+  # job is skipped without a runner.
+  helper-selftest:
+    name: Helper contract self-tests
+    needs: plan
+    if: needs.plan.outputs.helpers != ''
+    runs-on: ubuntu-latest
+    # Fast tier: a few seconds of self-tests.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run every served version's self-test
+        env:
+          HELPERS: ${{ needs.plan.outputs.helpers }}
+        run: |
+          set -eu
+          read -ra helpers <<<"$HELPERS"
+          bin/fm-helper-selftest.sh run "${helpers[@]}"
 
   # The plan's tiers, or a try run's named tests, packed into duration-balanced
   # shards by bin/fm-test-run.sh --shard. Real Herdr stays in tests-herdr.
@@ -738,6 +760,7 @@ jobs:
     needs:
       - plan
       - static
+      - helper-selftest
       - tests
       - tests-timing-aggregate
       - macos-stock-bash

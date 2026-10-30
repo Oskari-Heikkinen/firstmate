@@ -265,6 +265,7 @@ While the storage admission site policy (`FM_DISK_ROOM_POLICY`, by default `conf
 - Readers move first: write the strict policy only after every v1 or v2 consumer of that copy has moved, under [`handoff-coverage.md`](handoff-coverage.md#versions)'s versioning rule.
 
 Before trusting a new copy, a consumer runs the self-test for its pinned version.
+CI already runs every served version's self-test on any change to this script or a file it pins, as [`helper-consumers.md`](helper-consumers.md#the-contract-self-test-gate) owns.
 Each supported version has a hermetic probe using temp state and Linux-only readings, without Windows processes or reservations outside that temp state.
 A probe fails explicitly if its required measurement is unavailable.
 

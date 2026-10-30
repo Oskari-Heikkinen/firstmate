@@ -66,6 +66,8 @@ spawn-merge test tests/fm-task-delivery.test.sh
 
 ci-plan script bin/fm-ci-plan.sh
 ci-plan test tests/fm-ci-plan.test.sh
+helper-selftest script bin/fm-helper-selftest.sh
+helper-selftest test tests/fm-helper-selftest.test.sh
 
 ci-push script bin/fm-ci-push.sh
 ci-push test tests/fm-ci-push.test.sh

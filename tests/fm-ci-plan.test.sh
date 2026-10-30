@@ -34,8 +34,9 @@ init_fixture() {
   mkdir -p "$REPO/bin" "$REPO/tests" "$REPO/src" "$STUB_BIN"
   cp "$PLAN" "$REPO/bin/fm-ci-plan.sh"
   cp "$ROOT/bin/fm-test-run.sh" "$REPO/bin/fm-test-run.sh"
+  cp "$ROOT/bin/fm-helper-selftest.sh" "$REPO/bin/fm-helper-selftest.sh"
   cp "$ROOT/tests/git-config-helpers.sh" "$REPO/tests/"
-  chmod +x "$REPO/bin/fm-ci-plan.sh" "$REPO/bin/fm-test-run.sh"
+  chmod +x "$REPO/bin/fm-ci-plan.sh" "$REPO/bin/fm-test-run.sh" "$REPO/bin/fm-helper-selftest.sh"
   {
     printf 'static tests/fm-static-probe.test.sh\n'
     printf 'gate tests/fm-gate-probe.test.sh\n'
@@ -137,12 +138,14 @@ test_weekly_and_full_layouts() {
   fresh_work
   plan_run weekly --event schedule || fail "schedule plan failed: $(cat "$TMP/weekly.log")"
   expect_layout weekly weekly weekly,live '[1,2,3,4,5]' '[]'
+  expect_output weekly helpers bin/fm-disk-room.sh
   plan_run dispatch --event workflow_dispatch || fail "dispatch plan failed"
   expect_output dispatch layout weekly
   plan_run cifull --event push --ref refs/heads/ci/full/demo || fail "ci/full plan failed"
   expect_layout cifull full gate,full '[1,2,3,4,5,6,7]' '["changed","1of3","2of3","3of3"]'
   expect_output cifull try_list ''
   expect_output cifull herdr_paths ''
+  expect_output cifull helpers bin/fm-disk-room.sh
   assert_grep "Layout: full (event push, ref refs/heads/ci/full/demo)" "$TMP/cifull.sum" "the summary must name the layout"
   pass "schedule and dispatch run weekly; ci/full runs the main layout"
 }
@@ -219,6 +222,7 @@ test_main_skips_after_a_full_ci_pass() {
   set_plan 101 full ci/x
   main_push fullci
   expect_layout fullci skip '' '[]' '[]'
+  expect_output fullci helpers ''
   assert_grep "Suites skipped: https://github.com/o/r/actions/runs/101 (ci/x) already passed this workflow on the full layout at \`$SHA\`." \
     "$TMP/fullci.sum" "a skip must name the run it trusts"
   assert_grep "run download 101 -R o/r -n fm-ci-plan" "$W/calls" "the record is read from the named repository's artifact"
@@ -387,7 +391,10 @@ test_ci_layout_and_its_escalations() {
   expect_output ci changed true
   expect_output ci herdr_paths 'tests/fm-backend-herdr-launcher-workspace-e2e.test.sh tests/fm-backend-herdr-presentation-e2e.test.sh '
   expect_output ci try_list ''
+  expect_output ci helpers ''
   assert_grep "Changed-area tier-2 tests: 2" "$TMP/ci.sum" "the ci summary must count the changed area"
+  assert_grep "Helper contract self-tests: none (no gated helper changed)" "$TMP/ci.sum" \
+    "the summary must say no helper self-test runs"
 
   printf '\n' >>"$REPO/src/unmapped.ts"
   commit_msg <<<"unmapped"
@@ -508,6 +515,34 @@ test_try_without_trailers_never_widens() {
   pass "a try push without trailers runs its changed area, skips unmapped paths and never escalates"
 }
 
+test_helpers_follow_the_change() {
+  fresh_work
+  printf 'one\n' >"$REPO/bin/fm-disk-room.sh"
+  commit_msg <<<"helper"
+  try_push tryhelper || fail "try plan failed: $(cat "$TMP/tryhelper.log")"
+  expect_output tryhelper helpers bin/fm-disk-room.sh
+  assert_grep "Helper contract self-tests: bin/fm-disk-room.sh" "$TMP/tryhelper.sum" "the summary must name the helper"
+  plan_run cihelper --event push --ref refs/heads/ci/demo || fail "ci plan failed: $(cat "$TMP/cihelper.log")"
+  expect_output cihelper helpers bin/fm-disk-room.sh
+
+  fresh_work
+  printf 'one\n' >"$REPO/bin/fm-storage-admission-lib.sh"
+  commit_msg <<<"pinned sibling"
+  try_push trysibling || fail "try plan failed: $(cat "$TMP/trysibling.log")"
+  expect_output trysibling helpers bin/fm-disk-room.sh
+
+  # A selector that cannot read the diff but can list the table.
+  fresh_work
+  printf '#!/usr/bin/env bash\ncase "$*" in *--all*) echo bin/fm-disk-room.sh ;; *) exit 1 ;; esac\n' \
+    >"$REPO/bin/fm-helper-selftest.sh"
+  commit_msg <<<"unreadable diff"
+  try_push trybaddiff || fail "try plan failed: $(cat "$TMP/trybaddiff.log")"
+  expect_output trybaddiff helpers bin/fm-disk-room.sh
+  assert_grep "Could not read which pinned helpers changed: every helper's contract self-tests run." "$TMP/trybaddiff.sum" \
+    "an unreadable diff must run every helper and say so"
+  pass "the helpers output names a changed gated helper or its pinned sibling, and every helper when the diff is unreadable"
+}
+
 test_usage_errors() {
   local rc args
   local -a cases=(
@@ -545,4 +580,5 @@ test_try_named_by_one_trailer
 test_try_named_by_several_trailers
 test_try_refuses_malformed_trailers
 test_try_without_trailers_never_widens
+test_helpers_follow_the_change
 test_usage_errors
