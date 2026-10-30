@@ -37,8 +37,8 @@ Check the install with `fm-disk-room.sh status`: a `last compaction:` line shows
 - Old handled process-event results and acknowledged inbox records each hold a 1 MiB block of their own; `bin/fm-records-consolidate.sh --dry-run --state <state-dir>` prints, per tree, the files, bytes and blocks that moving them into one log would empty, and its header owns the trees, the 7-day age limit and the exit codes.
   Nothing schedules it, and a real run changes where those records live, so running it without `--dry-run` on a live home is the operator's call: bring the dry-run lines.
 - Around a distro re-import, run `bin/fm-reimport-rekey.sh record` in each parked home before the export and `apply` before its first session start, so status logs are not rescanned from the start; [`docs/disk-room.md`](../../../docs/disk-room.md#re-importing-the-distro) owns the steps.
-- A home that pins `fm-disk-room.sh` pins its consumer interface, not its bytes, and runs the self-test for that version before trusting a new copy; `docs/disk-room.md` "Consumer interface" owns the rule.
-  A helper-consumer declaration still accepts exact bytes ([`docs/helper-consumers.md`](../../../docs/helper-consumers.md)), so a byte change with an unchanged interface still holds the update until that consumer accepts the new copy; `updatefirstmate` owns that hold.
+- A home that pins `fm-disk-room.sh` accepts its exact bytes through the helper-consumer gate ([`docs/helper-consumers.md`](../../../docs/helper-consumers.md)), so any byte change, even with an unchanged interface, holds the update until that consumer accepts the new copy; `updatefirstmate` owns that hold.
+  The interface version and self-test are evidence for the consumer's review, and writing a strict C: terms policy drops v1 and v2; `docs/disk-room.md` "Consumer interface" owns both.
 
 ## What a low reading means and who acts
 

@@ -9,6 +9,8 @@ This page is the owner of the rule that prevents that, the declaration format a 
 
 A Firstmate helper that another home runs under a pin is a reviewed helper with declared consumers.
 Firstmate deploys a new version of it to the path those consumers run only after every declared consumer accepts that exact version.
+A consumer accepts a version through an independent review of those exact bytes; an interface version or self-test the helper advertises is evidence for that review, never acceptance by itself.
+Landing does not wait for acceptance: a change to the helper lands on the default branch once its own gates pass, and [the update gate](#the-update-gate) then holds every update that would deploy it until its consumers accept it.
 Never pin a Firstmate checkout without a declaration: an undeclared pin is invisible to Firstmate, and the next update that touches the helper stops it.
 
 ## Declarations

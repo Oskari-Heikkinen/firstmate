@@ -247,14 +247,22 @@ The script header lists the cursor families it covers, the record format, each o
 
 ## Consumer interface
 
-`fm-disk-room.sh --interface` prints the latest consumer interface this copy serves, now `fm-disk-room-interface/v2`, while an explicit version query can confirm v1 support.
-A consumer pins an interface, not the script's bytes, so an update that still serves its interface needs no new review on the consumer's side.
-The consumer's declaration and acceptance stay as [`helper-consumers.md`](helper-consumers.md) describes; what the consumer accepts is a copy that serves its pinned version.
+`fm-disk-room.sh --interface` prints the latest consumer interface this copy serves, now `fm-disk-room-interface/v3`, while an explicit version query can confirm v1 or v2 support.
+A consumer that pins this script accepts exact bytes through the helper-consumer gate: every change to the bytes, with or without a new interface version, waits for each declared consumer to accept that exact version, as [`helper-consumers.md`](helper-consumers.md) owns.
+The interface version does not accept anything by itself.
+It is a compatibility signal for the consumer's review of each new version, which checks the calls the consumer makes against the version it pins, and it marks a change that drops a pinned version as a planned migration.
 
 The script header is the authoritative list of commands, exit codes, fields with units, and measurement limits for each interface.
-V2 adds opt-in job-kind write history; untyped v1 commands, JSON fields, and the v1 self-test remain supported unchanged.
+V2 adds opt-in job-kind write history and v3 adds the storage admission site policy and token admissions.
+Without a policy file, untyped v1 commands, JSON fields, and the v1 and v2 self-tests remain supported unchanged.
 An incompatible change requires a new version and removal of support for the broken version; additive functionality may advertise a new latest version while retaining older supported versions.
 Human-readable wording not listed in the header may change within a version.
+
+Strict C: terms are a cross-major change for v1 and v2 consumers.
+While the storage admission site policy (`FM_DISK_ROOM_POLICY`, by default `config/storage-admission` in the margin's home) sets `c-terms=strict`, or is present but unreadable, `--interface v1|v2` and `--self-test v1|v2` exit 1, and the commands a v1 or v2 consumer calls read the strict C: terms, which can admit more than the older terms.
+- The trigger is writing such a policy file for a copy that a v1 or v2 consumer runs.
+- The owner of the migration is each such consumer's declared `owner=`, which moves the consumer's calls and self-test to v3 and accepts that version through its own review.
+- Readers move first: write the strict policy only after every v1 or v2 consumer of that copy has moved, under [`handoff-coverage.md`](handoff-coverage.md#versions)'s versioning rule.
 
 Before trusting a new copy, a consumer runs the self-test for its pinned version.
 Each supported version has a hermetic probe using temp state and Linux-only readings, without Windows processes or reservations outside that temp state.
@@ -264,7 +272,7 @@ A consumer that pins bytes may run them as `bash -c TEXT PATH ARG...`, with PATH
 The script then finds its sibling helpers beside PATH, never in the working directory, and runs `bin/fm-vhdx-bat.py` only from bytes matching the digest embedded in `fm-disk-room.sh`, so a pin on `fm-disk-room.sh` covers the reader and a missing or changed reader leaves reclaimable unknown.
 `--self-test` works in that mode too and probes the same bytes.
 
-`tests/fm-disk-room.test.sh` checks both interfaces through the executable, including failed writers, capacity boundaries, unreadable counters, concurrent attempts, append failures and recovery, corrupt history, and the unchanged v1 contract.
+`tests/fm-disk-room.test.sh` checks every interface through the executable, including failed writers, capacity boundaries, unreadable counters, concurrent attempts, append failures and recovery, corrupt history, and the unchanged v1 contract.
 
 ## Limits
 
