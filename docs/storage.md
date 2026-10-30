@@ -10,7 +10,7 @@ Plugging the SSD in is the only step anyone takes after the one-time setup below
 1. Mount rule (root, once): WSL mounts drives only when the distro starts, so a drive plugged in later gets no `/mnt/<letter>` until the laptop restarts or root mounts it.
    A narrow sudoers rule lets the check mount exactly `mount -t drvfs <L>: /mnt/<l> -o uid=<uid>,gid=<gid>` (and `umount /mnt/<l>`, `umount -l /mnt/<l>`) for letters D to H without a password, with the matching `/mnt/<l>` folders created; see [Mount rule](#mount-rule).
    Without it everything still works except that a hot-plugged SSD reads as `not-mounted` until the next restart.
-2. Timer (user, no root): `bin/fm-storage.sh install-timer --notify <status file>` writes `~/.config/lattice-storage/storage.conf` and enables `fm-storage.timer`, which runs `check` every 5 minutes at `Nice=19` with idle IO.
+2. Timer (user, no root): `bin/fm-storage.sh install-timer --notify <status file>` writes `~/.config/lattice-storage/storage.conf` and enables `fm-storage.timer`, which runs `check` every 5 minutes at `Nice=19` with idle IO and a 20-minute start limit (`TimeoutStartSec`), so a hung check is stopped instead of skipping every later tick.
    The removed `--fallback` option exits 2, `FM_STORAGE_FALLBACK` is ignored, and a `fallback=` line left in an older `storage.conf` is ignored, so none of them can bring back a C: destination.
 
 ## Mount rule
@@ -117,7 +117,9 @@ Reserve any other simultaneous allowance, such as a recovery archive, in that sa
 | `75` | no root on stdout and one `wait:` reason on stderr; do not start or substitute C: |
 | `2` | invalid command/options/size or inability to write admission records; no delivery should start |
 
-Waiting callers may retry when the concrete unavailable condition clears.
+A waiting caller retries no more often than every 5 minutes, the check timer's cadence, which is how often the publication it is verified against can change.
+It gives up at a maximum wait it states in advance, 1 hour unless its own contract names another, and then reports the last `wait:` reason as blocked to whoever supervises it instead of waiting on silently.
+Nothing is written or reserved before exit 0, so a waiting caller can stop at any retry.
 Storage refusal reason tokens are `missing-publication`, `invalid-publication`, `storage-unavailable: <state>: <published reason>`, `wrong-volume`, `wrong-filesystem`, `stale-publication`, `wrong-root`, `missing-marker`, `wrong-volume-identity`, `wrong-mount-identity`, and `wrong-filesystem-identity`.
 Capacity refusals use `cannot-measure-D`, `insufficient-space: <room details>`, or `reservation-exists: <name>`.
 A live reservation name is never silently replaced by a new bulk admission.

@@ -25,14 +25,34 @@ ALARM_SCHEMA = "fm-component-drift-alarm/v1"
 CLOSED = ("done", "gone")
 REPO_MAP = os.path.join("docs", "component-map.json")
 HOME_MAP = os.path.join("config", "component-map.json")
+# The run's own bound, below the example unit's 1 h TimeoutStartSec, so a run that cannot finish alarms
+# main instead of being ended by the start limit, whose SIGTERM reads as a stop on request.
+DEFAULT_MAX_SECS = 3000
 
 
-class Interrupted(Exception):
-    """SIGTERM or SIGINT: the run stops through its failure path, so the ledger is saved and main is alarmed."""
+class Interrupted(BaseException):
+    """SIGTERM or SIGINT: a stop on request, not a failure; the ledger is saved and main is not alarmed.
+
+    A BaseException, so no handler for failures can take a stop for a crash."""
+
+    def __init__(self, signum):
+        super().__init__(signum)
+        self.signum = signum
+
+
+class OverBound(BaseException):
+    """The run reached its own time bound: a failure that alarms main, unlike a stop on request."""
+
+
+def over_bound(_signum, _frame):
+    raise OverBound()
 
 
 def interrupt(signum, _frame):
-    raise Interrupted("signal %d" % signum)
+    # Later signals (the timer's stop reaches the wrapper and this engine both) cannot cut the stop short.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    raise Interrupted(signum)
 
 
 def one_line(text, n=300):
@@ -89,6 +109,7 @@ class Run:
         self.home = args.home.rstrip("/")
         self.code_root = args.code_root
         self.now = args.now if args.now is not None else int(time.time())
+        self.max_secs = args.max_secs
         self.homes_path = args.homes
         self.homes = []
         self.sdir = os.path.join(self.home, "state", "component-drift")
@@ -533,11 +554,36 @@ def main(argv):
     ap.add_argument("--homes", required=True)
     ap.add_argument("--code-root", required=True)
     ap.add_argument("--now", type=int)
+    ap.add_argument("--max-secs")
     args = ap.parse_args(argv)
     run = Run(args)
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGINT, interrupt)
+    try:
+        return run_alarmed(run)
+    except Interrupted as stop:
+        return stopped(run, stop.signum)
+
+
+def stopped(run, signum):
+    """A requested stop: save the ledger, log it, alarm nothing; the next run resolves or retries what it cut short."""
+    name = signal.Signals(signum).name
+    note = "ledger saved"
+    try:
+        if run.ledger is not None:
+            run.save_ledger()
+    except OSError as err:
+        note = "ledger not saved (%s)" % err
+    summary = ("stopped on request (%s); %s; an add or wake it did not finish is resolved or retried by the next "
+               "run; no alarm" % (name, note))
+    run.log(summary)
+    print("fm-component-drift: " + summary, file=sys.stderr)
+    return 128 + signum
+
+
+def run_alarmed(run):
     # Everything after Run(), which only names paths, is inside the alarmed path.
+    secs = DEFAULT_MAX_SECS
     try:
         os.makedirs(run.sdir, exist_ok=True)
         lock_path = os.path.join(run.sdir, ".lock")
@@ -550,7 +596,33 @@ def main(argv):
             run.log("FAILED: " + summary)
             run.alarm(summary)
             return 2
-        summary = run.execute()
+        if run.max_secs is not None:
+            if not re.fullmatch(r"[0-9]{1,9}", run.max_secs) or int(run.max_secs) == 0:
+                summary = ("FM_COMPONENT_DRIFT_MAX_SECS=%r is not a whole number of seconds from 1 to 999999999, "
+                           "so the run did nothing; fix or unset it in the run's environment" % run.max_secs)
+                print("fm-component-drift: " + summary, file=sys.stderr)
+                run.log("FAILED: " + summary)
+                run.alarm(summary)
+                return 2
+            secs = int(run.max_secs)
+        signal.signal(signal.SIGALRM, over_bound)
+        signal.alarm(secs)
+        try:
+            summary = run.execute()
+        finally:
+            signal.alarm(0)
+    except OverBound:
+        summary = ("the run reached its %d s bound (FM_COMPONENT_DRIFT_MAX_SECS) before it finished; ledger saved; "
+                   "the log's last lines show the slow step; the next run resumes" % secs)
+        try:
+            if run.ledger is not None:
+                run.save_ledger()
+        except OSError as err:
+            summary = summary.replace("ledger saved", "ledger not saved (%s)" % err)
+        run.log("FAILED: " + summary)
+        run.alarm(summary)
+        print("fm-component-drift: " + summary, file=sys.stderr)
+        return 1
     except Exception as exc:  # noqa: BLE001 - any crash is "could not run", reported in the summary
         summary = "the run stopped: %s" % one_line(repr(exc))
         try:

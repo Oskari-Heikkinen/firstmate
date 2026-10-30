@@ -4,8 +4,11 @@
 # names, and wakes that home, even with the repository checked out in two
 # homes; a rerun of the unchanged drift, or a further edit of the same
 # drifted source, files no second item while the first is open; a run
-# stopped right after an add records it, so the next run files nothing more
-# and delivers the wake; once that item is done the same drift files a new
+# stopped on request right after an add (SIGTERM to the wrapper, which hands
+# it to the engine) exits 143 with no alarm and records the add, so the next
+# run files nothing more and delivers the wake; a run that reaches its own
+# time bound (FM_COMPONENT_DRIFT_MAX_SECS) exits 1 and alarms main, and a set
+# but unreadable bound exits 2, alarms and files nothing; once that item is done the same drift files a new
 # one; a further drift rewrites the open item in place and wakes its home
 # again, on every rewrite even when a drift returns; an owner naming no
 # local home and a home-map skill without an owner route to main and to the
@@ -42,6 +45,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 root, tmp = Path(sys.argv[1]), Path(sys.argv[2])
@@ -177,25 +181,54 @@ check(items(mate) == [first] and body(mate, first) == b and "Rewritten by the dr
       "editing an already-drifted source again files, rewrites and wakes nothing",
       "%s\n%s\n%s" % (items(mate), body(mate, first), notes(mate)))
 
-# A run stopped right after its add (the owner home's tasks-axi kills it) records the item it filed.
+# A run stopped on request right after its add records the item it filed: the owner home's
+# tasks-axi sends SIGTERM to the wrapper (its parent's parent), as `systemctl --user stop` would.
 p = axi(mate, "done", first)
 check(p.returncode == 0, "the first item closes", p.stdout + p.stderr)
 stopper = mate / "bin/fm-tasks-axi.sh"
-write(stopper, '#!/usr/bin/env bash\n"%s" "$@"; rc=$?\n[ "$1" = add ] && kill -TERM "$PPID"\nexit $rc\n'
+write(stopper, '#!/usr/bin/env bash\n"%s" "$@"; rc=$?\n'
+      '[ "$1" = add ] && kill -TERM "$(ps -o ppid= -p "$PPID" | tr -d " ")"\nexit $rc\n'
       % (root / "bin/fm-tasks-axi.sh"))
 stopper.chmod(0o755)
-p = run(rc=2)
+p = run(rc=143)
 stopper.unlink()
 again = [t for t in items(mate) if t != first]
-check(len(again) == 1 and len(alarms()) == 1 and "stopped" in alarms()[0],
-      "a stopped run has filed one new item for the done one's unchanged drift and alarms main",
-      "%s %s\n%s" % (items(mate), alarms(), p.stdout + p.stderr))
+log = (main / "state/component-drift/log").read_text()
+check(len(again) == 1 and alarms() == [] and "stopped on request (SIGTERM)" in log,
+      "a run stopped on request has filed one new item, logs the stop and does not alarm main",
+      "%s %s\n%s\n%s" % (items(mate), alarms(), p.stdout + p.stderr, log[-600:]))
 woken = len(notes(mate))
 run()
 check(sorted(items(mate)) == sorted([first, again[0]]),
       "the run after a stopped one files no second item", str(items(mate)))
 check(len(notes(mate)) == woken + 1 and any(again[0] in n for n in notes(mate)),
       "the run after a stopped one delivers the wake it missed", str(notes(mate)))
+
+# A run that cannot finish within its own bound fails and alarms main, instead of being ended by the
+# service's start limit: the owner home's tasks-axi hangs, and FM_COMPONENT_DRIFT_MAX_SECS is 2.
+write(stopper, "#!/usr/bin/env bash\nexec sleep 60\n")
+stopper.chmod(0o755)
+before = len(alarms())
+started = time.monotonic()
+p = run(rc=1, env=dict(ENV, FM_COMPONENT_DRIFT_MAX_SECS="2"))
+took = time.monotonic() - started
+stopper.unlink()
+log = (main / "state/component-drift/log").read_text()
+check(len(alarms()) == before + 1 and any("2 s bound" in a for a in alarms()) and took < 50
+      and "FAILED: the run reached its 2 s bound" in log,
+      "a run that reaches its own time bound ends early, logs it and alarms main",
+      "%.1fs %s\n%s\n%s" % (took, alarms(), p.stdout + p.stderr, log[-600:]))
+# A set but unreadable bound is a failed reading that does nothing and names the variable.
+for bad in ("", "abc", "0"):
+    before, filed = len(alarms()), (items(main), items(mate))
+    p = run(rc=2, env=dict(ENV, FM_COMPONENT_DRIFT_MAX_SECS=bad))
+    check(len(alarms()) == before + 1 and any("FM_COMPONENT_DRIFT_MAX_SECS=%r" % bad in a for a in alarms())
+          and (items(main), items(mate)) == filed,
+          "FM_COMPONENT_DRIFT_MAX_SECS=%r alarms main naming it and files nothing" % bad, str(alarms()) + p.stderr)
+woken = len(notes(mate))
+run()
+check(sorted(items(mate)) == sorted([first, again[0]]) and len(notes(mate)) == woken,
+      "the run after a bounded one files and wakes nothing new", "%s %s" % (items(mate), notes(mate)))
 
 write(repo / "docs/contract.md", "Contract v2\n")
 woken = len(notes(mate))
