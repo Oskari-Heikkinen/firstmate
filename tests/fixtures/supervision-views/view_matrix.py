@@ -76,9 +76,9 @@ async def invoke(root, home, command, arguments):
                     except ProcessLookupError:
                         pass
 
-            # The wrapper must not hide the shell owner's TERM/cleanup path or
+            # The wrapper must not hide the shell owner's HUP/TERM cleanup path or
             # orphan it when interruption tests signal the launched endpoint.
-            for signum in (signal.SIGTERM, signal.SIGINT):
+            for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
                 loop.add_signal_handler(signum, forward, signum)
             try:
                 for _ in range(500):
@@ -142,7 +142,7 @@ async def invoke(root, home, command, arguments):
                 try:
                     await asyncio.wait_for(service, 5)
                 finally:
-                    for signum in (signal.SIGTERM, signal.SIGINT):
+                    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
                         loop.remove_signal_handler(signum)
 
 
