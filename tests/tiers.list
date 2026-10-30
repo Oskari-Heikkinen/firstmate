@@ -318,3 +318,4 @@ live tests/fm-supervision-accounting-live.test.sh
 live tests/fm-supervision-host-attended-live-e2e.test.sh
 live tests/fm-supervision-host-live-e2e.test.sh
 live tests/fm-worker-account-live-e2e.test.sh
+full tests/fm-j4-mutants.test.sh
