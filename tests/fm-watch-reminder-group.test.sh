@@ -63,6 +63,8 @@ set_mtime() {  # <epoch> <file>
   else touch -m -d "@$1" "$2"; fi
 }
 
+size_of() { LC_ALL=C wc -c < "$1" | tr -d '[:space:]'; }
+
 # Signature a primed .seen-* marker must hold so the per-poll signal scan does
 # not fire on a pre-existing status (mirrors fm-watch.sh's stat_sig).
 seen_sig() {
