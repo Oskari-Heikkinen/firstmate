@@ -1,0 +1,3 @@
+tests/fm-pr-merge.test.sh	bin/fm-pr-merge.sh	bin/fm-pr-merge.sh:1407:andor:1	1407	andor	1	ICAgICR7QUxMT1dfSEVMUEVSX0JSRUFLW0BdKyIke0FMTE9XX0hFTFBFUl9CUkVBS1tAXX0ifSAiJEZNX1BSX01FUkdFX0hFQUQiID4mMiB8fCBzdGF0dXM9JD8=
+tests/fm-pr-merge.test.sh	bin/fm-pr-merge.sh	bin/fm-pr-merge.sh:1410:stmt:1	1410	stmt	1	ICAgIHJldHVybiAx
+tests/fm-pr-merge.test.sh	bin/fm-pr-merge.sh	bin/fm-pr-merge.sh:1410:exit0:1	1410	exit0	1	ICAgIHJldHVybiAx
