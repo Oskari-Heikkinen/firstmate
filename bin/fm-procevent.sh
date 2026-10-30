@@ -9,6 +9,7 @@
 #   fm-procevent.sh start <source-id>
 #   fm-procevent.sh ensure-listening <source-id>
 #   fm-procevent.sh reconcile
+#   fm-procevent.sh restart <source-id>|--all
 #   fm-procevent.sh classify <result-file>
 #   fm-procevent.sh handled <source-id> <sequence>
 #   fm-procevent.sh show <source-id> <sequence>
@@ -83,6 +84,21 @@
 #            human makes for a group that lost its leader, which `start`
 #            reports as owned and which the next cycle reclaims on its own
 #            once that group is empty.
+# restart    Move this home's runners onto the code now on disk: one
+#            <source-id>, or every source registered in this home with --all.
+#            A runner is asked to stop at its next safe point - before its next
+#            launch, while its built-in child polls, or after a result is
+#            captured - and never while a result is half written; a when-runner
+#            finishes a fired action and records its result first. The source
+#            is then relaunched and confirmed as reconcile does. Registrations,
+#            captured results and other homes' claims are never touched. A
+#            runner started before restart support is stopped only while its
+#            staged output is empty and its adapter's `restart-busy` command
+#            reports nothing in progress. One bounded window covers the whole
+#            set (FM_PROCEVENT_RESTART_SECONDS; docs/configuration.md). Prints
+#            one outcome line per source and a summary; exit 1 when a relaunch
+#            failed to confirm, 3 when a runner is still stopping, busy or
+#            uncertain at the bound, 0 otherwise.
 # handled    Durably and idempotently record that a captured result has been
 #            fully handled: <source-id> <sequence>. Prints "handled: id seq"
 #            the first time for that exact source-and-sequence generation and
@@ -843,11 +859,13 @@ cmd_start() {
   CLAIM_STATE_DEVICE=$FM_PROCEVENT_CLAIM_STATE_DEVICE
   CLAIM_STATE_INODE=$FM_PROCEVENT_CLAIM_STATE_INODE
   STAGED_OUTPUT=
+  fm_procevent_restart_paths_to RESTARTABLE_MARK RESTART_REQUEST "$REG" "$CLAIM_ID" "$CLAIM_TOKEN"
   # Exit cleanup must not wait for the source lock: retire and reconcile hold it
   # while waiting for this runner, so blocking here creates a circular wait
   # broken only by KILL. On contention, leave the generation-bound claim for
   # the stopper or subsequent reconciliation to reclaim.
   release_start_claim() {
+    fm_procevent_restart_sidecars_remove "$REG" "$CLAIM_ID" "$CLAIM_TOKEN" 2>/dev/null || true
     extension_lifecycle_lock_release 2>/dev/null || true
     [ -z "$STAGED_OUTPUT" ] || rm -f -- "$STAGED_OUTPUT"
     fm_procevent_source_lock_try_acquire "$CLAIM_ID" 2>/dev/null || return 0
@@ -863,6 +881,70 @@ cmd_start() {
     fm_procevent_source_lock_release "$CLAIM_ID" 2>/dev/null || true
   }
   trap release_start_claim EXIT
+  # Restart (cmd_restart; docs/configuration.md owns the contract) asks this
+  # runner to stop by writing RESTART_REQUEST and sending TERM to this leader
+  # only. The trap never ends the runner itself on that request: it records the
+  # stop, and while a built-in child is polling it forwards TERM once to this
+  # group, which then holds only that child's tree and the TERM-immune output
+  # reader. The runner stops at its next safe point - before a launch, after a
+  # finished child, or instead of polling again - so a result is either
+  # captured whole or never captured at all. Any other TERM keeps the default
+  # behaviour every stopper relies on, EXIT cleanup included.
+  RUNNER_STOP=0
+  RUNNER_CHILD=
+  RUNNER_FORWARDED=0
+  RUNNER_TRAPPED=0
+  runner_term() {
+    RUNNER_TRAPPED=1
+    if [ -e "$RESTART_REQUEST" ]; then
+      RUNNER_STOP=1
+      runner_forward_stop
+      return 0
+    fi
+    trap - TERM
+    kill -TERM "$$"
+  }
+  runner_forward_stop() {
+    [ "$RUNNER_STOP" -eq 1 ] && [ -n "$RUNNER_CHILD" ] && [ "$RUNNER_FORWARDED" -eq 0 ] || return 0
+    RUNNER_FORWARDED=1
+    kill -TERM -- "-$$" 2>/dev/null || true
+  }
+  runner_stop_requested() {
+    [ "$RUNNER_STOP" -eq 1 ] && return 0
+    [ -e "$RESTART_REQUEST" ] || return 1
+    RUNNER_STOP=1
+  }
+  runner_stopped_exit() {
+    [ "$extension_owner" -eq 1 ] || rm -f -- "$runner"
+    printf 'stopped: %s (restart requested; registration and pending results kept)\n' "$id"
+    exit 0
+  }
+  # A trapped signal ends `wait` early with a status above 128 while the child
+  # is still running; wait again only then, so a child's own signal death is
+  # still reported as it happened.
+  runner_wait() {  # <pid>
+    local status
+    while :; do
+      RUNNER_TRAPPED=0
+      wait "$1"
+      status=$?
+      [ "$status" -gt 128 ] && [ "$RUNNER_TRAPPED" -eq 1 ] || return "$status"
+    done
+  }
+  trap runner_term TERM
+  # The marker is what tells `restart` this runner honours a request. A shell
+  # started with TERM ignored cannot trap it, so such a runner writes none and
+  # is handled like a runner from before this protocol. The probe runs in this
+  # shell, not a command substitution, because bash 3.2 subshells do not show
+  # their parent's traps.
+  local restart_probe=
+  if { trap -p TERM; } > "$RESTARTABLE_MARK.probe" 2>/dev/null \
+    && { IFS= read -r restart_probe < "$RESTARTABLE_MARK.probe"; } 2>/dev/null; then
+    case "$restart_probe" in
+      *runner_term*) mv -f -- "$RESTARTABLE_MARK.probe" "$RESTARTABLE_MARK" 2>/dev/null || true ;;
+    esac
+  fi
+  rm -f -- "$RESTARTABLE_MARK.probe" 2>/dev/null || true
   # 0 when this runner should poll again. The adapter's relisten command is the
   # only adapter-specific signal; a replacement registration is adopted only
   # when this claim still owns it and the registered command is unchanged.
@@ -921,7 +1003,7 @@ cmd_start() {
   # it is outside this confused-agent-grade boundary.
   export FM_PROCEVENT_IN_RUNNER=1
   start_owner_guard "$id" || die "cannot start the runner's owner guard: $id"
-  local launch_floor runner inbox reservation_dir staging launch_ready launch_reply launch_pid
+  local launch_floor runner inbox reservation_dir staging launch_ready launch_reply launch_pid reader_pid
   launch_floor=$(fm_procevent_launch_floor_seconds) \
     || die "FM_PROCEVENT_LAUNCH_FLOOR_SECONDS must be whole seconds from $FM_PROCEVENT_LAUNCH_FLOOR_MIN_SECONDS to $FM_PROCEVENT_LAUNCH_FLOOR_MAX_SECONDS"
   if [ "$extension_owner" -eq 1 ]; then
@@ -984,6 +1066,11 @@ cmd_start() {
     2) [ "$extension_owner" -eq 1 ] || rm -f -- "$runner"; exit 0 ;;
     *) die "cannot enforce the source launch floor: $id" ;;
   esac
+  # The safe point before a launch: nothing is running and nothing is staged.
+  if runner_stop_requested; then
+    fm_procevent_source_lock_release "$id" || true
+    runner_stopped_exit
+  fi
   exec 7<&-
   if [ "$extension_owner" -eq 1 ]; then
     launch_ready=".$id.$CLAIM_TOKEN.launch-ready"
@@ -1003,7 +1090,10 @@ cmd_start() {
     while [ ! -s "$REG/$launch_ready" ] && kill -0 "$launch_pid" 2>/dev/null; do sleep 0.01; done
     fm_procevent_source_lock_release "$id" \
       || die "cannot release the source launch boundary: $id"
-    wait "$launch_pid" || {
+    # Never forwarded: the capture helper owns its child and has no stop
+    # protocol, and an extension runner never polls again, so a requested
+    # restart simply waits for this poll to finish.
+    runner_wait "$launch_pid" || {
       rm -f -- "$REG/$launch_ready" "$launch_reply"
       die "cannot safely stage the extension result"
     }
@@ -1058,6 +1148,12 @@ EOF
     rm -f -- "$launch_ready"
     fm_procevent_source_lock_release "$id" \
       || die "cannot release the source launch boundary: $id"
+    # The reader is forked with TERM ignored, so a stop forwarded to this group
+    # ends the child and never the bounded copy of what it already wrote; a
+    # stopper's group KILL still reaches it. A TERM that lands in this short
+    # window is dropped: a restart request is re-read just below, and every
+    # other stopper escalates to KILL.
+    trap '' TERM
     perl -e '
       use strict;
       use warnings;
@@ -1081,11 +1177,26 @@ EOF
         $truncated = 1 if $take < $count;
       }
       exit($truncated ? 3 : 0);
-    ' "$MAX_OUTPUT_BYTES" <&4 > "$out"
-    bound_rc=$?
+    ' "$MAX_OUTPUT_BYTES" <&4 > "$out" &
+    reader_pid=$!
+    trap runner_term TERM
     exec 4<&-
-    wait "$launch_pid"
+    RUNNER_CHILD=$launch_pid
+    runner_stop_requested && runner_forward_stop
+    runner_wait "$reader_pid"
+    bound_rc=$?
+    runner_wait "$launch_pid"
     rc=$?
+    RUNNER_CHILD=
+    # A child this runner stopped is never captured unless it finished cleanly
+    # by itself - a deferred action that completed, for one - because anything
+    # else may be a partial result.
+    if [ "$RUNNER_FORWARDED" -eq 1 ] \
+      && { [ "$rc" -ne 0 ] || { [ "$bound_rc" -ne 0 ] && [ "$bound_rc" -ne 3 ]; }; }; then
+      rm -f -- "$out"
+      STAGED_OUTPUT=
+      runner_stopped_exit
+    fi
     case "$bound_rc" in
       0) ;;
       3) truncated=1 ;;
@@ -1100,6 +1211,7 @@ EOF
       rm -f -- "$out"
       STAGED_OUTPUT=
     fi
+    runner_stop_requested && runner_stopped_exit
     if { [ "$capture_state" = no-result ] || [ "$rc" -eq 75 ]; } && adopt_relisten; then
       continue
     fi
@@ -1206,6 +1318,8 @@ EOF
     fm_procevent_claim_capture_reservation_remove_locked || true
     exec 6<&-
   fi
+  # The safe point after a capture: the result is durable and published.
+  runner_stop_requested && runner_stopped_exit
   if [ "$handled_capture" -eq 1 ] && adopt_relisten; then
     continue
   fi
@@ -1465,7 +1579,7 @@ stranded_leaderless_detail() {  # <source-id>
 cmd_reconcile() {
   fm_supervision_tick_entry "$STATE" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" procevent-reconcile
   local rec id published started=0 stopped=0 uncertain=0 failed=0 claim claim_root owner pid token identity claim_state stop_state
-  local launch_identity launch_stamp launch_mark failed_mark unconfirmed entry
+  local failed_mark entry
   local -a launched=()
   # Rejected before anything is launched, and by name. A window this command
   # cannot use makes every launch unconfirmable, so validating it later would
@@ -1522,6 +1636,7 @@ cmd_reconcile() {
       0|1)
         if fm_procevent_claim_reclaim_locked "$id" "$owner" "$pid" "$token" 2>/dev/null; then
           rm -f -- "$(staging_file "$id" "$token")"
+          fm_procevent_restart_sidecars_remove "$REG" "$id" "$token" 2>/dev/null || true
           rm -f -- "$(runner_file "$id")"
           stopped=$((stopped + 1))
         else
@@ -1567,26 +1682,14 @@ cmd_reconcile() {
           report_stranded_source "$id" "$FM_PROCEVENT_CLAIM_TOKEN" \
             "$(stranded_reused_pid_detail "$id")" || true
         elif [ "$claim_state" -eq 1 ]; then
-          if ! cleanup_extension_registration_invocations_locked "$id"; then
+          if ! launch_prepare_locked entry "$id"; then
             uncertain=$((uncertain + 1))
             fm_procevent_source_lock_release "$id"
             continue
           fi
-          # Snapshot the launch-pacing stamp for the registration generation
-          # this launch will run under, while the source lock still keeps that
-          # registration from being replaced underneath it. The runner writes
-          # this stamp after it claims and before it runs the source command,
-          # and nothing removes it on the way out, so an advanced or newly
-          # appeared value is durable evidence the launch got going.
-          launch_identity=$(fm_pr_file_identity "$(source_file "$id")" 2>/dev/null) || launch_identity=
-          launch_mark=
-          if [ -n "$launch_identity" ] \
-            && launch_stamp=$(fm_procevent_launch_floor_stamp_path "$STATE" "$id" "$launch_identity"); then
-            launch_mark=$(cat -- "$launch_stamp" 2>/dev/null || true)
-          fi
           fm_procevent_source_lock_release "$id"
           detach_runner "$id"
-          launched+=("$id"$'\t'"$launch_identity"$'\t'"$launch_mark")
+          launched+=("$entry")
           continue
         elif [ "$claim_state" -eq 4 ]; then
           owner=$FM_PROCEVENT_CLAIM_HOME
@@ -1624,24 +1727,59 @@ cmd_reconcile() {
     done
   fi
   if [ "${#launched[@]}" -gt 0 ]; then
-    unconfirmed=$(confirm_launched_runners "${launched[@]}") \
-      || unconfirmed=$(printf '%s\n' "${launched[@]}")
-    for entry in "${launched[@]}"; do
-      id=${entry%%$'\t'*}
-      launch_identity=${entry#*$'\t'}
-      launch_identity=${launch_identity%%$'\t'*}
-      if launch_entry_listed "$entry" "$unconfirmed"; then
-        failed=$((failed + 1))
-        report_launch_failure "$id" "$launch_identity" || true
-      else
-        started=$((started + 1))
-        rm -f -- "$(launch_failed_file "$id")"
-      fi
-    done
+    settle_launches "${launched[@]}"
+    started=$SETTLED_STARTED
+    failed=$SETTLED_FAILED
   fi
   printf 'reconciled: published=%s started=%s stopped=%s uncertain=%s failed=%s\n' \
     "$published" "$started" "$stopped" "$uncertain" "$failed"
   [ "$failed" -eq 0 ]
+}
+
+# Prepare one launch of a registered source whose claim may be displaced, under
+# its source lock, naming the launch entry confirmation reads. Returns 1 when
+# the source's earlier extension invocations cannot be proved cleaned up, which
+# leaves the source unlaunched and uncertain.
+launch_prepare_locked() {  # <output-variable> <source-id>
+  local id=$2 launch_identity launch_stamp launch_mark=
+  cleanup_extension_registration_invocations_locked "$id" || return 1
+  # Snapshot the launch-pacing stamp for the registration generation this
+  # launch will run under, while the source lock still keeps that registration
+  # from being replaced underneath it. The runner writes this stamp after it
+  # claims and before it runs the source command, and nothing removes it on the
+  # way out, so an advanced or newly appeared value is durable evidence the
+  # launch got going.
+  launch_identity=$(fm_pr_file_identity "$(source_file "$id")" 2>/dev/null) || launch_identity=
+  if [ -n "$launch_identity" ] \
+    && launch_stamp=$(fm_procevent_launch_floor_stamp_path "$STATE" "$id" "$launch_identity"); then
+    launch_mark=$(cat -- "$launch_stamp" 2>/dev/null || true)
+  fi
+  printf -v "$1" '%s\t%s\t%s' "$id" "$launch_identity" "$launch_mark"
+}
+
+# Confirm a batch of launches in one shared window, then end each confirmed
+# source's launch-failure episode or announce the unconfirmed one. Sets
+# SETTLED_STARTED, SETTLED_FAILED and SETTLED_FAILED_IDS (one id per line).
+settle_launches() {  # <launch-entry>...
+  local unconfirmed entry id launch_identity
+  SETTLED_STARTED=0
+  SETTLED_FAILED=0
+  SETTLED_FAILED_IDS=
+  unconfirmed=$(confirm_launched_runners "$@") \
+    || unconfirmed=$(printf '%s\n' "$@")
+  for entry in "$@"; do
+    id=${entry%%$'\t'*}
+    launch_identity=${entry#*$'\t'}
+    launch_identity=${launch_identity%%$'\t'*}
+    if launch_entry_listed "$entry" "$unconfirmed"; then
+      SETTLED_FAILED=$((SETTLED_FAILED + 1))
+      SETTLED_FAILED_IDS+="$id"$'\n'
+      report_launch_failure "$id" "$launch_identity" || true
+    else
+      SETTLED_STARTED=$((SETTLED_STARTED + 1))
+      rm -f -- "$(launch_failed_file "$id")"
+    fi
+  done
 }
 
 launch_entry_listed() {  # <entry> <newline-separated entries>
@@ -1790,6 +1928,245 @@ cmd_ensure_listening() {
   [ "$listening" -ne 3 ] || return 3
   printf 'error: listener is not running: %s\n' "$id" >&2
   return 1
+}
+
+# Restart runners on the code now on disk (docs/configuration.md owns the
+# contract). A runner that honours the restart protocol is asked to stop at its
+# next safe point; a runner started before that protocol is stopped only while
+# its staged output is still empty and its adapter does not report a fired
+# action in progress, and is never sent KILL. Registrations, claims of other
+# homes, and captured results are never touched: a stopped runner releases its
+# own claim, and the source is relaunched through the same launch and
+# confirmation path reconcile uses.
+restart_note() {  # <outcome> <source-id> <detail>
+  printf '%s: %s (%s)\n' "$1" "$2" "$3"
+  case "$1" in
+    restarted) RESTART_RESTARTED=$((RESTART_RESTARTED + 1)) ;;
+    started) RESTART_STARTED=$((RESTART_STARTED + 1)) ;;
+    ended) RESTART_ENDED=$((RESTART_ENDED + 1)) ;;
+    stopping) RESTART_STOPPING=$((RESTART_STOPPING + 1)) ;;
+    busy) RESTART_BUSY=$((RESTART_BUSY + 1)) ;;
+    skipped) RESTART_SKIPPED=$((RESTART_SKIPPED + 1)) ;;
+    uncertain) RESTART_UNCERTAIN=$((RESTART_UNCERTAIN + 1)) ;;
+    failed) RESTART_FAILED=$((RESTART_FAILED + 1)) ;;
+  esac
+}
+
+# 0 when a runner from before the restart protocol may be stopped now: its
+# child has staged no output yet, and its adapter, asked with the code on disk,
+# does not report the child doing work a stop would cut short. An adapter
+# without the `restart-busy` command exits 1, which means idle; any other
+# answer means busy.
+restart_legacy_idle() {  # <source-id> <claim-token> <adapter>
+  local stage script status
+  stage=$(staging_file "$1" "$2")
+  [ -f "$stage" ] && [ ! -L "$stage" ] && [ ! -s "$stage" ] || return 1
+  script=$(adapter_script "$3")
+  [ -f "$script" ] && [ -x "$script" ] || return 1
+  status=0
+  "$script" restart-busy "$1" >/dev/null 2>&1 </dev/null || status=$?
+  [ "$status" -eq 1 ] || return 1
+  [ -f "$stage" ] && [ ! -L "$stage" ] && [ ! -s "$stage" ]
+}
+
+# Settle one source whose old runner is gone or replaced, under its source
+# lock: a new live owned claim is the restart, a displaceable empty claim is
+# relaunched, and anything else is reported rather than guessed at.
+restart_resettle_locked() {  # <source-id> <kind>
+  local id=$1 kind=$2 state entry
+  if [ ! -f "$(source_file "$id")" ] || [ -L "$(source_file "$id")" ]; then
+    restart_note ended "$id" "its registration was retired while it restarted"
+    return 0
+  fi
+  fm_procevent_claim_state_locked "$id"
+  state=$?
+  if [ "$state" -eq 0 ] && fm_procevent_claim_owned_by_state "$STATE" "$FM_HOME"; then
+    restart_note "$kind" "$id" "a new runner holds the source"
+    return 0
+  fi
+  if [ "$state" -eq 4 ]; then
+    restart_note ended "$id" "its adapter classified the last result terminal"
+    return 0
+  fi
+  if [ "$state" -eq 1 ] && ! fm_procevent_claim_undisplaceable_locked "$id"; then
+    if ! launch_prepare_locked entry "$id"; then
+      restart_note uncertain "$id" "its earlier extension invocations could not be proved cleaned up"
+      return 0
+    fi
+    fm_procevent_source_lock_release "$id"
+    detach_runner "$id"
+    RESTART_LAUNCHED+=("$entry")
+    RESTART_LAUNCH_KIND+=("$kind")
+    return 1
+  fi
+  restart_note uncertain "$id" "its claim is held in a state restart does not displace; reconcile reports it"
+  return 0
+}
+
+cmd_restart() {
+  local window deadline rec id state entry kind mark request adapter
+  local i n pending
+  local -a ids=() modes=() pids=() tokens=() identities=() adapters=() kinds=() open=()
+  case "$#:${1-}" in
+    1:--all) ;;
+    1:-*|1:) usage ;;
+    1:*) fm_procevent_source_id_valid "$1" || die "source id must be path-safe: $1" ;;
+    *) usage ;;
+  esac
+  window=$(fm_procevent_restart_seconds) \
+    || die "FM_PROCEVENT_RESTART_SECONDS must be whole seconds from $FM_PROCEVENT_RESTART_MIN_SECONDS to $FM_PROCEVENT_RESTART_MAX_SECONDS"
+  fm_procevent_launch_confirm_seconds >/dev/null \
+    || die "FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS must be whole seconds from $FM_PROCEVENT_LAUNCH_CONFIRM_MIN_SECONDS to $FM_PROCEVENT_LAUNCH_CONFIRM_MAX_SECONDS"
+  if [ "$1" = --all ]; then
+    if [ -d "$REG" ]; then
+      for rec in "$REG"/*.source; do
+        [ -e "$rec" ] || continue
+        id=${rec##*/}; id=${id%.source}
+        fm_procevent_source_id_valid "$id" || continue
+        ids+=("$id")
+      done
+    fi
+  else
+    [ -f "$(source_file "$1")" ] && [ ! -L "$(source_file "$1")" ] \
+      || die "source is not registered: $1"
+    ids=("$1")
+  fi
+  owner_lease_refresh
+  RESTART_RESTARTED=0 RESTART_STARTED=0 RESTART_ENDED=0 RESTART_STOPPING=0
+  RESTART_BUSY=0 RESTART_SKIPPED=0 RESTART_UNCERTAIN=0 RESTART_FAILED=0
+  RESTART_LAUNCHED=()
+  RESTART_LAUNCH_KIND=()
+
+  # Ask every runner first, so one window covers the whole set.
+  n=${#ids[@]}
+  for ((i = 0; i < n; i++)); do
+    id=${ids[i]}
+    modes[i]=none
+    pids[i]=
+    tokens[i]=
+    identities[i]=
+    adapters[i]=
+    kinds[i]=restarted
+    open[i]=0
+    if ! fm_procevent_source_lock_acquire "$id"; then
+      restart_note uncertain "$id" "cannot take its source lock"
+      continue
+    fi
+    if [ ! -f "$(source_file "$id")" ] || [ -L "$(source_file "$id")" ]; then
+      restart_note ended "$id" "its registration was retired"
+      fm_procevent_source_lock_release "$id"
+      continue
+    fi
+    fm_procevent_claim_state_locked "$id"
+    state=$?
+    if [ "$state" -eq 1 ] && ! fm_procevent_claim_undisplaceable_locked "$id"; then
+      # Nothing is running, so there is nothing to stop: launch it on the
+      # current code now, as reconcile would.
+      kinds[i]=started
+      restart_resettle_locked "$id" started || continue
+    elif [ "$state" -eq 4 ]; then
+      restart_note ended "$id" "its adapter classified the last result terminal"
+    elif [ "$state" -ne 0 ]; then
+      restart_note uncertain "$id" "its claim is held in a state restart does not displace; reconcile reports it"
+    elif ! fm_procevent_claim_owned_by_state "$STATE" "$FM_HOME"; then
+      restart_note skipped "$id" "another home's runner holds the source"
+    else
+      pids[i]=$FM_PROCEVENT_CLAIM_PID
+      tokens[i]=$FM_PROCEVENT_CLAIM_TOKEN
+      identities[i]=$FM_PROCEVENT_CLAIM_IDENTITY
+      fm_procevent_restart_paths_to mark request "$REG" "$id" "$FM_PROCEVENT_CLAIM_TOKEN"
+      if [ -f "$mark" ] && [ ! -L "$mark" ]; then
+        if (umask 077; : > "$request") 2>/dev/null; then
+          modes[i]=deferred
+          open[i]=1
+          if fm_procevent_pid_state "$FM_PROCEVENT_CLAIM_PID" "$FM_PROCEVENT_CLAIM_IDENTITY"; then
+            kill -TERM "$FM_PROCEVENT_CLAIM_PID" 2>/dev/null || true
+          fi
+        else
+          restart_note uncertain "$id" "cannot write its restart request"
+        fi
+      else
+        state=0
+        fm_procevent_extension_registration_load_locked "$STATE" "$id" || state=$?
+        if [ "$state" -eq 0 ]; then
+          modes[i]='legacy-extension'
+          open[i]=1
+        elif [ "$state" -eq 1 ] && adapter=$(read_adapter "$id") && [ -n "$adapter" ]; then
+          modes[i]=legacy
+          adapters[i]=$adapter
+          open[i]=1
+        else
+          restart_note uncertain "$id" "cannot read its registration"
+        fi
+      fi
+    fi
+    fm_procevent_source_lock_release "$id"
+  done
+
+  # Wait for each asked runner to go, within one shared bound, and relaunch the
+  # source as soon as it has. The runner is gone once its exact leader is, or
+  # once its claim is released or replaced; members its child left in the group
+  # do not hold the source, and the claim's own state decides what follows. A
+  # runner from before the protocol is stopped at the first poll that finds it
+  # idle.
+  deadline=$((SECONDS + 10#$window + 1))
+  while :; do
+    pending=0
+    for ((i = 0; i < n; i++)); do
+      if [ "${open[i]}" -eq 1 ]; then
+        id=${ids[i]}
+        if ! fm_procevent_pid_state "${pids[i]}" "${identities[i]}" \
+          || ! fm_procevent_claim_load_locked "$id" 2>/dev/null \
+          || [ "$FM_PROCEVENT_CLAIM_TOKEN" != "${tokens[i]}" ]; then
+          open[i]=0
+          fm_procevent_restart_sidecars_remove "$REG" "$id" "${tokens[i]}" 2>/dev/null || true
+          if fm_procevent_source_lock_acquire "$id"; then
+            restart_resettle_locked "$id" "${kinds[i]}" && fm_procevent_source_lock_release "$id"
+          else
+            restart_note uncertain "$id" "cannot take its source lock after its runner stopped"
+          fi
+        elif [ "${modes[i]}" = legacy ] \
+          && restart_legacy_idle "$id" "${tokens[i]}" "${adapters[i]}"; then
+          if runner_group_signal TERM "${pids[i]}" "${identities[i]}"; then
+            modes[i]='legacy-signalled'
+          fi
+          pending=1
+        else
+          pending=1
+        fi
+      fi
+    done
+    [ "$pending" -eq 1 ] && [ "$SECONDS" -lt "$deadline" ] || break
+    sleep 0.1
+  done
+  for ((i = 0; i < n; i++)); do
+    if [ "${open[i]}" -eq 1 ]; then
+      case "${modes[i]}" in
+        deferred) restart_note stopping "${ids[i]}" "asked to stop at its next safe point; reconcile relaunches it then" ;;
+        legacy-signalled) restart_note stopping "${ids[i]}" "stopped while idle and still exiting; reconcile relaunches it" ;;
+        legacy) restart_note busy "${ids[i]}" "a runner from before restart support was never idle within the window; it keeps its old code until it ends" ;;
+        legacy-extension) restart_note busy "${ids[i]}" "an extension runner from before restart support cannot be stopped safely; it keeps its old code until its poll ends" ;;
+      esac
+    fi
+  done
+
+  if [ "${#RESTART_LAUNCHED[@]}" -gt 0 ]; then
+    settle_launches "${RESTART_LAUNCHED[@]}"
+    for ((i = 0; i < ${#RESTART_LAUNCHED[@]}; i++)); do
+      entry=${RESTART_LAUNCHED[i]}
+      id=${entry%%$'\t'*}
+      kind=${RESTART_LAUNCH_KIND[i]}
+      case $'\n'"$SETTLED_FAILED_IDS" in
+        *$'\n'"$id"$'\n'*) restart_note failed "$id" "its relaunch was not confirmed; reconcile retries it and reports the failure" ;;
+        *) restart_note "$kind" "$id" "relaunched on the current code" ;;
+      esac
+    done
+  fi
+  printf 'restart: restarted=%s started=%s ended=%s stopping=%s busy=%s skipped=%s uncertain=%s failed=%s\n' \
+    "$RESTART_RESTARTED" "$RESTART_STARTED" "$RESTART_ENDED" "$RESTART_STOPPING" \
+    "$RESTART_BUSY" "$RESTART_SKIPPED" "$RESTART_UNCERTAIN" "$RESTART_FAILED"
+  [ "$RESTART_FAILED" -eq 0 ] || return 1
+  [ "$((RESTART_STOPPING + RESTART_BUSY + RESTART_UNCERTAIN))" -eq 0 ] || return 3
 }
 
 # Stop a runner and the child it is blocked on. A runner started by reconcile is
@@ -1997,6 +2374,7 @@ cmd_retire() {
         die "cannot release source ownership: $id"
       fi
       rm -f -- "$(staging_file "$id" "$token")"
+      fm_procevent_restart_sidecars_remove "$REG" "$id" "$token" 2>/dev/null || true
     fi
   elif [ -n "$extension_binding_digest" ] \
     && ! cleanup_extension_binding_invocations "$extension_binding_digest"; then
@@ -2313,6 +2691,7 @@ case "${1-}" in
   _start)             shift; cmd_start "$@" ;;
   _owner-watchdog)    shift; cmd_owner_watchdog "$@" ;;
   reconcile)          shift; cmd_reconcile "$@" ;;
+  restart)            shift; cmd_restart "$@" ;;
   classify)           shift; cmd_classify "$@" ;;
   handled)            shift; cmd_handled "$@" ;;
   show)               shift; cmd_show "$@" ;;

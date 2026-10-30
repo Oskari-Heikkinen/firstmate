@@ -256,6 +256,43 @@ fm_procevent_launch_confirm_seconds() {
   printf '%s\n' "$value"
 }
 
+# How long `restart` waits for the runners it asked to stop to reach a safe
+# point. docs/configuration.md owns the restart contract.
+FM_PROCEVENT_RESTART_DEFAULT_SECONDS=30
+FM_PROCEVENT_RESTART_MIN_SECONDS=1
+FM_PROCEVENT_RESTART_MAX_SECONDS=600
+
+fm_procevent_restart_seconds() {
+  local value=${FM_PROCEVENT_RESTART_SECONDS-}
+  if [ -z "$value" ]; then
+    printf '%s\n' "$FM_PROCEVENT_RESTART_DEFAULT_SECONDS"
+    return 0
+  fi
+  case "$value" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$value" -ge "$FM_PROCEVENT_RESTART_MIN_SECONDS" ] || return 1
+  [ "$value" -le "$FM_PROCEVENT_RESTART_MAX_SECONDS" ] || return 1
+  printf '%s\n' "$value"
+}
+
+# The one place a runner generation's restart sidecars are named: the marker a
+# runner writes once its stop trap is installed, and the durable request
+# `restart` writes before signalling it. Both are keyed by the exact claim
+# token and never globbed, because a source id may itself contain dots.
+fm_procevent_restart_paths_to() {  # <marker-var> <request-var> <registry-dir> <source-id> <claim-token>
+  printf -v "$1" '%s/.%s.%s.restartable' "$3" "$4" "$5"
+  printf -v "$2" '%s/.%s.%s.restart' "$3" "$4" "$5"
+}
+
+# Remove one generation's restart sidecars, including the marker's probe.
+# Litter only: a replacement always
+# claims a fresh token, so a failed removal can never steer another generation.
+fm_procevent_restart_sidecars_remove() {  # <registry-dir> <source-id> <claim-token>
+  local marker request
+  case "$3" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  fm_procevent_restart_paths_to marker request "$1" "$2" "$3"
+  rm -f -- "$marker" "$marker.probe" "$request"
+}
+
 # The one place the launch-pacing stamp's name is constructed. Every writer,
 # pruner and reader goes through here so the naming rule is stated once.
 fm_procevent_launch_floor_stamp_path() {  # <state-root> <source-id> <registration-identity>
@@ -839,6 +876,7 @@ fm_procevent_claim_acquire_locked() {
             if { [ -e "$stage" ] || [ -L "$stage" ]; } && ! rm -f -- "$stage"; then
               status=1
             fi
+            fm_procevent_restart_sidecars_remove "$old_reg_dir" "$id" "$old_token" 2>/dev/null || true
           fi
           if [ "$status" -eq 0 ]; then
             fm_procevent_claim_capture_reservation_reclaim_locked || status=1

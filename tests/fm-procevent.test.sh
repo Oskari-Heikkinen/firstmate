@@ -3467,6 +3467,367 @@ SH
 fi
 }
 
+test_restart() {
+use_claim_root test_restart
+# --- restart moves this home's runners onto the code now on disk -------------
+# These runners run from a private copy of bin/ whose fm-procevent.sh logs the
+# version that started each runner, so a restart is proven to relaunch on the
+# bytes on disk when it ran rather than merely to start another process. A new
+# version replaces the copy by rename, as a checkout update does, so a runner
+# already started keeps reading the bytes it opened.
+RS_CODE="$TMP_ROOT/restart-code"
+mkdir -p "$RS_CODE"
+cp -R "$ROOT/bin" "$RS_CODE/bin" || fail "cannot copy bin/ for the restart fixtures"
+RS_CODE_LOG="$TMP_ROOT/restart-code.log"
+cat > "$TMP_ROOT/restart-code-line" <<'SH'
+[ "${1-}" != _start ] || printf '%s %s\n' RESTART_CODE_VERSION "${2-}" >> "${FM_TEST_RESTART_CODE_LOG:-/dev/null}"
+SH
+restart_code_version() {  # <version>
+  if ! { sed -e "/^set -u\$/r $TMP_ROOT/restart-code-line" "$ROOT/bin/fm-procevent.sh" \
+    | sed -e "s/RESTART_CODE_VERSION/$1/" > "$RS_CODE/bin/.fm-procevent.sh.next"; } \
+    || ! chmod 0755 "$RS_CODE/bin/.fm-procevent.sh.next" \
+    || ! mv -f "$RS_CODE/bin/.fm-procevent.sh.next" "$RS_CODE/bin/fm-procevent.sh"; then
+    fail "cannot install restart fixture code version $1"
+  fi
+}
+pe_code() {  # <home> <command>...
+  FM_HOME="$1" FM_TEST_RESTART_CODE_LOG="$RS_CODE_LOG" "$RS_CODE/bin/fm-procevent.sh" "${@:2}"
+}
+# Restart and its relaunch confirmation end on what they observe; these long
+# windows are hang guards only. A case about the window running out sets its own.
+pe_restart() {  # <home> <restart-args>...
+  FM_PROCEVENT_RESTART_SECONDS="${RS_WINDOW:-120}" FM_PROCEVENT_LAUNCH_CONFIRM_SECONDS=120 \
+    pe_code "$1" restart "${@:2}"
+}
+claim_line() {  # <source-id> <line>
+  sed -n "${2}p" "$FM_PROCEVENT_CLAIM_ROOT/$1.claim" 2>/dev/null
+}
+wait_results() {  # <home> <source-id> <count> [tries]
+  local n=${4:-150}
+  for _ in $(seq 1 "$n"); do
+    [ "$(count_results "$1" "$2")" -ge "$3" ] && return 0
+    sleep 0.1
+  done
+  return 1
+}
+wait_payload() {  # <home> <payload-text> [tries]; a result file is written before its wake
+  local n=${3:-300}
+  for _ in $(seq 1 "$n"); do
+    case $'\n'"$(wake_payloads "$1")"$'\n' in *"$2"*) return 0 ;; esac
+    sleep 0.1
+  done
+  return 1
+}
+restartable_marker() {  # <home> <source-id> <claim-token>
+  printf '%s/state/procevent/.%s.%s.restartable\n' "$1" "$2" "$3"
+}
+restart_request() {  # <home> <source-id> <claim-token>
+  printf '%s/state/procevent/.%s.%s.restart\n' "$1" "$2" "$3"
+}
+
+# The first run of this source returns a result at once; every later run
+# records its pid and blocks until the trigger exists, so a runner can be idle
+# in its poll while an earlier result is still pending.
+RS_ONCE="$TMP_ROOT/restart-once.sh"
+cat > "$RS_ONCE" <<'SH'
+#!/usr/bin/env bash
+# <first-run-marker> <block-log> <trigger> <blocker>
+if [ ! -e "$1" ]; then
+  : > "$1"
+  printf 'pending result\n'
+  exit 0
+fi
+printf '%s\n' "$$" >> "$2"
+exec "$4" "$3" "later result"
+SH
+# Finishes cleanly with a result when it is asked to stop.
+RS_FINISHER="$TMP_ROOT/restart-finisher.sh"
+cat > "$RS_FINISHER" <<'SH'
+#!/usr/bin/env bash
+# <ready-file>
+trap 'printf "finished on the stop\n"; exit 0' TERM
+printf 'ready\n' > "$1"
+while [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ]; do sleep 0.05; done
+exit 75
+SH
+# Ignores the stop and finishes only when its trigger exists, as a when-runner
+# finishing a fired action does.
+RS_STUBBORN="$TMP_ROOT/restart-stubborn.sh"
+cat > "$RS_STUBBORN" <<'SH'
+#!/usr/bin/env bash
+# <ready-file> <trigger>
+trap '' TERM
+printf 'ready\n' > "$1"
+while [ ! -e "$2" ]; do
+  [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ] || exit 75
+  sleep 0.05
+done
+printf 'finished after the stop\n'
+SH
+# Writes part of a result, then blocks.
+RS_PARTIAL="$TMP_ROOT/restart-partial.sh"
+cat > "$RS_PARTIAL" <<'SH'
+#!/usr/bin/env bash
+# <trigger>
+printf 'partial\n'
+while [ ! -e "$1" ]; do
+  [ "$SECONDS" -lt "${FM_TEST_STUB_MAX_BLOCK_SECONDS:-120}" ] || exit 75
+  sleep 0.05
+done
+printf 'rest\n'
+SH
+chmod +x "$RS_ONCE" "$RS_FINISHER" "$RS_STUBBORN" "$RS_PARTIAL"
+# Answers restart-busy from a file in its home, so one fixture covers both the
+# busy and the idle answer a pre-protocol runner is stopped on.
+cat > "$ADAPTER_ROOT/bin/fm-procevent-busyprobe.sh" <<'SH'
+#!/usr/bin/env bash
+case "${1-}" in
+  restart-busy) [ -e "$FM_HOME/state/fixture-busy" ] && exit 0; exit 1 ;;
+esac
+exit 2
+SH
+chmod +x "$ADAPTER_ROOT/bin/fm-procevent-busyprobe.sh"
+
+# --- an idle runner restarts onto new code, keeping registration and results --
+HRI="$TMP_ROOT/restart-idle"; new_home "$HRI"
+RI_TRIG="$TMP_ROOT/restart-idle-trigger"
+RI_BLOCKS="$TMP_ROOT/restart-idle-blocks"
+restart_code_version v1
+pe_register "$HRI" plain rs-idle \
+  -- "$RS_ONCE" "$TMP_ROOT/restart-idle-first" "$RI_BLOCKS" "$RI_TRIG" "$BLOCKER" >/dev/null
+pe_code "$HRI" reconcile >/dev/null
+wait_capture "$HRI" rs-idle 300 || fail "the first run never captured its pending result"
+ri_pending=$(first_result "$HRI" rs-idle)
+pe_code "$HRI" reconcile >/dev/null
+wait_for_lines "$RI_BLOCKS" 1 300 || fail "the second runner never entered its blocking poll"
+ri_old_pid=$(claim_line rs-idle 2)
+ri_old_token=$(claim_line rs-idle 3)
+ri_old_child=$(sed -n '1p' "$RI_BLOCKS")
+{ [ -n "$ri_old_pid" ] && kill -0 "$ri_old_pid" 2>/dev/null; } || fail "the idle runner is not live before the restart"
+assert_present "$(restartable_marker "$HRI" rs-idle "$ri_old_token")" \
+  "a runner on current code marks itself restartable"
+cp "$HRI/state/procevent/rs-idle.source" "$TMP_ROOT/restart-idle.registration"
+restart_code_version v2
+ri_rc=0
+ri_out=$(pe_restart "$HRI" rs-idle 2>&1) || ri_rc=$?
+expect_code 0 "$ri_rc" "restarting an idle runner"
+assert_contains "$ri_out" "restarted: rs-idle (relaunched on the current code)" \
+  "restart reports the idle runner relaunched"
+assert_contains "$ri_out" \
+  "restart: restarted=1 started=0 ended=0 stopping=0 busy=0 skipped=0 uncertain=0 failed=0" \
+  "restart summarises one restarted runner"
+kill -0 "$ri_old_pid" 2>/dev/null && fail "restart left the old runner alive"
+kill -0 "$ri_old_child" 2>/dev/null && fail "restart left the old runner's polling child alive"
+ri_new_token=$(claim_line rs-idle 3)
+ri_new_pid=$(claim_line rs-idle 2)
+[ -n "$ri_new_token" ] && [ "$ri_new_token" != "$ri_old_token" ] \
+  || fail "the restarted source is not held by a new claim generation"
+kill -0 "$ri_new_pid" 2>/dev/null || fail "the relaunched runner is not live"
+assert_equals "v2 rs-idle" "$(tail -n 1 "$RS_CODE_LOG")" "the relaunched runner runs the code on disk"
+assert_equals 2 "$(grep -c '^v1 rs-idle$' "$RS_CODE_LOG")" "the runners before the restart ran the old code"
+assert_equals 1 "$(grep -c '^v2 ' "$RS_CODE_LOG")" "exactly one runner started on the new code"
+cmp -s "$TMP_ROOT/restart-idle.registration" "$HRI/state/procevent/rs-idle.source" \
+  || fail "restart changed the source registration"
+assert_present "$ri_pending" "restart kept the pending result"
+assert_absent "${ri_pending%.result}.handled" "restart never marks a pending result handled"
+assert_equals 1 "$(count_results "$HRI" rs-idle)" "the stopped poll captured no partial result"
+assert_absent "$(restart_request "$HRI" rs-idle "$ri_old_token")" "the old generation's restart request is cleared"
+assert_absent "$(restartable_marker "$HRI" rs-idle "$ri_old_token")" "the old generation's marker is cleared"
+wait_for_lines "$RI_BLOCKS" 2 300 || fail "the relaunched runner never entered its blocking poll"
+assert_present "$(restartable_marker "$HRI" rs-idle "$ri_new_token")" \
+  "the relaunched runner marks itself restartable"
+: > "$RI_TRIG"
+wait_results "$HRI" rs-idle 2 300 || fail "the relaunched runner never captured its source's next result"
+wait_payload "$HRI" "procevent plain rs-idle 2" || fail "the relaunched runner publishes the next result"
+pass "restarting an idle runner relaunches it on the code on disk with its registration and pending result kept"
+
+# --- a child that finishes cleanly on the stop has its result captured -------
+HRF="$TMP_ROOT/restart-finish"; new_home "$HRF"
+RF_READY="$TMP_ROOT/restart-finish-ready"
+pe_register "$HRF" plain rs-finish -- "$RS_FINISHER" "$RF_READY" >/dev/null
+pe_code "$HRF" reconcile >/dev/null
+wait_for "$RF_READY" 300 || fail "the finisher fixture never started"
+rf_old_token=$(claim_line rs-finish 3)
+rm -f "$RF_READY"
+rf_rc=0
+rf_out=$(pe_restart "$HRF" rs-finish 2>&1) || rf_rc=$?
+expect_code 0 "$rf_rc" "restarting a runner whose child finishes on the stop"
+assert_contains "$rf_out" "restarted: rs-finish" "restart reports the finished runner relaunched"
+rf_result=$(first_result "$HRF" rs-finish || true)
+[ -n "$rf_result" ] || fail "the result the child finished with was not captured before its runner exited"
+assert_grep 'finished on the stop' "$rf_result" "the captured result holds what the child finished with"
+wait_payload "$HRF" "procevent plain rs-finish 1" || fail "the result captured on the stop is published"
+[ "$(claim_line rs-finish 3)" != "$rf_old_token" ] || fail "the finished runner was not replaced"
+wait_for "$RF_READY" 300 || fail "the relaunched runner never started its source again"
+pass "a child that finishes cleanly when asked to stop has its result captured and published"
+
+# --- a stop the child defers past the window is reported, then completes -----
+HRS="$TMP_ROOT/restart-stubborn"; new_home "$HRS"
+RS_READY="$TMP_ROOT/restart-stubborn-ready"
+RS_TRIG="$TMP_ROOT/restart-stubborn-trigger"
+pe_register "$HRS" plain rs-stubborn -- "$RS_STUBBORN" "$RS_READY" "$RS_TRIG" >/dev/null
+pe_code "$HRS" reconcile >/dev/null
+wait_for "$RS_READY" 300 || fail "the stubborn fixture never started"
+rs_old_pid=$(claim_line rs-stubborn 2)
+rs_old_token=$(claim_line rs-stubborn 3)
+rs_rc=0
+rs_out=$(RS_WINDOW=1 pe_restart "$HRS" rs-stubborn 2>&1) || rs_rc=$?
+expect_code 3 "$rs_rc" "a restart whose runner is still finishing its child"
+assert_contains "$rs_out" "stopping: rs-stubborn (asked to stop at its next safe point" \
+  "restart reports a runner still finishing its child"
+assert_contains "$rs_out" "stopping=1" "the summary counts the runner still stopping"
+kill -0 "$rs_old_pid" 2>/dev/null || fail "the runner was stopped before its child finished"
+assert_equals "$rs_old_token" "$(claim_line rs-stubborn 3)" "the runner kept its claim while its child finished"
+assert_present "$(restart_request "$HRS" rs-stubborn "$rs_old_token")" "the restart request stays until the runner stops"
+assert_equals 0 "$(count_results "$HRS" rs-stubborn)" "nothing was captured before the child finished"
+: > "$RS_TRIG"
+wait_capture "$HRS" rs-stubborn 300 || fail "the deferred stop never captured the finished child's result"
+rs_result=$(first_result "$HRS" rs-stubborn)
+assert_grep 'finished after the stop' "$rs_result" "the deferred stop captured the whole result"
+wait_payload "$HRS" "procevent plain rs-stubborn 1" || fail "the deferred stop published the result"
+for _ in $(seq 1 100); do kill -0 "$rs_old_pid" 2>/dev/null || break; sleep 0.1; done
+kill -0 "$rs_old_pid" 2>/dev/null && fail "the runner kept running after its stop was due"
+assert_absent "$(restart_request "$HRS" rs-stubborn "$rs_old_token")" "the stopped runner cleared its restart request"
+assert_present "$HRS/state/procevent/rs-stubborn.source" "a deferred stop keeps the registration"
+rm -f "$RS_READY" "$RS_TRIG"
+pe_code "$HRS" reconcile >/dev/null
+wait_for "$RS_READY" 300 || fail "reconcile never relaunched the source after the deferred stop"
+pass "a stop the child defers is reported as stopping, captures the finished result, and is relaunched"
+
+# --- a runner from before restart support is stopped only while idle ---------
+HRL="$TMP_ROOT/restart-legacy"; new_home "$HRL"
+RL_STARTED="$TMP_ROOT/restart-legacy.started"
+pe_register "$HRL" busyprobe rs-legacy \
+  -- "$STARTED_BLOCKER" "$RL_STARTED" "$BLOCKER" "$TMP_ROOT/restart-legacy-trigger" "legacy" >/dev/null
+pe_code "$HRL" reconcile >/dev/null
+wait_for "$RL_STARTED" 300 || fail "the legacy fixture runner never entered its source command"
+rl_pid=$(claim_line rs-legacy 2)
+rl_token=$(claim_line rs-legacy 3)
+# A runner started before restart support writes no marker.
+rm -f "$(restartable_marker "$HRL" rs-legacy "$rl_token")"
+: > "$HRL/state/fixture-busy"
+rl_rc=0
+rl_out=$(RS_WINDOW=1 pe_restart "$HRL" rs-legacy 2>&1) || rl_rc=$?
+expect_code 3 "$rl_rc" "a restart whose pre-protocol runner reports busy"
+assert_contains "$rl_out" "busy: rs-legacy (a runner from before restart support was never idle" \
+  "restart reports a busy pre-protocol runner"
+kill -0 "$rl_pid" 2>/dev/null || fail "restart stopped a pre-protocol runner its adapter called busy"
+assert_equals "$rl_token" "$(claim_line rs-legacy 3)" "a busy pre-protocol runner keeps its claim"
+assert_absent "$(restart_request "$HRL" rs-legacy "$rl_token")" "a pre-protocol runner is never sent a request it cannot read"
+rm -f "$HRL/state/fixture-busy" "$RL_STARTED"
+rl_rc=0
+rl_out=$(pe_restart "$HRL" rs-legacy 2>&1) || rl_rc=$?
+expect_code 0 "$rl_rc" "restarting an idle pre-protocol runner"
+assert_contains "$rl_out" "restarted: rs-legacy (relaunched on the current code)" \
+  "restart relaunches an idle pre-protocol runner"
+kill -0 "$rl_pid" 2>/dev/null && fail "restart left the idle pre-protocol runner alive"
+rl_new_token=$(claim_line rs-legacy 3)
+[ -n "$rl_new_token" ] && [ "$rl_new_token" != "$rl_token" ] || fail "the pre-protocol source has no new claim generation"
+wait_for "$RL_STARTED" 300 || fail "the relaunched legacy source never entered its source command"
+assert_present "$(restartable_marker "$HRL" rs-legacy "$rl_new_token")" \
+  "the runner that replaced a pre-protocol runner honours the protocol"
+assert_equals 0 "$(count_results "$HRL" rs-legacy)" "stopping an idle pre-protocol runner captured nothing"
+
+# Output already staged means the child was writing a result, whatever its
+# adapter says.
+RP_TRIG="$TMP_ROOT/restart-partial-trigger"
+pe_register "$HRL" busyprobe rs-partial -- "$RS_PARTIAL" "$RP_TRIG" >/dev/null
+pe_code "$HRL" reconcile >/dev/null
+wait_for "$FM_PROCEVENT_CLAIM_ROOT/rs-partial.claim" 300 || fail "the partial-output source was never claimed"
+rp_pid=$(claim_line rs-partial 2)
+rp_token=$(claim_line rs-partial 3)
+wait_for "$HRL/state/procevent/.rs-partial.$rp_token.output" 300 || fail "the partial output was never staged"
+rm -f "$(restartable_marker "$HRL" rs-partial "$rp_token")"
+rp_rc=0
+rp_out=$(RS_WINDOW=1 pe_restart "$HRL" rs-partial 2>&1) || rp_rc=$?
+expect_code 3 "$rp_rc" "a restart whose pre-protocol runner has staged output"
+assert_contains "$rp_out" "busy: rs-partial" "restart refuses to stop a pre-protocol runner with staged output"
+kill -0 "$rp_pid" 2>/dev/null || fail "restart stopped a pre-protocol runner mid-result"
+: > "$RP_TRIG"
+wait_capture "$HRL" rs-partial 300 || fail "the partial-output runner never finished its result"
+rp_result=$(first_result "$HRL" rs-partial)
+assert_grep 'partial' "$rp_result" "the result begun before the restart is kept whole"
+assert_grep 'rest' "$rp_result" "the result begun before the restart is finished"
+pass "a pre-protocol runner is stopped only while idle and never mid-result"
+
+# --- --all covers every runner of this home and only this home ----------------
+HAA="$TMP_ROOT/restart-all-a"; HAB="$TMP_ROOT/restart-all-b"; new_home "$HAA"; new_home "$HAB"
+RA_TRIG="$TMP_ROOT/restart-all-trigger"
+pe_register "$HAB" plain rs-all-shared \
+  -- "$STARTED_BLOCKER" "$TMP_ROOT/rs-all-shared.started" "$BLOCKER" "$RA_TRIG" shared >/dev/null
+pe_register "$HAB" plain rs-all-b1 \
+  -- "$STARTED_BLOCKER" "$TMP_ROOT/rs-all-b1.started" "$BLOCKER" "$RA_TRIG" b1 >/dev/null
+pe_code "$HAB" reconcile >/dev/null
+wait_for "$TMP_ROOT/rs-all-shared.started" 300 || fail "the other home never started its shared source"
+wait_for "$TMP_ROOT/rs-all-b1.started" 300 || fail "the other home never started its own source"
+pe_register "$HAA" plain rs-all-shared \
+  -- "$STARTED_BLOCKER" "$TMP_ROOT/rs-all-shared-a.started" "$BLOCKER" "$RA_TRIG" shared >/dev/null
+pe_register "$HAA" plain rs-all-a1 \
+  -- "$STARTED_BLOCKER" "$TMP_ROOT/rs-all-a1.started" "$BLOCKER" "$RA_TRIG" a1 >/dev/null
+pe_code "$HAA" reconcile >/dev/null
+wait_for "$TMP_ROOT/rs-all-a1.started" 300 || fail "this home never started its running source"
+pe_register "$HAA" plain rs-all-a2 \
+  -- "$STARTED_BLOCKER" "$TMP_ROOT/rs-all-a2.started" "$BLOCKER" "$RA_TRIG" a2 >/dev/null
+ra_shared_pid=$(claim_line rs-all-shared 2); ra_shared_token=$(claim_line rs-all-shared 3)
+ra_b1_pid=$(claim_line rs-all-b1 2); ra_b1_token=$(claim_line rs-all-b1 3)
+ra_a1_token=$(claim_line rs-all-a1 3)
+assert_absent "$FM_PROCEVENT_CLAIM_ROOT/rs-all-a2.claim" "the not-yet-running source has no claim before the restart"
+ra_rc=0
+ra_out=$(pe_restart "$HAA" --all 2>&1) || ra_rc=$?
+expect_code 0 "$ra_rc" "restart --all"
+assert_contains "$ra_out" "restarted: rs-all-a1" "--all restarts this home's running source"
+assert_contains "$ra_out" "started: rs-all-a2" "--all starts this home's source that was not running"
+assert_contains "$ra_out" "skipped: rs-all-shared (another home's runner holds the source)" \
+  "--all leaves a source another home owns to that home"
+assert_not_contains "$ra_out" "rs-all-b1" "--all never names another home's own source"
+assert_contains "$ra_out" \
+  "restart: restarted=1 started=1 ended=0 stopping=0 busy=0 skipped=1 uncertain=0 failed=0" \
+  "--all summarises this home's sources only"
+[ "$(claim_line rs-all-a1 3)" != "$ra_a1_token" ] || fail "--all did not replace this home's running source"
+wait_for "$TMP_ROOT/rs-all-a2.started" 300 || fail "--all never started this home's idle source"
+assert_equals "$ra_shared_token" "$(claim_line rs-all-shared 3)" "--all left another home's claim alone"
+assert_equals "$ra_b1_token" "$(claim_line rs-all-b1 3)" "--all left another home's own source alone"
+kill -0 "$ra_shared_pid" 2>/dev/null || fail "--all stopped another home's runner"
+kill -0 "$ra_b1_pid" 2>/dev/null || fail "--all stopped another home's own runner"
+assert_absent "$(restart_request "$HAB" rs-all-b1 "$ra_b1_token")" "--all sent another home's runner no request"
+assert_absent "$TMP_ROOT/rs-all-shared-a.started" "this home never ran the source another home owns"
+pass "restart --all covers every runner of this home and only this home"
+
+# --- refusals ----------------------------------------------------------------
+HRE="$TMP_ROOT/restart-refusals"; new_home "$HRE"
+re_rc=0
+re_out=$(pe_restart "$HRE" --all 2>&1) || re_rc=$?
+expect_code 0 "$re_rc" "restart --all with nothing registered"
+assert_contains "$re_out" \
+  "restart: restarted=0 started=0 ended=0 stopping=0 busy=0 skipped=0 uncertain=0 failed=0" \
+  "restart --all with nothing registered reports nothing"
+re_rc=0
+re_out=$(pe_restart "$HRE" no-such-src 2>&1) || re_rc=$?
+expect_code 1 "$re_rc" "restarting an unregistered source"
+assert_contains "$re_out" "source is not registered: no-such-src" "restart names the unregistered source"
+re_rc=0
+pe_code "$HRE" restart >/dev/null 2>&1 || re_rc=$?
+expect_code 2 "$re_rc" "restart without a source"
+for re_window in 0 601 abc; do
+  re_rc=0
+  re_out=$(RS_WINDOW=$re_window pe_restart "$HRE" --all 2>&1) || re_rc=$?
+  expect_code 1 "$re_rc" "restart with FM_PROCEVENT_RESTART_SECONDS='$re_window'"
+  assert_contains "$re_out" "FM_PROCEVENT_RESTART_SECONDS must be whole seconds from 1 to 600" \
+    "restart refuses FM_PROCEVENT_RESTART_SECONDS='$re_window' by name"
+done
+pass "restart refuses an unregistered source, a missing argument and an unusable window"
+
+pe "$HRI" retire rs-idle >/dev/null 2>&1 || true
+pe "$HRF" retire rs-finish >/dev/null 2>&1 || true
+pe "$HRS" retire rs-stubborn >/dev/null 2>&1 || true
+pe "$HRL" retire rs-legacy >/dev/null 2>&1 || true
+pe "$HRL" retire rs-partial >/dev/null 2>&1 || true
+pe "$HAA" retire rs-all-a1 >/dev/null 2>&1 || true
+pe "$HAA" retire rs-all-a2 >/dev/null 2>&1 || true
+pe "$HAB" retire rs-all-shared >/dev/null 2>&1 || true
+pe "$HAB" retire rs-all-b1 >/dev/null 2>&1 || true
+}
+
 # Every case group above owns its homes, its claim root (use_claim_root) and its
 # fixture paths, and acts only on processes it started, so the groups run through
 # fm_run_case_pool (tests/lib.sh), longest first. FM_PROCEVENT_CASE_JOBS
@@ -3499,6 +3860,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_prompt_stop_and_crash \
   test_state_root_identity \
   test_owner_check_default \
+  test_restart \
   || fail 'one or more procevent case groups failed'
 
 printf '\nall procevent tests passed\n'

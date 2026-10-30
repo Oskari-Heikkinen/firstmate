@@ -1,6 +1,6 @@
 ---
 name: process-event-sources
-description: "Load before waiting on any external process instead of polling in a turn (PR merge, CI run, remote reply, queue result, land-after order, condition->action watch), when arming or retiring one with bin/fm-procevent*.sh, and on any procevent, stranded or failed-start wake."
+description: "Load before waiting on any external process instead of polling in a turn (PR merge, CI run, remote reply, queue result, land-after order, condition->action watch), when arming, restarting or retiring one with bin/fm-procevent*.sh, and on any procevent, stranded or failed-start wake."
 user-invocable: false
 metadata:
   internal: true
@@ -92,6 +92,12 @@ Two rules the commands cannot enforce for you:
 
 - **Never run the source's blocking command yourself in a conversational turn.** That is the problem the runner exists to remove, and for a destructive source it also consumes the result where nothing durable can capture it.
 - **A source is a wait on an external process, not a task.** It gets no task metadata and no backlog entry. If the wait itself needs tracking, file it as its own work item.
+
+## Restarting runners onto updated code
+
+A runner keeps the code it started with until it next starts, so after an update to `bin/` move this home's runners onto the new code with `bin/fm-procevent.sh restart --all`, or one source with `restart <source-id>`; never kill a runner by hand, which can cut a capture or a fired action short.
+Each runner stops only at a safe point, keeps its registration and every pending result, and is relaunched and confirmed before the command returns; [`docs/configuration.md`](../../../docs/configuration.md#process-to-event-sources-stateprocevent) owns the contract and the outcome words.
+Exit 0 means every source finished; exit 3 means something was left `stopping` (it stops at its next safe point and the watcher's next reconcile relaunches it), `busy` (a runner from before restart support that never looked idle, which keeps its old code until it ends) or `uncertain`, so check `bin/fm-procevent.sh list` after a cycle; exit 1 means a relaunch did not confirm and is handled like any launch failure below.
 
 ## Handling a wake
 
