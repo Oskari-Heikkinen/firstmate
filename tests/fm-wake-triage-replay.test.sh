@@ -327,6 +327,7 @@ test_audit_and_span() {
 
 test_pi_engine() {
   local out="$TMP_ROOT/pi.tsv"
+  : > "$STUB_DIR/pi-calls"
   replay "$out" --engine pi --model openai-codex/gpt-6.1-sol --effort high
   expect_code 0 "$RC" "pi run"
   assert_equals 5 "$(wc -l < "$STUB_DIR/pi-calls" | tr -d ' ')" "pi ran the listed rows"
