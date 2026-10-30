@@ -1,0 +1,54 @@
+schema=fm-helper-calls/v1
+# The bin/fm-disk-room.sh calls its pinned consumers make (services, arrivals,
+# filler and lane, all with a 20G margin), in each storage policy state the
+# helper supports, against the fixture world in disk-room/: C: 120 GiB free,
+# Linux 200 GiB free, 4 GiB swap growth, strict C: terms all measured at 0
+# bytes. tests/fm-helper-equiv.test.sh runs it on historical versions.
+consumer=disk-room
+helper=bin/fm-disk-room.sh
+fixture=disk-room
+env=PATH=@FIXTURE@/bin:/usr/bin:/bin
+env=FAKE_DF=@FIXTURE@/df
+env=FAKE_CTERMS=@FIXTURE@/cterms.json
+env=FM_DISK_ROOM_MARGIN=20G
+env=FM_DISK_ROOM_HOST=@FIXTURE@/c
+env=FM_DISK_ROOM_ROOT=@FIXTURE@/root
+env=FM_DISK_ROOM_VHDX=@FIXTURE@/c/none.vhdx
+env=FM_DISK_ROOM_MB_GROUPS=none
+env=FM_DISK_ROOM_DEV_SIZE=300G
+env=FM_DISK_ROOM_POWERSHELL=
+env=FM_DISK_ROOM_WEVTUTIL=
+env=FM_DISK_ROOM_SHADOW_RECORD=none
+env=FM_DISK_ROOM_WSLCONFIG=@FIXTURE@/wslconfig
+env=FM_DISK_ROOM_MEMINFO=@FIXTURE@/meminfo
+env=FM_DISK_ROOM_BOOT_ID=@FIXTURE@/boot_id
+env=FM_DISK_ROOM_RESULTS_ROOT=none
+env=FM_DISK_ROOM_SAMPLES=none
+env=FM_DISK_ROOM_COMPACT_RESULT=none
+env=FM_DISK_ROOM_STATE=@SANDBOX@/state
+env=FM_DISK_ROOM_NOW=1793000000
+state=absent FM_DISK_ROOM_POLICY=@FIXTURE@/no-policy
+state=legacy FM_DISK_ROOM_POLICY=@FIXTURE@/policy-legacy
+state=strict FM_DISK_ROOM_POLICY=@FIXTURE@/policy-strict
+state=unreadable FM_DISK_ROOM_POLICY=@FIXTURE@/policy-unreadable
+timeout=60
+call=--interface
+call=--interface v1
+call=--interface v2
+call=--interface v3
+call=--self-test v1
+call=--self-test v2
+call=status --json
+call=check --expect-write 95G
+call=check --expect-write 100G
+call=check --expect-write 0
+call=check --expect-write lots
+call=reserve job-a 10G --pid @PID@
+call=status --json
+call=check --expect-write 10G --exclude job-a
+call=release job-a
+call=release job-a
+call=release-bulk job-a
+call=status
+call=FM_DISK_ROOM_HOST= status --json
+call=FM_DISK_ROOM_HOST= check --expect-write 10G

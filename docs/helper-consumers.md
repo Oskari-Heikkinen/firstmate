@@ -64,9 +64,50 @@ The record lives in `${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/helper-vers
 A reviewer therefore reviews precisely what will deploy, before it deploys; consumers never run that copy.
 Firstmate also files one note per pending version to the main firstmate, which routes it to the declared owner.
 
+## Consumer call sets
+
+A consumer may publish the calls it makes to a helper as data, so its reviewer can see how a new version answers exactly those calls.
+The file is `<consumer-id>.calls`, in the same directory as the consumer's declaration, and Firstmate only reads it.
+`bin/fm-helper-equiv.sh` runs a call set against two versions of a helper and writes the call-equivalence report; its header owns the commands, output and exit codes.
+
+```
+schema=fm-helper-calls/v1
+consumer=example-service
+helper=bin/fm-disk-room.sh
+fixture=example-service.fixture
+env=FM_DISK_ROOM_MARGIN=20G
+env=FM_DISK_ROOM_STATE=@SANDBOX@/state
+state=absent FM_DISK_ROOM_POLICY=@FIXTURE@/no-policy
+state=strict FM_DISK_ROOM_POLICY=@FIXTURE@/policy-strict
+call=check --expect-write 10G
+call=FM_DISK_ROOM_HOST= status --json
+```
+
+- `schema=` comes first, exactly once, and is `fm-helper-calls/v1`.
+- `consumer=` appears once, before any `helper=`, and equals the file name without `.calls`.
+- `helper=` starts the section for one helper, as its path inside the Firstmate repository, because the report reads each version from Git history.
+- `fixture=` appears at most once per section and names a directory relative to the call set; every run gets a fresh copy of it.
+- `env=NAME=VALUE` lines set the environment of every call in the section.
+- `state=NAME [NAME=VALUE...]` lines, up to 8, name each state the helper supports, such as each storage policy state, with the environment that sets it up; every call runs in every state, and a section without one has a single state named `default`.
+- `call=[NAME=VALUE...] ARG...` lines, 1 to 200, are the calls in the order the consumer makes them; leading `NAME=VALUE` words set that call's environment, and a leading `--` ends them.
+- `timeout=SECONDS` appears at most once per section, from 1 to 600, and bounds each call; the default is 60.
+- Words are separated by spaces; inside a word `\s` is a space, `\t` a tab and `\\` a backslash, and `\e` alone is an empty argument.
+- `@SANDBOX@` (the run's scratch directory), `@FIXTURE@` (the run's copy of the fixture) and `@PID@` (a process alive for the whole run, for `--pid` arguments) are replaced in every value and argument.
+- Blank lines and lines starting with `#` are ignored; any other key, a repeated single key, or a malformed line makes the file malformed, and the report refuses, naming the file and line.
+
+Nothing else is inherited: each call starts from an empty environment with only a fixed `PATH`, a `HOME`, `TMPDIR` and XDG directories inside the sandbox, and the C locale and UTC.
+So a call set points every path the helper would read or write at `@SANDBOX@` or `@FIXTURE@`, and the report never touches a real home or live state.
+
+The report runs each version's exact bytes, taken from Git and checked by sha256, in a fresh sandbox per state, with no network where the machine allows it, at nice 19 and idle I/O.
+Each state runs the old version twice and the new version once, so a result that changes between two runs of the same bytes is caught.
+It has one table row per call, state and aspect (rc, stdout, stderr, or the state left in the sandbox) that differs or is unknown, so identical versions give no rows.
+A difference is a finding for the reviewer, never an automatic refusal or acceptance: the report holds or advances nothing, and acceptance stays the consumer's own review.
+An unknown - a call that timed out or could not start, an unreadable state, a call past the run's deadline, or an old result that changed between its two runs - is never counted as equal.
+
 ## What a consumer does
 
 - Declare every helper it pins, before relying on the pin.
+- Publish the calls it makes as a call set, so each pending version's review can include how that version answers them.
 - Keep `accept=` equal to the versions it accepts now, and add a new version only after its own review accepts it.
 - Review each pending version from its record, then accept it so the next update can deploy it.
 - When a version reaches it unaccepted anyway, wait visibly and resume by itself once it accepts a version, rather than latching a hold that needs a hand to clear.
