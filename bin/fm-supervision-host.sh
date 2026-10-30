@@ -5,6 +5,7 @@
 #
 # Usage:
 #   fm-supervision-host.sh park [--restart]
+#   fm-supervision-host.sh stop
 #
 # A primary's arm owner runs this in place of bin/fm-watch-arm.sh when the home
 # runs the host (by explicit config/supervision-host opt-in on every primary,
@@ -156,6 +157,33 @@
 # record only once that identity is no longer alive, so a later host retries a
 # take-over that left it running.
 #
+# STOP. fm-supervision-host.sh stop ends this home's host park on request, at
+# any point, for anything an idle host would otherwise hold up (an install, an
+# update, a landing). It reads the host row of state/.supervision-host only as
+# a regular file under a 5-second bound, and signals that pid only while its
+# current identity equals the recorded one and that identity's command line is
+# this script's park verb: a reused pid, a foreign process, or an unreadable
+# identity is never signalled. It sends USR1 first and writes nothing before
+# it. The host ends its park the way the boundary does (THE PARK BOUNDARY), at
+# its next safe point: within a park tick while parked, after an arm launch,
+# before an engine turn starts, and at once while it waits on a turn's engine,
+# never inside its bookkeeping; a stopped turn's engine is stopped and the
+# wake that turn held stays queued; the arms and this home's watcher are
+# stopped, so the
+# watcher publishes downtime; and it exits 0 with any close already read and one
+# "supervision-host: stopped on request" line, which every owner delivers as
+# an ordinary wake. Main drains, acknowledges and ends its turn, and that turn
+# end starts the next park, which resumes from the durable wake queue. The
+# verb leaves the engine record, the latch, the left-successor record and the
+# wake queue alone. Only when the host has not exited within
+# FM_SUPERVISION_HOST_STOP_WAIT seconds does the verb send TERM (the host's
+# signal exit, which its owner retries), and after 10 more seconds KILL; the
+# next host's activation stops anything a KILLed host left running. It prints
+# one "supervision-host stop:" line, appends it to the host log after any
+# signal, and exits 0 when the host stopped on request or was already stopped
+# (no record, a dead pid, or a pid that now runs another process), 3 when it
+# had to be forced, and 1 when it refused or the host still runs.
+#
 # STATE (all under state/, owned here): .supervision-host (this host's pid and
 # the processes it runs), .supervision-host-engine (the engine conversation:
 # engine, model, session id, main-session key, turn count, running cost),
@@ -177,7 +205,9 @@
 # the boundary), FM_SUPERVISION_HOST_TURN_TIMEOUT (1200), FM_SUPERVISION_HOST_ROTATE_TURNS (20:
 # a new engine conversation after this many turns; every main session start
 # also opens a new one), FM_SUPERVISION_HOST_READY_TIMEOUT (25: how long a
-# successor cycle may take to verify), FM_SUPERVISION_HOST_POLL (1).
+# successor cycle may take to verify), FM_SUPERVISION_HOST_POLL (1),
+# FM_SUPERVISION_HOST_STOP_WAIT (120: how long the stop verb waits for the
+# host to end its park on request before it escalates; read by the verb).
 # Park duration uses Bash's process-relative SECONDS counter (including Bash
 # 3.2) and, where /proc/uptime exists, the boot clock since the owner's start
 # (THE PARK BOUNDARY), each read without a fork; durable timestamps still use
@@ -187,7 +217,9 @@
 # POLL cadence, and close observation still takes at most that probe interval
 # plus work/scheduling time. A builtin wait is interruptible by a caught signal;
 # HUP/TERM use native fatal handling and EXIT cleanup outside that read, so
-# a foreground bookkeeping helper cannot defer shutdown. A FIFO setup or read
+# a foreground bookkeeping helper cannot defer shutdown. USR1 is the stop
+# request (STOP), caught throughout and honoured at a safe point, so a park
+# tick bounds its wait outside an engine turn. A FIFO setup or read
 # failure exits with a supervision-host wake instead of spinning.
 # FM_TEST_SUPERVISION_HOST_CLOCK names a file holding the park's elapsed
 # seconds, which the park and turn boundary checks read in place of SECONDS,
@@ -216,16 +248,21 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 . "$SCRIPT_DIR/fm-afk-contract.sh"
 
 FIRST_ARM_RESTART=0
+HOST_VERB=park
 case "${1:-}" in
   park)
     case "$#:${2:-}" in
       1:) ;;
       2:--restart) FIRST_ARM_RESTART=1 ;;
-      *) echo "usage: fm-supervision-host.sh park [--restart]" >&2; exit 2 ;;
+      *) echo "usage: fm-supervision-host.sh park [--restart] | stop" >&2; exit 2 ;;
     esac
     ;;
+  stop)
+    [ "$#" -eq 1 ] || { echo "usage: fm-supervision-host.sh park [--restart] | stop" >&2; exit 2; }
+    HOST_VERB=stop
+    ;;
   -h|--help) sed -n '2,/^set -u/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
-  *) echo "usage: fm-supervision-host.sh park [--restart]" >&2; exit 2 ;;
+  *) echo "usage: fm-supervision-host.sh park [--restart] | stop" >&2; exit 2 ;;
 esac
 
 numeric_or() {  # <value> <default>
@@ -310,6 +347,15 @@ LAUNCH_SIGNAL=0
 # close (emit): the cleanup names an exit that did neither.
 HOST_SIGNALLED=
 HOST_EMITTED=0
+# A stop request (USR1 from the stop verb): whether one arrived, whether the
+# host is activated far enough to honour it, whether it is waiting on an
+# engine turn (the one wait the trap ends at once), and whether an exit is
+# already under way, which a request never interrupts.
+HOST_STOP_REQUESTED=0
+HOST_STOP_READY=0
+HOST_STOP_AT_ONCE=0
+HOST_ENDING=0
+STOP_WAIT=$(numeric_or "${FM_SUPERVISION_HOST_STOP_WAIT:-}" 120)
 
 log_line() {  # <text>
   local tmp
@@ -603,6 +649,7 @@ log_stopped() {
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() {
   local rc=$? f
+  HOST_ENDING=1
   trap - EXIT HUP TERM INT
   exec 9>&-
   if [ -n "$WAIT_DIR" ]; then
@@ -692,6 +739,7 @@ start_arm() {  # <pid-variable> <output-variable> <predecessor or empty> [arm fl
   host_stop_signals
   [ "$LAUNCH_SIGNAL" -eq 0 ] || exit "$LAUNCH_SIGNAL"
   [ "${ARM_OWN_GROUP:-0}" -ne 1 ] || set +m 2>/dev/null || true
+  stop_if_requested
   if ! record_process arm "$pid" "$out"; then
     log_line "arm-start-failed	pid=$pid	initial identity unavailable within 5s or record unwritable"
     ARM_START_FAILURE='supervision-host: initial arm identity could not be recorded within 5s; retiring the owned child; drain and re-arm supervision'
@@ -759,10 +807,10 @@ turn_crosses_boundary() {
   [ $((PARK_ELAPSED + TURN_TIMEOUT + ENGINE_GRACE)) -ge "$PARK_LIMIT" ]
 }
 
-# End the park at the boundary: stop the current and successor arms and this
-# home's watcher, print any close already read so main drains it, then the
-# boundary line.
-boundary_exit() {
+# End the park on purpose: stop the current and successor arms and this
+# home's watcher, print any close already read so main drains it, then <line>.
+end_park() {  # <log-event> <line>
+  HOST_ENDING=1
   retire_arm "$ARM_PID" "$ARM_OUT"
   retire_arm "$SUCCESSOR_PID" "$SUCCESSOR_OUT"
   ARM_PID=
@@ -771,9 +819,41 @@ boundary_exit() {
   SUCCESSOR_OUT=
   "$SCRIPT_DIR/fm-watch-arm.sh" --stop >/dev/null 2>&1 || true
   park_elapsed
-  log_line "boundary	after ${PARK_ELAPSED}s	wall=${PARK_WALL}s boot=${PARK_BOOT:-none}${PARK_BOOT:+s}"
-  emit 'supervision-host: cycle boundary - the host ended its park at its bound; drain, acknowledge, and end the turn, and the next park starts on its own'
+  log_line "$1	after ${PARK_ELAPSED}s	wall=${PARK_WALL}s boot=${PARK_BOOT:-none}${PARK_BOOT:+s}"
+  emit "$2"
   exit 0
+}
+
+boundary_exit() {
+  end_park boundary 'supervision-host: cycle boundary - the host ended its park at its bound; drain, acknowledge, and end the turn, and the next park starts on its own'
+}
+
+# End the park on a stop request (header, STOP), the way the boundary ends it,
+# after stopping a running engine turn; the wake that turn held stays queued.
+stop_exit() {
+  HOST_ENDING=1
+  if [ "$ENGINE_RUNNING" -eq 1 ]; then
+    stop_engine_turn
+    ENGINE_RUNNING=0
+  fi
+  end_park stop-requested 'supervision-host: stopped on request - fm-supervision-host.sh stop ended the park; drain, acknowledge, and end the turn, and the next park starts on its own'
+}
+
+# The USR1 trap. While the host waits on an engine turn it ends the park at
+# once; anywhere else it only records the request, which the next safe point
+# honours (stop_if_requested), so no bookkeeping is cut short.
+# shellcheck disable=SC2329 # Invoked by the USR1 trap.
+host_stop_request() {
+  HOST_STOP_REQUESTED=1
+  [ "$HOST_STOP_AT_ONCE" -eq 0 ] || stop_if_requested
+}
+
+# A safe point: end the park here if a stop was requested.
+stop_if_requested() {
+  if [ "$HOST_STOP_REQUESTED" -eq 1 ] && [ "$HOST_STOP_READY" -eq 1 ] \
+    && [ "$HOST_ENDING" -eq 0 ] && [ "$HOST_EMITTED" -eq 0 ]; then
+    stop_exit
+  fi
 }
 
 # Print the first cycle's status line once the arm has written it in full.
@@ -825,6 +905,7 @@ park_wait_half_second() {
   local _ rc
   if [ "$WAIT_BUILTIN" -eq 0 ]; then
     sleep 0.5
+    stop_if_requested
     return
   fi
   trap 'host_signal 129' HUP
@@ -834,6 +915,7 @@ park_wait_half_second() {
   WAIT_READING=0
   host_stop_signals
   [ "$WAIT_SIGNAL" -eq 0 ] || exit "$WAIT_SIGNAL"
+  stop_if_requested
   # A timeout returns >128. EOF, a bad descriptor or unexpected data must not
   # turn a broken timer into a busy loop; cleanup still retires the arms.
   if [ "$rc" -le 128 ]; then
@@ -1272,6 +1354,7 @@ handle_wake() {  # <reason-lines>
   errors=$(mktemp "$STATE/.supervision-host-errors.XXXXXX") || errors=/dev/null
   TURN_RESULT=$result
   TURN_ERRORS=$errors
+  stop_if_requested
   ENGINE_RUNNING=1
   # Backgrounded and waited, so a signal to the host is handled at once
   # instead of after the whole turn; the cleanup stops the engine.
@@ -1289,8 +1372,12 @@ handle_wake() {  # <reason-lines>
       "$result" "$errors" "$ENGINE_PID_FILE"
   ) &
   ENGINE_SUBSHELL=$!
+  HOST_STOP_AT_ONCE=1
+  stop_if_requested
   wait "$ENGINE_SUBSHELL"
-  rc=$?
+  # One command reads the status and closes the at-once window, so a request
+  # landing after the engine returned waits for the bookkeeping below.
+  HOST_STOP_AT_ONCE=0 rc=$?
   ENGINE_SUBSHELL=
   ENGINE_RUNNING=0
   release_branch_leases
@@ -1365,11 +1452,136 @@ attended_acceptor() {  # <first-reason-line>
   [ -z "$ATTENDED_WHY" ]
 }
 
+# The stop verb's outcome (header, STOP): one line, then the ledger line,
+# written only after any signal and only to a regular file, under a bound.
+stop_verb_outcome() {  # <exit-status> <text>
+  printf 'supervision-host stop: %s\n' "$2"
+  if [ ! -e "$HOST_LOG" ] && [ ! -L "$HOST_LOG" ] || { [ ! -L "$HOST_LOG" ] && [ -f "$HOST_LOG" ]; }; then
+    # shellcheck disable=SC2016 # Positional parameters of the bounded sh.
+    fm_run_timed 5 sh -c 'printf "%s\tstop-verb\t%s\n" "$1" "$2" >> "$3"' sh "$(date +%s)" "$2" "$HOST_LOG" >/dev/null 2>&1 || true
+  fi
+  exit "$1"
+}
+
+# True when <identity>'s command line runs this script's park verb, so a
+# record naming some other live process is refused rather than signalled.
+identity_names_host() {  # <identity>
+  local hex cmd='' i=0 pair
+  case "$1" in
+    *-starttime=*' cmdline-hex='*)
+      hex=${1#* cmdline-hex=}
+      while [ "$i" -lt "${#hex}" ]; do
+        pair=${hex:$i:2}
+        case "$pair" in
+          00) cmd="$cmd " ;;
+          [0-9a-f][0-9a-f]) cmd="$cmd\\x$pair" ;;
+          *) return 1 ;;
+        esac
+        i=$((i + 2))
+      done
+      printf -v cmd '%b' "$cmd"
+      cmd=${cmd% }
+      ;;
+    *)
+      # Portable ps identity: the command follows the 24-character lstart.
+      cmd=${1:25}
+      ;;
+  esac
+  case "$cmd" in
+    *'fm-supervision-host.sh park'|*'fm-supervision-host.sh park --restart') return 0 ;;
+  esac
+  return 1
+}
+
+# True when <pid> has exited but is not yet reaped: its command line is empty,
+# so its identity cannot be read, yet it has nothing left to stop.
+pid_is_zombie() {  # <pid>
+  local stat='' state=''
+  local -a fields
+  if fm_file_text_to stat "${FM_PROC_ROOT_OVERRIDE:-/proc}/$1/stat" 2>/dev/null && [ -n "$stat" ]; then
+    read -r -a fields <<< "${stat##*)}"
+    state=${fields[0]:-}
+  else
+    state=$(fm_run_timed 5 ps -o stat= -p "$1" 2>/dev/null) || return 1
+    state=${state#"${state%%[! ]*}"}
+  fi
+  case "$state" in Z*) return 0 ;; esac
+  return 1
+}
+
+# True once <pid> no longer runs as <identity>: exited, reaped, a zombie
+# (whose command line is empty), or reused by another process.
+host_gone_within() {  # <pid> <identity> <seconds>
+  local deadline=$((SECONDS + $3)) current
+  while :; do
+    fm_pid_alive "$1" || return 0
+    _fm_engine_identity_to current "$1" || current=
+    [ "$current" = "$2" ] || return 0
+    [ "$SECONDS" -lt "$deadline" ] || return 1
+    sleep 0.1
+  done
+}
+
+# Stop this home's host (header, STOP): prove the recorded pid is a live host
+# park under its recorded identity, ask it to end its park (USR1), and only if
+# it does not answer within STOP_WAIT escalate to TERM, then KILL, each sent
+# only while that identity still matches. Writes no state of its own.
+stop_host() {
+  local row='' role='' pid='' identity='' current=''
+  if [ ! -e "$HOST_RECORD" ] && [ ! -L "$HOST_RECORD" ]; then
+    stop_verb_outcome 0 'already stopped - no host record'
+  fi
+  if [ -L "$HOST_RECORD" ] || [ ! -f "$HOST_RECORD" ]; then
+    stop_verb_outcome 1 "refused - $HOST_RECORD is not a regular file; nothing was signalled"
+  fi
+  # shellcheck disable=SC2016 # An awk program.
+  if ! row=$(fm_run_timed 5 awk -F '\t' '$1 == "host" { print; exit }' "$HOST_RECORD" 2>/dev/null); then
+    stop_verb_outcome 1 'refused - the host record could not be read within 5s; nothing was signalled'
+  fi
+  IFS=$'\t' read -r role pid identity _ <<< "$row"
+  if [ "$role" != host ] || [ -z "$identity" ]; then
+    stop_verb_outcome 1 'refused - the host record names no host with an identity; nothing was signalled'
+  fi
+  case "$pid" in
+    ''|*[!0-9]*) stop_verb_outcome 1 'refused - the host record names no numeric pid; nothing was signalled' ;;
+  esac
+  fm_pid_alive "$pid" || stop_verb_outcome 0 "already stopped - recorded host pid $pid is not running"
+  if ! _fm_engine_identity_to current "$pid"; then
+    if ! fm_pid_alive "$pid" || pid_is_zombie "$pid"; then
+      stop_verb_outcome 0 "already stopped - recorded host pid $pid is not running"
+    fi
+    stop_verb_outcome 1 "refused - the identity of pid $pid could not be read; nothing was signalled"
+  fi
+  if [ "$current" != "$identity" ]; then
+    stop_verb_outcome 0 "already stopped - pid $pid now runs another process than the recorded host; nothing was signalled"
+  fi
+  if ! identity_names_host "$identity"; then
+    stop_verb_outcome 1 "refused - recorded pid $pid is not a supervision host park; nothing was signalled"
+  fi
+  if ! kill -USR1 "$pid" 2>/dev/null; then
+    host_gone_within "$pid" "$identity" 0 && stop_verb_outcome 0 "already stopped - recorded host pid $pid exited before the request"
+    stop_verb_outcome 1 "failed - the stop request could not be sent to pid $pid"
+  fi
+  host_gone_within "$pid" "$identity" "$STOP_WAIT" \
+    && stop_verb_outcome 0 "stopped pid $pid on request; it ended its park and printed its close for its owner"
+  host_gone_within "$pid" "$identity" 0 || kill -TERM "$pid" 2>/dev/null || true
+  host_gone_within "$pid" "$identity" 10 \
+    && stop_verb_outcome 3 "stopped pid $pid with TERM after it left the request unanswered for ${STOP_WAIT}s; its owner retries the park"
+  host_gone_within "$pid" "$identity" 0 || kill -KILL "$pid" 2>/dev/null || true
+  host_gone_within "$pid" "$identity" 5 \
+    && stop_verb_outcome 3 "stopped pid $pid with KILL after it left the request and TERM unanswered; the next host's activation stops what it left running"
+  stop_verb_outcome 1 "failed - pid $pid still runs after the request, TERM and KILL"
+}
+
 # Sourcing exposes finite functions only, never ownership or lifecycle work.
 if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 0; fi
 
+[ "$HOST_VERB" != stop ] || stop_host
+
 # Ownership first: a host that does not own supervision leaves the owner's
-# host, processes, arms, and leases alone.
+# host, processes, arms, and leases alone. A stop request is honoured once
+# the host has activated and its park wait is ready.
+trap host_stop_request USR1
 if ! host_still_owner; then
   stand_down "this session does not own supervision"
 fi
@@ -1377,6 +1589,8 @@ trap cleanup EXIT
 host_stop_signals
 activate || { HOST_EMITTED=1; echo "supervision-host stood down: the host record could not be written"; exit 0; }
 prepare_park_wait || { emit 'supervision-host: park timer could not be prepared; drain and re-arm supervision'; exit 1; }
+HOST_STOP_READY=1
+stop_if_requested
 log_line "start	gen=$GEN	primary=$PRIMARY"
 park_boot_start
 fm_supervision_tick_loop_init "$STATE" "$CONFIG" "$STATE/.supervision-host-ticks" supervision-host half-second-wait-v1

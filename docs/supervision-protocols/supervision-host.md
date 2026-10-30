@@ -3,7 +3,8 @@ Supervision host: on for this home ([`supervision-host.md`](../supervision-host.
 {claude,cursor} `supervision-host: branch-outcome: ...`: run `bin/fm-wake-drain.sh` and process each entry of its `BRANCH OUTCOMES` section from the task's current state, because an entry can be old: your reply covers only entries still open, as if a settled one, such as a PR since merged, had never been listed; then run the `mark-processed` acknowledgement it prints.
 {claude,cursor} A `supervision-host:` health note about repeated engine errors is the captain's to hear when it matters; handle the handed-back wake as usual.
 {opencode,omp,grok,codex} Attended, every wake reaches you exactly as above.
-{grok} `supervision-host: cycle boundary ...`: run `bin/fm-wake-drain.sh`, handle whatever it presents, run its printed acknowledgement, and re-arm the same background host call.
+{grok} `supervision-host: cycle boundary ...` or `supervision-host: stopped on request ...`: run `bin/fm-wake-drain.sh`, handle whatever it presents, run its printed acknowledgement, and re-arm the same background host call.
+{claude,cursor,opencode,omp,codex} `supervision-host: stopped on request ...`: a stop (`bin/fm-supervision-host.sh stop`) ended the host's park early; run `bin/fm-wake-drain.sh`, handle whatever it presents, run its printed acknowledgement, and carry on as after any other wake.
 {grok} Keep the host command exactly the one background call above: never shell `&`, a pipe, or another command bundled onto it.
 {codex} The host's park boundary returns as the checkpoint's ordinary `checkpoint: no actionable wake within <n>s` line; handle it as above.
 {codex} While an away record exists each checkpoint uses the longer away bound (`FM_CODEX_WATCH_CHECKPOINT_AWAY`, default 3600s), so a captain message waits until the checkpoint returns unless the captain interrupts it.

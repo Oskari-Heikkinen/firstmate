@@ -287,6 +287,7 @@ The durable marker `state/.away-watch-alert` keeps every condition that alerted 
 When the host loses session-lock ownership or its auto-arm generation, it stands down silently and leaves continuity to whoever owns it now.
 A host that starts without that ownership stands down before activation.
 So it never stops the owner's host or watcher or releases its leases.
+Ending the owner's park on purpose is the stop verb's job ([Stopping the host](#stopping-the-host)).
 
 ### A host that dies without a close
 
@@ -329,6 +330,7 @@ It also starts no engine turn that could still be running at the boundary (the t
 It judges this when the close arrives and again just before the turn starts.
 When it declines such a turn, that close reaches main ahead of the boundary line instead, and its wake stays durable in the queue.
 One short main turn per boundary is the cost of never losing the park silently.
+The boundary is the park's planned end; [the stop verb](#stopping-the-host) ends it early on request.
 
 ### Codex checkpoint bound
 
@@ -343,6 +345,26 @@ The checkpoint passes it as the boundary and reports the boundary as its ordinar
 Because that bound is not a harness timeout, the checkpoint also sets `FM_SUPERVISION_HOST_PARK_LIMIT`.
 That setting lets an engine turn that starts before the boundary finish after it.
 A captain message typed during the park waits for the checkpoint to return, at most the bound plus one engine turn, unless the captain interrupts it.
+
+## Stopping the host
+
+`bin/fm-supervision-host.sh stop` ends this home's park at any point, so an idle host never holds up an install, an update, or a landing.
+It signals only the pid in the host record, and only while that pid still runs the recorded identity (start time plus command line) and that command line is a host park.
+A reused pid, a foreign process, an unreadable identity, or a record that is not a regular file is never signalled.
+It sends its request (USR1) before it writes anything.
+
+The host ends its park the way the boundary does.
+It honours the request at its next safe point: within one half-second park tick while parked, right after an arm launch or before an engine turn starts, and at once while it waits on a turn's engine.
+A request never cuts into the host's own bookkeeping, such as recording a finished turn, so the latch and the engine record are never left half-written.
+The host stops a running engine turn's engine, its arms, and the home's watcher, which publishes downtime.
+It then exits 0 with any close it had already read and one `supervision-host: stopped on request` line.
+Every owner delivers that line as an ordinary wake: main drains, acknowledges, and ends its turn, and the next park starts as the [boundary table](#at-the-boundary) says.
+
+Nothing durable is lost.
+The wake a stopped engine turn held stays in the queue, and the verb leaves the engine record, the latch, the left-successor record, and the queue alone, so the next host resumes from them.
+Stopping a host that is not running succeeds and says so.
+Only a host that leaves the request unanswered gets TERM and then KILL, each still identity-checked; the next host's activation stops what a killed host left running.
+The [host header](../bin/fm-supervision-host.sh) owns the wait, the exit statuses, and the log line.
 
 ## Engine conversations
 

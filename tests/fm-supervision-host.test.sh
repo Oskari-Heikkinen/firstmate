@@ -3695,6 +3695,227 @@ test_park_boundary_ends_the_park_before_the_hook_timeout() {
   pass "host: the park ends itself with a boundary wake and a stopped watcher"
 }
 
+# The stop verb (header, STOP), run as an updater would: outside the host's
+# process tree, with only the home to go on. Its request wait stays long, so
+# an answer within it is the host's own and never an escalation.
+host_stop() {  # <home>
+  FM_HOME="$1" FM_CREW_STATE_BIN="$1/fakebin/fm-crew-state.sh" PATH="$1/fakebin:$PATH" \
+    FM_SUPERVISION_HOST_STOP_WAIT="${FM_SUPERVISION_HOST_STOP_WAIT:-60}" "$HOST" stop > "$1/stop.out" 2>&1
+}
+
+test_stop_ends_a_parked_host_and_succeeds_once_it_is_stopped() {
+  local home pid rc=0
+  home=$(make_home stop-parked attended)
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "stop: the host never started a watcher cycle: $(cat "$home/host.out")"
+  wait_until 150 test -s "$home/state/.supervision-host" || fail "stop: the host never recorded itself"
+  pid=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
+  host_stop "$home" || rc=$?
+  expect_code 0 "$rc" "stop: a parked host must stop on request: $(cat "$home/stop.out")"
+  assert_re "^supervision-host stop: stopped pid $pid on request; " "$home/stop.out" \
+    "stop: the verb must say the host answered the request rather than an escalation"
+  ! kill -0 "$pid" 2>/dev/null || fail "stop: the verb returned while the host still ran"
+  wait_until 100 host_exited "$home" || fail "stop: the host's owner never saw it exit"
+  expect_code 0 "$(cat "$home/host.rc")" "stop: the stopped host must exit 0 for its owner to deliver its close"
+  assert_re '^supervision-host: stopped on request - ' "$home/host.out" "stop: the host must print its stop line for its owner"
+  watcher_live "$home" && fail "stop: the stopped host left its watcher running"
+  [ "$(marker_kind "$home")" = downtime ] \
+    || fail "stop: the stop must publish downtime for the owner's rewake, got: $(cat "$home/state/.watcher-down")"
+  assert_absent "$home/state/.supervision-host" "stop: the stopped host left its record behind"
+  assert_re '	stop-requested	after [0-9]+s	wall=' "$home/state/.supervision-host.log" "stop: the host log must say a stop ended the park"
+  assert_re "	stop-verb	stopped pid $pid on request; " "$home/state/.supervision-host.log" "stop: the host log must record the verb's outcome"
+
+  rc=0
+  host_stop "$home" || rc=$?
+  expect_code 0 "$rc" "stop: stopping a stopped host must succeed: $(cat "$home/stop.out")"
+  assert_re '^supervision-host stop: already stopped - no host record$' "$home/stop.out" "stop: a second stop must say the host is already stopped"
+  pass "host: the stop verb ends a parked host with a wake for its owner and succeeds again once it is stopped"
+}
+
+# The verb signals only a pid it proves runs this home's host park: a record
+# whose pid now runs something else, a live process that is no host, and a
+# record that is not a regular file are each left unsignalled. The fixture
+# process keeps USR1's default action, so any signal would end it.
+test_stop_signals_only_a_proven_host_and_refuses_unreadable_records() {
+  local home record victim rc=0
+  home=$(make_home stop-records attended)
+  record="$home/state/.supervision-host"
+  host_stop "$home" || rc=$?
+  expect_code 0 "$rc" "stop-records: a home with no host must report it stopped"
+  assert_re '^supervision-host stop: already stopped - no host record$' "$home/stop.out" "stop-records: no record must read as stopped"
+
+  sleep 600 &
+  victim=$!
+  printf '%s\n' "$victim" > "$home/orphan-pid"
+  printf 'host\t%s\t%s\n' "$victim" 'linux-starttime=1 cmdline-hex=6e6f7400686f7374' > "$record"
+  rc=0
+  host_stop "$home" || rc=$?
+  expect_code 0 "$rc" "stop-records: a reused pid means the recorded host is gone: $(cat "$home/stop.out")"
+  assert_re "^supervision-host stop: already stopped - pid $victim now runs another process than the recorded host; nothing was signalled\$" \
+    "$home/stop.out" "stop-records: a reused pid must be named and left alone"
+  kill -0 "$victim" 2>/dev/null || fail "stop-records: the verb signalled a reused pid"
+
+  printf 'host\t%s\t%s\n' "$victim" "$(fm_test_pid_identity "$victim")" > "$record"
+  rc=0
+  host_stop "$home" || rc=$?
+  expect_code 1 "$rc" "stop-records: a live process that is no host must be refused: $(cat "$home/stop.out")"
+  assert_re "^supervision-host stop: refused - recorded pid $victim is not a supervision host park; nothing was signalled\$" \
+    "$home/stop.out" "stop-records: a foreign process must be refused by name"
+  kill -0 "$victim" 2>/dev/null || fail "stop-records: the verb signalled a process that is no host"
+
+  printf 'host\t%s\n' "$victim" > "$record"
+  rc=0
+  host_stop "$home" || rc=$?
+  expect_code 1 "$rc" "stop-records: a host row with no identity must be refused"
+  assert_re '^supervision-host stop: refused - the host record names no host with an identity; nothing was signalled$' \
+    "$home/stop.out" "stop-records: a record with no identity must be refused"
+
+  rm -f "$record"
+  mkfifo "$record"
+  rc=0
+  host_stop "$home" || rc=$?
+  expect_code 1 "$rc" "stop-records: a FIFO record must be refused, not read"
+  assert_re '^supervision-host stop: refused - .* is not a regular file; nothing was signalled$' "$home/stop.out" \
+    "stop-records: a non-regular record must be refused by name"
+  kill -0 "$victim" 2>/dev/null || fail "stop-records: the verb signalled a process through an unreadable record"
+  assert_re '	stop-verb	refused - recorded pid [0-9]+ is not a supervision host park' "$home/state/.supervision-host.log" \
+    "stop-records: the host log must record each refusal"
+  kill "$victim" 2>/dev/null || true
+  wait "$victim" 2>/dev/null || true
+  pass "host: the stop verb signals only a pid it proves is this home's host park"
+}
+
+# A request that lands while the host is inside its own bookkeeping (here a
+# park interval's record refresh, held on a gate) is only recorded there; the
+# host ends its park at the next safe point, once that bookkeeping is done.
+test_stop_waits_out_bookkeeping_then_ends_the_park() {
+  local home pid stop_pid rc=0
+  home=$(make_home stop-deferred attended)
+  mkfifo "$home/host-bookkeeping-gate"
+  cat > "$home/hold.bash" <<'SH'
+case "$0" in
+  */fm-supervision-host.sh)
+    _fm_hold_debug() {
+      local deadline
+      [ "${FUNCNAME[1]:-}" = refresh_process ] && [ ! -e "$FM_HOME/bookkeeping-held" ] || return 0
+      : > "$FM_HOME/bookkeeping-held"
+      deadline=$((SECONDS + FM_TEST_STUB_MAX_BLOCK_SECONDS))
+      exec 6<> "$FM_HOME/host-bookkeeping-gate"
+      while [ "$SECONDS" -lt "$deadline" ]; do
+        [ "${HOST_STOP_REQUESTED:-0}" != 1 ] || [ -e "$FM_HOME/request-while-held" ] || : > "$FM_HOME/request-while-held"
+        IFS= read -r -t 0.2 -u 6 _ && break
+      done
+      exec 6>&-
+    }
+    set -T
+    trap _fm_hold_debug DEBUG
+    ;;
+esac
+SH
+  FM_TEST_STUB_MAX_BLOCK_SECONDS=$FM_TEST_STUB_MAX_BLOCK_SECONDS BASH_ENV="$home/hold.bash" start_host "$home"
+  wait_until 300 test -e "$home/bookkeeping-held" \
+    || fail "stop-deferred: the host never reached its held record refresh: $(cat "$home/host.out")"
+  pid=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
+  host_stop "$home" &
+  stop_pid=$!
+  wait_until 300 test -e "$home/request-while-held" || fail "stop-deferred: the request never reached the held host"
+  kill -0 "$pid" 2>/dev/null || fail "stop-deferred: the request cut into the host's bookkeeping: $(cat "$home/host.out")"
+  host_exited "$home" && fail "stop-deferred: the host exited inside its bookkeeping: $(cat "$home/host.out")"
+  release_held_helper "$home"
+  wait "$stop_pid" || rc=$?
+  expect_code 0 "$rc" "stop-deferred: the released host must stop on request: $(cat "$home/stop.out")"
+  assert_re "^supervision-host stop: stopped pid $pid on request; " "$home/stop.out" \
+    "stop-deferred: the host must answer the deferred request itself"
+  wait_until 100 host_exited "$home" || fail "stop-deferred: the host's owner never saw it exit"
+  expect_code 0 "$(cat "$home/host.rc")" "stop-deferred: the stopped host must exit 0"
+  assert_re '^supervision-host: stopped on request - ' "$home/host.out" "stop-deferred: the host must print its stop line"
+  pass "host: a stop request waits out the host's bookkeeping and ends the park at the next safe point"
+}
+
+# Escalation happens only against a proven host park that leaves the request
+# unanswered: fixture parks (this script's name, run as "park") that ignore
+# USR1, and one that ignores TERM too. A record naming an exited but unreaped
+# process reads as already stopped.
+test_stop_escalates_only_when_a_proven_park_leaves_the_request_unanswered() {
+  local home record signal script pid zombie rc
+  home=$(make_home stop-escalate attended)
+  record="$home/state/.supervision-host"
+  for signal in TERM KILL; do
+    script="$home/fixture-$signal/fm-supervision-host.sh"
+    mkdir -p "${script%/*}"
+    {
+      printf '#!/usr/bin/env bash\n'
+      printf "trap '' USR1\n"
+      [ "$signal" != KILL ] || printf "trap '' TERM\n"
+      printf 'printf "%%s\\n" "$$" > "$FIXTURE_READY"\n'
+      printf 'while :; do sleep 1; done\n'
+    } > "$script"
+    FIXTURE_READY="$home/ready-$signal" bash "$script" park &
+    pid=$!
+    printf '%s\n' "$pid" >> "$home/orphan-pid"
+    wait_until 150 test -s "$home/ready-$signal" || fail "stop-escalate: the $signal fixture park never started"
+    printf 'host\t%s\t%s\n' "$pid" "$(fm_test_pid_identity "$pid")" > "$record"
+    rc=0
+    FM_SUPERVISION_HOST_STOP_WAIT=1 host_stop "$home" || rc=$?
+    expect_code 3 "$rc" "stop-escalate: an unanswered request must be forced ($signal): $(cat "$home/stop.out")"
+    assert_re "^supervision-host stop: stopped pid $pid with $signal after " "$home/stop.out" \
+      "stop-escalate: the verb must name the signal that ended the $signal fixture"
+    wait "$pid" 2>/dev/null || true
+    kill -0 "$pid" 2>/dev/null && fail "stop-escalate: the $signal fixture park survived the escalation"
+  done
+
+  perl -e 'my $c = fork(); exit 0 unless $c; open(my $f, ">", $ARGV[0]) or die; print $f "$c\n"; close $f; sleep $ARGV[1]' \
+    "$home/zombie-pid" "$FM_TEST_STUB_MAX_BLOCK_SECONDS" &
+  printf '%s\n' "$!" >> "$home/orphan-pid"
+  wait_until 150 test -s "$home/zombie-pid" || fail "stop-escalate: the zombie fixture never started"
+  zombie=$(cat "$home/zombie-pid")
+  wait_until 150 sh -c 'case "$(ps -o stat= -p "$1")" in *Z*) exit 0 ;; esac; exit 1' _ "$zombie" \
+    || fail "stop-escalate: the zombie fixture's child never became a zombie"
+  printf 'host\t%s\t%s\n' "$zombie" 'linux-starttime=1 cmdline-hex=6e6f7400686f7374' > "$record"
+  rc=0
+  host_stop "$home" || rc=$?
+  expect_code 0 "$rc" "stop-escalate: an exited, unreaped host must read as stopped: $(cat "$home/stop.out")"
+  assert_re "^supervision-host stop: already stopped - " "$home/stop.out" "stop-escalate: a zombie host must read as already stopped"
+  pass "host: the stop verb escalates to TERM, then KILL, only against a proven park that leaves its request unanswered"
+}
+
+# A stop mid engine turn ends the turn's engine and the park, and the wake
+# the turn drew but never acknowledged stays queued; the next host takes it.
+test_stop_mid_turn_keeps_the_wake_for_the_next_host() {
+  local home rc=0 f
+  home=$(make_home stop-mid-turn away)
+  echo held > "$home/stub-mode"
+  mkfifo "$home/stub-release"
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "stop-mid-turn: the host never started a watcher cycle: $(cat "$home/host.out")"
+  append_status "$home" 'queued when the host is stopped'
+  wait_until 450 test -s "$home/engine-drain.1" \
+    || fail "stop-mid-turn: the turn never drew its wake: $(cat "$home/host.out" "$home/state/.supervision-host.log" 2>/dev/null)"
+  host_stop "$home" || rc=$?
+  expect_code 0 "$rc" "stop-mid-turn: a host mid-turn must stop on request: $(cat "$home/stop.out")"
+  wait_until 100 host_exited "$home" || fail "stop-mid-turn: the host's owner never saw it exit"
+  expect_code 0 "$(cat "$home/host.rc")" "stop-mid-turn: the stopped host must exit 0: $(cat "$home/host.out")"
+  assert_re '^supervision-host: stopped on request - ' "$home/host.out" "stop-mid-turn: the host must print its stop line"
+  assert_re '	stop-requested	after ' "$home/state/.supervision-host.log" "stop-mid-turn: the host log must say a stop ended the park"
+  assert_no_re '	handled	' "$home/state/.supervision-host.log" "fixture: the held turn finished before the stop, so this case proves nothing"
+  assert_grep 'demo.status' "$home/state/.wake-queue" "stop-mid-turn: the wake the stopped turn drew must stay queued"
+  for f in "$home"/state/.supervision-host-result.* "$home"/state/.supervision-host-errors.* "$home/state/.supervision-host-turn"; do
+    [ -e "$f" ] && fail "stop-mid-turn: the stopped host left its turn file behind: $f"
+  done
+
+  echo handle > "$home/stub-mode"
+  rm -f "$home/host.rc"
+  start_host "$home"
+  wait_until 2000 handled_at_least "$home" 1 \
+    || fail "stop-mid-turn: the next host did not take the queued wake: $(cat "$home/host.out" "$home/state/.supervision-host.log")"
+  assert_grep 'demo.status' "$home/engine-drain.2" "stop-mid-turn: the next turn must be handed the wake the stopped turn left"
+  assert_no_grep 'demo.status' "$home/state/.wake-queue" "stop-mid-turn: the next turn's acknowledgement did not consume the wake"
+  rc=0
+  host_stop "$home" || rc=$?
+  expect_code 0 "$rc" "stop-mid-turn: the next host must stop on request too: $(cat "$home/stop.out")"
+  pass "host: a stop mid engine turn keeps the turn's wake queued for the next host"
+}
+
 # The live failure (2026-10-30): the harness timed its Stop hook on a boot
 # clock running about 10% ahead of the wall clock, so it killed a host whose
 # wall-clock park was still short of the boundary, and no wake reached main.
@@ -4358,6 +4579,11 @@ HOST_CASES=(
   test_term_stops_the_watcher_when_its_arm_cannot_relay_term
   test_predecessor_cleanup_preserves_a_cycle_its_arm_does_not_own
   test_park_boundary_ends_the_park_before_the_hook_timeout
+  test_stop_ends_a_parked_host_and_succeeds_once_it_is_stopped
+  test_stop_signals_only_a_proven_host_and_refuses_unreadable_records
+  test_stop_mid_turn_keeps_the_wake_for_the_next_host
+  test_stop_waits_out_bookkeeping_then_ends_the_park
+  test_stop_escalates_only_when_a_proven_park_leaves_the_request_unanswered
   test_park_boundary_follows_a_boot_clock_ahead_of_the_wall_clock
   test_park_boundary_rechecked_just_before_the_engine_turn
   test_park_test_clock_requires_the_marker
