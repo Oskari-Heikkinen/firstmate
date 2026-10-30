@@ -1850,11 +1850,13 @@ test_intake_protected_legacy_cleanup_finishes_own_adoption() {
 
 # A cleanup interrupted after it returned the slot leaves a record whose lease
 # is gone. With no lease or foreign claim on the slot and the recorded branch
-# proven landed, only the record closes; anything else keeps refusing.
+# proven landed, only the record closes; anything else keeps refusing, and a
+# fetch of origin's copy of the branch that never returns refuses at teardown's
+# remote bound.
 test_released_lease_closes_only_a_landed_record() {
   local dir id=released-lease holder=firstmate:fixture:released-lease lease=spent-acquisition
   local variant rc worker main g kind
-  for variant in landed landed-origin scout unlanded foreign-lease foreign-claim; do
+  for variant in landed landed-origin origin-fetch-hang scout unlanded foreign-lease foreign-claim; do
     dir=$(make_case "released-lease-$variant")
     mark_case_as_treehouse_pool "$dir"
     rm -f "$dir/worktree/sentinel"
@@ -1869,7 +1871,7 @@ test_released_lease_closes_only_a_landed_record() {
     [ "$variant" = unlanded ] || "${g[@]}" cherry-pick fm/released >/dev/null
     kind=ship
     case "$variant" in
-      landed-origin)
+      landed-origin|origin-fetch-hang)
         # A real slot's local branch is usually gone after a return, so the
         # proof must fall back to origin's copy of the recorded branch.
         git init -q --bare "$dir/origin.git"
@@ -1900,8 +1902,16 @@ test_released_lease_closes_only_a_landed_record() {
     worker=$!
     main=$("${g[@]}" rev-parse main)
     rc=0
-    FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_RUNTIME_LOG="$dir/runtime.log" PATH="$dir/fakebin:$PATH" \
-      "$TEARDOWN" "$id" > "$dir/stdout" 2> "$dir/stderr" || rc=$?
+    if [ "$variant" = origin-fetch-hang ]; then
+      fm_fake_hanging_tool "$dir/fakebin" git \
+        "*' fetch --quiet origin +refs/heads/fm/released:refs/remotes/origin/fm/released '*" "$(command -v git)" "$dir"
+      FM_TEARDOWN_REMOTE_TIMEOUT=2 FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_RUNTIME_LOG="$dir/runtime.log" \
+        PATH="$dir/fakebin:$PATH" "$TEARDOWN" "$id" > "$dir/stdout" 2> "$dir/stderr" &
+      fm_hang_guarded_wait "$!" "$dir" "$variant" "$dir/stderr" || rc=$?
+    else
+      FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" FM_RUNTIME_LOG="$dir/runtime.log" PATH="$dir/fakebin:$PATH" \
+        "$TEARDOWN" "$id" > "$dir/stdout" 2> "$dir/stderr" || rc=$?
+    fi
     kill -0 "$worker" 2>/dev/null || fail "$variant: cleanup killed a process working in the released slot"
     kill "$worker" 2>/dev/null || true
     wait "$worker" 2>/dev/null || true
@@ -1910,7 +1920,7 @@ test_released_lease_closes_only_a_landed_record() {
     cmp -s "$dir/pool.before" "$dir/pool/treehouse-state.json" || fail "$variant: cleanup changed the pool state"
     assert_present "$dir/pool/1/project/.git" "$variant: cleanup removed the released slot's checkout"
     [ "$("${g[@]}" rev-parse main)" = "$main" ] || fail "$variant: cleanup moved the default branch"
-    if [ "$variant" != unlanded ] && [ "${variant#foreign-}" = "$variant" ]; then
+    if [ "$variant" != unlanded ] && [ "$variant" != origin-fetch-hang ] && [ "${variant#foreign-}" = "$variant" ]; then
       expect_code 0 "$rc" "$variant: a released lease with landed work should close its record: $(cat "$dir/stderr")"
       assert_absent "$dir/home/state/$id.meta" "$variant: the task record was not closed"
       assert_contains "$(cat "$dir/stderr")" "already released" "$variant: the warning should name the released lease"
@@ -1921,7 +1931,7 @@ test_released_lease_closes_only_a_landed_record() {
       assert_contains "$(cat "$dir/stderr")" "REFUSED" "$variant: the refusal should be reported"
     fi
   done
-  pass "a released pool lease closes only a landed task's own record, and every other mismatch still refuses"
+  pass "a released pool lease closes only a landed task's own record, and every other mismatch or unanswered branch fetch still refuses"
 }
 
 test_released_lease_closes_only_a_landed_record

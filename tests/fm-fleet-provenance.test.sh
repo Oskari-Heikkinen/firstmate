@@ -7,11 +7,13 @@ set -eu
 fm_git_identity fmtest fmtest@example.invalid
 TMP_ROOT=$(fm_test_tmproot fm-fleet-provenance)
 python3 - "$ROOT" "$TMP_ROOT" <<'PY'
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -136,5 +138,77 @@ assert unstored.returncode == 0 and 'receipt unavailable' in unstored.stderr, un
 assert git('-C', clone, 'rev-parse', 'HEAD') == newest
 store.unlink()
 (home / 'data/fleet-sync.aside').rename(store)
-print('PASS: sync receipts, concurrent coalescing and dirty/fetch refusal')
+# Every wait is bounded. A fetch that never returns costs one child bound.
+hang_tools = home / 'hang-tools'
+hang_tools.mkdir()
+hang = hang_tools / 'git'
+hang.write_text('#!/usr/bin/env bash\n'
+                'if [ "${3:-}" = fetch ]; then\n'
+                f'  echo $$ >> "{home}/hung-pids"\n'
+                f'  for _ in $(seq 3000); do [ -e "{home}/hang-release" ] && break; sleep .1; done\n'
+                'fi\n'
+                f'exec "{real_git}" "$@"\n')
+hang.chmod(0o755)
+hang_env = dict(env, PATH=str(hang_tools) + os.pathsep + env['PATH'], FM_FLEET_SYNC_FETCH_TIMEOUT='600')
+# The session sweep that reaches a bounded fetch's own process group reads /proc.
+linux = Path('/proc/self/stat').exists()
+
+def hung_pids():
+    path = home / 'hung-pids'
+    return [int(pid) for pid in path.read_text().split()] if path.exists() else []
+
+def running(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:
+        return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0] != 'Z'
+    except (OSError, IndexError):
+        return True
+
+def all_stopped(pids):
+    for _ in range(600):
+        if not any(running(pid) for pid in pids):
+            return True
+        time.sleep(.05)
+    return False
+
+try:
+    # The child bound stops the whole refresh, its bounded fetch included; the
+    # bound leaves a loaded runner room to reach the fetch first.
+    p = subprocess.run(command, env=dict(hang_env, FM_FLEET_SYNC_CHILD_TIMEOUT='10'),
+                       text=True, capture_output=True, timeout=180)
+    assert p.returncode == 0, (p.stdout, p.stderr)
+    assert 'example: skipped: refresh timed out after 10s' in p.stdout, (p.stdout, p.stderr)
+    assert receipt()[1]['outcome'] == 'failed' and receipt()[1]['fetch_succeeded'] is False, receipt()[1]
+    timed_out = hung_pids()
+    assert timed_out, 'the hung fetch never started'
+    assert not linux or all_stopped(timed_out), 'a timed-out refresh left its bounded fetch running'
+    # A request behind a refresh that still holds the clone's lock gives up at its deadline.
+    before_wait = receipt()[0].read_bytes()
+    with (home / 'data/fleet-sync' / (hashlib.sha256(str(clone).encode()).hexdigest() + '.lock')).open('a') as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        p = subprocess.run(command, env=dict(hang_env, FM_FLEET_SYNC_LOCK_WAIT='1'),
+                           text=True, capture_output=True, timeout=180)
+    assert p.returncode == 0, (p.stdout, p.stderr)
+    assert 'example: skipped: refresh lock wait timed out after 1s' in p.stdout, (p.stdout, p.stderr)
+    assert hung_pids() == timed_out, 'a request that never got the lock still fetched'
+    assert receipt()[0].read_bytes() == before_wait, 'a lock-wait timeout replaced the receipt'
+    # A group TERM to the caller, as bootstrap sends at its refresh bound, reaches the child's own session.
+    caller = subprocess.Popen(command, env=hang_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, start_new_session=True)
+    for _ in range(3000):
+        if len(hung_pids()) > len(timed_out):
+            break
+        time.sleep(.02)
+    else:
+        raise AssertionError('the refresh to be stopped never reached its fetch')
+    os.killpg(caller.pid, signal.SIGTERM)
+    caller.communicate(timeout=60)
+    stopped = hung_pids()[len(timed_out):]
+    assert not linux or all_stopped(stopped), 'a TERM to the caller left the refresh child fetching'
+finally:
+    (home / 'hang-release').write_text('')
+print('PASS: sync receipts, concurrent coalescing and dirty/fetch refusal, bounded waits')
 PY

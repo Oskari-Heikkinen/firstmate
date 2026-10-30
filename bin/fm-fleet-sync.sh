@@ -35,6 +35,9 @@
 # killed mid-write - e.g. a timed-out bootstrap sync or a teardown process kill),
 # it is retried with a bounded wait and removed only when provably stale; see
 # fetch_with_packed_refs_lock_guard and the FM_FLEET_SYNC_PACKED_REFS_LOCK_* knobs.
+# Each fetch is bounded by FM_FLEET_SYNC_FETCH_TIMEOUT seconds (default 120) with
+# GIT_TERMINAL_PROMPT=0, so a hung remote reports "skipped: fetch failed: timed
+# out after <n>s" rather than holding the refresh open.
 # Structured per-clone receipts and overlapping-request coalescing are owned by
 # bin/fm-fleet-provenance.py (see its header and --help).
 # Receipts live under $FM_HOME/data/fleet-sync; they never restart an application.
@@ -59,6 +62,8 @@ PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # Inert unless FM_TIMING_LOG names a file; only the deferred network stage sets it.
 # shellcheck source=bin/fm-timing-lib.sh
 . "$SCRIPT_DIR/fm-timing-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 FM_LOCK_LOG_PREFIX=fleet-sync
 # A per-clone receipt child re-enters this script; the parent already ran the guard.
 RECEIPT_CHILD=0
@@ -86,6 +91,19 @@ if ! [[ "$FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS" =~ ^([0-9]+([.][0-9]*)?|[
   echo "fleet-sync: invalid packed-refs lock retry wait '$FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS'; using 1s" >&2
   FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=1
 fi
+
+# Every origin fetch runs under this bound with Git's credential prompt off, so a
+# remote that never answers fails the fetch instead of holding the refresh, and
+# every caller waiting on it, open-ended. An invalid value is reported once, by
+# the run that receives it; its receipt child falls back without repeating it.
+FLEET_SYNC_FETCH_TIMEOUT=${FM_FLEET_SYNC_FETCH_TIMEOUT:-120}
+case "$FLEET_SYNC_FETCH_TIMEOUT" in
+  ''|0*|*[!0-9]*)
+    [ "$RECEIPT_CHILD" -eq 1 ] \
+      || echo "fleet-sync: invalid fetch timeout '$FLEET_SYNC_FETCH_TIMEOUT'; using 120s" >&2
+    FLEET_SYNC_FETCH_TIMEOUT=120
+    ;;
+esac
 
 usage() {
   echo "usage: fm-fleet-sync.sh [<project-dir-or-name>]" >&2
@@ -181,7 +199,7 @@ packed_refs_lock_path() {
   esac
 }
 
-# Run `git -C "$PROJ" fetch origin --prune --quiet`, tolerating an orphaned
+# Run the bounded origin fetch (bounded_fetch), tolerating an orphaned
 # packed-refs.lock left by a killed ref rewrite. Sets FETCH_OUTPUT to the git
 # command's combined output and returns its exit status. On the packed-refs.lock
 # signature ONLY: retry up to FLEET_SYNC_PACKED_REFS_LOCK_RETRIES times (a
@@ -192,9 +210,22 @@ packed_refs_lock_path() {
 # today's behavior. Every wait, retry, and removal prints to stderr, and a
 # successful recovery also prints one "$label: recovered: ..." summary to stdout so
 # a session-start refresh (which discards fleet-sync stderr) still surfaces it.
+# One bounded `git fetch origin --prune --quiet`. Sets FETCH_OUTPUT and returns
+# git's status; a fetch the bound stops reads "timed out after <n>s" instead of
+# whatever partial output it left.
+bounded_fetch() {
+  local rc=0
+  FETCH_OUTPUT=$(fm_run_timed "$FLEET_SYNC_FETCH_TIMEOUT" env GIT_TERMINAL_PROMPT=0 \
+    git -C "$PROJ" fetch origin --prune --quiet 2>&1) || rc=$?
+  if fm_timed_out "$rc"; then
+    FETCH_OUTPUT="timed out after ${FLEET_SYNC_FETCH_TIMEOUT}s"
+  fi
+  return "$rc"
+}
+
 fetch_with_packed_refs_lock_guard() {
   local rc attempt=0 lock lock_desc
-  FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+  rc=0; bounded_fetch || rc=$?
   [ "$rc" -eq 0 ] && return 0
   is_packed_refs_lock_error "$FETCH_OUTPUT" || return "$rc"
 
@@ -204,7 +235,7 @@ fetch_with_packed_refs_lock_guard() {
     attempt=$(( attempt + 1 ))
     echo "$label: fetch blocked by packed-refs lock ($lock_desc); waiting ${FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${FLEET_SYNC_PACKED_REFS_LOCK_RETRIES}) (owning process may be exiting)" >&2
     sleep "$FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS"
-    FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+    rc=0; bounded_fetch || rc=$?
     if [ "$rc" -eq 0 ]; then
       echo "$label: fetch succeeded on retry; packed-refs lock cleared on its own" >&2
       # One stdout summary so a session-start refresh (which discards fleet-sync
@@ -228,7 +259,7 @@ fetch_with_packed_refs_lock_guard() {
         return "$rc"
       fi
       echo "$label: removed provably-stale packed-refs lock $lock (age >= ${FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS}s, no live holder) and retrying fetch" >&2
-      FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+      rc=0; bounded_fetch || rc=$?
       if [ "$rc" -eq 0 ]; then
         echo "$label: fetch succeeded after stale packed-refs lock cleanup" >&2
         echo "$label: recovered: removed a stale packed-refs lock (no live holder)"
