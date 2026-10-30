@@ -27,12 +27,21 @@ REPO_MAP = os.path.join("docs", "component-map.json")
 HOME_MAP = os.path.join("config", "component-map.json")
 
 
-class Interrupted(Exception):
-    """SIGTERM or SIGINT: the run stops through its failure path, so the ledger is saved and main is alarmed."""
+class Interrupted(BaseException):
+    """SIGTERM or SIGINT: a stop on request, not a failure; the ledger is saved and main is not alarmed.
+
+    A BaseException, so no handler for failures can take a stop for a crash."""
+
+    def __init__(self, signum):
+        super().__init__(signum)
+        self.signum = signum
 
 
 def interrupt(signum, _frame):
-    raise Interrupted("signal %d" % signum)
+    # Later signals (the timer's stop reaches the wrapper and this engine both) cannot cut the stop short.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    raise Interrupted(signum)
 
 
 def one_line(text, n=300):
@@ -537,6 +546,29 @@ def main(argv):
     run = Run(args)
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGINT, interrupt)
+    try:
+        return run_alarmed(run)
+    except Interrupted as stop:
+        return stopped(run, stop.signum)
+
+
+def stopped(run, signum):
+    """A requested stop: save the ledger, log it, alarm nothing; the next run resolves or retries what it cut short."""
+    name = signal.Signals(signum).name
+    note = "ledger saved"
+    try:
+        if run.ledger is not None:
+            run.save_ledger()
+    except OSError as err:
+        note = "ledger not saved (%s)" % err
+    summary = ("stopped on request (%s); %s; an add or wake it did not finish is resolved or retried by the next "
+               "run; no alarm" % (name, note))
+    run.log(summary)
+    print("fm-component-drift: " + summary, file=sys.stderr)
+    return 128 + signum
+
+
+def run_alarmed(run):
     # Everything after Run(), which only names paths, is inside the alarmed path.
     try:
         os.makedirs(run.sdir, exist_ok=True)

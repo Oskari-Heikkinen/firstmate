@@ -38,6 +38,14 @@ The timer never downgrades below the live version.
 `fm-claude-update.sh rollback` verifies the previous version and swaps it back in one rename.
 The version rolled back from is added to `~/.local/state/claude-update/skipped-versions` so the timer does not take it again; delete its line, or run `install VERSION`, to allow it again.
 
+## Stopping a run
+
+To stop a run, stop it, then install or roll back: `systemctl --user stop claude-update.service` ends a timer run, and `install VERSION` or `rollback` then takes the lock it released.
+A stop on request (SIGTERM, SIGINT or SIGHUP) stops npm, removes the unfinished staging folder, releases the lock and logs `stopped on request` with live Claude unchanged, and it raises no alarm.
+A stop that arrives during the few renames of a switch or rollback waits for them to finish, so `current` and `previous` never point at a half-done switch.
+A run the service's start limit stops is the same stop, so a run that keeps being stopped shows up as the stale updater below.
+Any of `install`, `stage` or `rollback` that finds the lock held exits 75; stop the run first rather than waiting on it.
+
 ## Alerts
 
 Every event is one plain line in `~/.local/state/claude-update/log`.
@@ -46,7 +54,8 @@ A failure writes the standing alarm to `~/.local/state/claude-update/alarm`, nam
 
 ## Install on this laptop
 
-- The user timer `claude-update.timer` runs `claude-update.service` daily at 05:30 with `Persistent=true`.
+- The user timer `claude-update.timer` runs `claude-update.service` daily at 05:30 with `Persistent=true`; [`docs/examples/claude-update/`](examples/claude-update/) holds both units.
+- The service's `TimeoutStartSec` stays above a run's worst case, so only a hung run is stopped and later runs are not skipped for good; `SuccessExitStatus=143` keeps a requested stop from counting as a unit failure.
 - The service runs `~/Tools/firstmate/bin/fm-claude-update.sh run`, which follows the green pointer.
 - `~/.local/npm/bin/claude`, the path the `~/.local/bin/claude` launcher and other callers run, is a symlink to `~/.local/share/claude-code/current/bin/claude`.
 - The old global npm package stays installed under `~/.local/npm/lib/node_modules/` as a last-resort fallback that only a hand-made link change would use.

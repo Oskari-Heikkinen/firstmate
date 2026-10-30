@@ -21,7 +21,8 @@ Its header and `--help` own the steps, the owner rule, the state, the alarms and
 
 - A Queued backlog item named `drift-<skill>-<hash>-<time>` in the owner home, plus a wake in that home's inbox; its body names the drifted sources, the components, why it was routed there and the update path.
 - While that item is open, a changed drift rewrites the same item (the earlier body is archived) and wakes the home again; it never opens a second item for the skill.
-- A `component-drift-failed-...` note in main firstmate's inbox when a run fails, is stopped, or is refused because another run holds the lock; it names the log, whose `FAILED` lines say what to fix.
+- A `component-drift-failed-...` note in main firstmate's inbox when a run fails or is refused because another run holds the lock; it names the log, whose `FAILED` lines say what to fix.
+- No note for a stop on request (`systemctl --user stop`, or the service's start limit on a hung run): the log says "stopped on request", and the next run resolves an add the stop cut short and retries its wakes.
 - An item whose home has been retired from main's `data/secondmates.md` counts as gone, so the skill's next item goes to the owner its rule names now.
 
 ## Acting on a drift item

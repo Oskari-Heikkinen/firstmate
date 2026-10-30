@@ -1,0 +1,21 @@
+# Example systemd user service for the daily Claude Code update
+# (docs/claude-update.md "Install on this laptop").
+# Copy to ~/.config/systemd/user/ and replace the path with this machine's
+# firstmate code root; PATH names the directory holding npm and node.
+# TimeoutStartSec bounds a hung run, so later runs are not skipped for good.
+# It stays above a run's worst case with the default settings: a version
+# check (up to 300 s), INSTALL_TRIES attempts of INSTALL_SECS plus 90 s each
+# (5 x 990 s) and the switch's checks, about 91 minutes; raise it with those
+# settings. Its stop is the same SIGTERM as `systemctl --user stop`, which the
+# run takes as stopped on request (exit 143, listed as a success here).
+[Unit]
+Description=Update Claude Code once (the single update path; sessions do not self-update)
+
+[Service]
+Type=oneshot
+TimeoutStartSec=100min
+SuccessExitStatus=143
+Nice=19
+IOSchedulingClass=idle
+Environment=PATH=/opt/node24/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/Tools/firstmate/bin/fm-claude-update.sh run

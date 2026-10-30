@@ -12,6 +12,7 @@ static tests/fm-handoff-coverage.test.sh
 static tests/fm-harness-adapter-references.test.sh
 static tests/fm-nm-test-contract.test.sh
 static tests/fm-no-mistakes-required.test.sh
+static tests/fm-systemd-units.test.sh
 
 # gate: the safety core, feature smokes and real-Herdr smokes, on every push.
 gate tests/ai-account.test.sh

@@ -269,6 +269,7 @@ SH
     "$units/$unit.service" "the second home's install replaced the first home's service"
   assert_grep "ExecStart=/usr/bin/env bash $ROOT/bin/fm-away-watch.sh run --home $(cd "$other" && pwd -P)" \
     "$units/$other_unit.service" "the service does not run the watchdog for the second home"
+  assert_grep "TimeoutStartSec=" "$units/$unit.service" "the watchdog service has a start limit"
   assert_grep "Environment=\"PATH=$fakebin:/opt/my tools/bin:/x%%y:" "$units/$unit.service" \
     "the service does not carry the installer's PATH"
   assert_grep 'Environment="HERDR_SOCKET_PATH=/run/herdr.sock"' "$units/$unit.service" \

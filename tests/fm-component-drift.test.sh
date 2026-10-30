@@ -4,8 +4,9 @@
 # names, and wakes that home, even with the repository checked out in two
 # homes; a rerun of the unchanged drift, or a further edit of the same
 # drifted source, files no second item while the first is open; a run
-# stopped right after an add records it, so the next run files nothing more
-# and delivers the wake; once that item is done the same drift files a new
+# stopped on request right after an add (SIGTERM to the wrapper, which hands
+# it to the engine) exits 143 with no alarm and records the add, so the next
+# run files nothing more and delivers the wake; once that item is done the same drift files a new
 # one; a further drift rewrites the open item in place and wakes its home
 # again, on every rewrite even when a drift returns; an owner naming no
 # local home and a home-map skill without an owner route to main and to the
@@ -177,19 +178,22 @@ check(items(mate) == [first] and body(mate, first) == b and "Rewritten by the dr
       "editing an already-drifted source again files, rewrites and wakes nothing",
       "%s\n%s\n%s" % (items(mate), body(mate, first), notes(mate)))
 
-# A run stopped right after its add (the owner home's tasks-axi kills it) records the item it filed.
+# A run stopped on request right after its add records the item it filed: the owner home's
+# tasks-axi sends SIGTERM to the wrapper (its parent's parent), as `systemctl --user stop` would.
 p = axi(mate, "done", first)
 check(p.returncode == 0, "the first item closes", p.stdout + p.stderr)
 stopper = mate / "bin/fm-tasks-axi.sh"
-write(stopper, '#!/usr/bin/env bash\n"%s" "$@"; rc=$?\n[ "$1" = add ] && kill -TERM "$PPID"\nexit $rc\n'
+write(stopper, '#!/usr/bin/env bash\n"%s" "$@"; rc=$?\n'
+      '[ "$1" = add ] && kill -TERM "$(ps -o ppid= -p "$PPID" | tr -d " ")"\nexit $rc\n'
       % (root / "bin/fm-tasks-axi.sh"))
 stopper.chmod(0o755)
-p = run(rc=2)
+p = run(rc=143)
 stopper.unlink()
 again = [t for t in items(mate) if t != first]
-check(len(again) == 1 and len(alarms()) == 1 and "stopped" in alarms()[0],
-      "a stopped run has filed one new item for the done one's unchanged drift and alarms main",
-      "%s %s\n%s" % (items(mate), alarms(), p.stdout + p.stderr))
+log = (main / "state/component-drift/log").read_text()
+check(len(again) == 1 and alarms() == [] and "stopped on request (SIGTERM)" in log,
+      "a run stopped on request has filed one new item, logs the stop and does not alarm main",
+      "%s %s\n%s\n%s" % (items(mate), alarms(), p.stdout + p.stderr, log[-600:]))
 woken = len(notes(mate))
 run()
 check(sorted(items(mate)) == sorted([first, again[0]]),

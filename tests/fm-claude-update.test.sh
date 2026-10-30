@@ -6,7 +6,8 @@
 # and `install --global --prefix P PKG@V` lays out an npm global prefix whose
 # bin/claude links to a fake binary that prints V, or fails, leaves a stub, or
 # prints the wrong version, as the case's mode file says (stub-N leaves the stub
-# on the first N installs of that version only). A fake df reports the
+# on the first N installs of that version only), or hangs (mode hang, recording
+# its pid in npm-pid once it has written into the prefix). A fake df reports the
 # free space, so nothing touches the registry or the real Claude Code.
 set -u
 
@@ -28,7 +29,7 @@ cat >"$FAKEBIN/npm" <<'SH'
 # Fake npm. view: $FAKE/view (absent = failure). install: lay out a prefix whose
 # binary behaves as $FAKE/mode-<version> says (ok, fail, stub, wrong, or stub-N:
 # a stub on the first N installs of that version, as a dropped optional download
-# leaves it, then ok).
+# leaves it, then ok; hang: write into the prefix, record the pid, never finish).
 printf '%s\n' "$*" >>"$FAKE/calls"
 case "$1" in
   view)
@@ -52,6 +53,11 @@ case "$1" in
       stub-*) if [ "$tries" -le "${mode#stub-}" ]; then mode=stub; else mode=ok; fi ;;
     esac
     echo "fake install $spec into $prefix ($mode)"
+    if [ "$mode" = hang ]; then
+      mkdir -p "$prefix/lib/node_modules"
+      echo "$$" >"$FAKE/npm-pid.tmp" && mv "$FAKE/npm-pid.tmp" "$FAKE/npm-pid"
+      exec sleep 120
+    fi
     [ "$mode" = fail ] && { echo "npm error ETARGET" >&2; exit 1; }
     pkg="$prefix/lib/node_modules/@anthropic-ai/claude-code"
     mkdir -p "$pkg/bin" "$prefix/bin"
@@ -242,6 +248,47 @@ test_lock_skips_run() {
   pass "a run that finds the lock held logs a skip and changes nothing"
 }
 
+test_stop_mid_staging_cleans_up() {
+  reset
+  run_tool install 2.1.300 >/dev/null 2>&1 || fail "seed install"
+  echo hang >"$FAKE/mode-2.1.301"
+  local pid code i npm_pid
+  # Started directly, not through run_tool, so the pid is the tool's own.
+  FM_CLAUDE_UPDATE_ROOT="$R" FM_CLAUDE_UPDATE_STATE="$S" FM_CLAUDE_UPDATE_NPM="$FAKEBIN/npm" \
+    FM_CLAUDE_UPDATE_MIN_BYTES=2000 FM_CLAUDE_UPDATE_NOW="$NOW" "$TOOL" install 2.1.301 >"$TMP_ROOT/stop.out" 2>&1 &
+  pid=$!
+  i=0
+  until [ -s "$FAKE/npm-pid" ]; do
+    i=$((i + 1))
+    if [ "$i" -gt 600 ]; then
+      kill -KILL "$pid" 2>/dev/null
+      fail "the fake npm install never started"
+    fi
+    sleep 0.1
+  done
+  npm_pid=$(cat "$FAKE/npm-pid")
+  [ -n "$(ls -A "$R/staging")" ] || fail "the install writes into a staging folder before the stop"
+  kill -TERM "$pid"
+  wait "$pid"
+  code=$?
+  expect_code 143 "$code" "a stopped install"
+  assert_equals "" "$(ls -A "$R/staging")" "the stop removes the unfinished staging folder"
+  assert_grep "stopped on request (SIGTERM)" "$S/log" "the stop is logged"
+  assert_grep "removed the unfinished staging folder $R/staging/2.1.301-" "$S/log" "the log names the removed folder"
+  assert_contains "$(cat "$TMP_ROOT/stop.out")" "stopped on request (SIGTERM)" "the stop is reported on stderr"
+  kill -0 "$npm_pid" 2>/dev/null && fail "the stop leaves npm running"
+  exec 8>>"$S/lock"
+  flock -n 8 || fail "the stop leaves the lock held"
+  exec 8>&-
+  assert_absent "$S/alarm" "a stop on request is not an alarm"
+  assert_equals versions/2.1.300 "$(live)" "a stopped install leaves current"
+  assert_absent "$R/versions/2.1.301" "a stopped install keeps no copy"
+  echo ok >"$FAKE/mode-2.1.301"
+  run_tool install 2.1.301 >/dev/null 2>&1 || fail "an install after the stop succeeds"
+  assert_equals versions/2.1.301 "$(live)" "the next install switches as usual"
+  pass "a stop mid-staging stops npm, removes the staging folder, logs and frees the lock"
+}
+
 test_rollback() {
   reset
   run_tool install 2.1.300 >/dev/null 2>&1 || fail "seed install"
@@ -336,6 +383,7 @@ test_failures_leave_live_untouched
 test_dropped_native_download_retries
 test_version_check_and_room
 test_lock_skips_run
+test_stop_mid_staging_cleans_up
 test_rollback
 test_stage_switches_nothing
 test_check_lines

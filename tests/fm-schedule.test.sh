@@ -312,4 +312,11 @@ told = [t for t in notes(main) if "Scheduled run notice (main)" in t and NTASK i
 check(len(told) == 1 and "no run summary" in told[0], "main close not noted in main's inbox: %r" % notes(main))
 check(not [ln for ln in parent_lines() if NTASK in ln], "main's notice went to a mate channel")
 ok("a main-home schedule files in main's backlog and reports through main's own inbox")
+
+# ---------------------------------------------------------------- the timer's service
+sched("install-timer")
+svc = (Path(os.environ["XDG_CONFIG_HOME"]) / "systemd/user/fm-schedule.service").read_text()
+check(re.search(r"^TimeoutStartSec=[1-9]", svc, re.M) is not None and "Type=oneshot" in svc,
+      "the scan service has no start limit, so a hung scan would skip every later tick:\n" + svc)
+ok("install-timer writes a scan service with a start limit")
 PY

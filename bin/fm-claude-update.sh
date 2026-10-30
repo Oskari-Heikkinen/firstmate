@@ -54,6 +54,14 @@
 # writes the alarm and exits 1. A run that finds another holding the lock logs
 # the skip and exits 0; other commands exit 75 then. Misuse exits 2.
 #
+# A stop on request (SIGTERM, as `systemctl --user stop claude-update.service`
+# or the unit's TimeoutStartSec sends, or SIGINT or SIGHUP) is not a failure: it
+# stops npm, removes the unfinished staging folder, releases the lock, logs
+# "stopped on request" and exits 128+signal (143 for SIGTERM) with no alarm, so
+# the stopped run's next step is a rerun, an install or a rollback. A stop that
+# arrives while a switch or rollback renames the links waits for those few
+# renames to finish, so current and previous never point at a half-done switch.
+#
 # The install always passes --allow-scripts=<package>: the package's postinstall
 # is what replaces bin/claude.exe (a ~500-byte stub) with the native binary, and
 # npm documents unreviewed install scripts as skipped by default.
@@ -137,10 +145,10 @@ npm_cmd() {
   fi
 }
 
-# Heavy work runs at the lowest CPU and I/O priority.
-heavy() {
-  if command -v ionice >/dev/null 2>&1; then nice -n 19 ionice -c3 "$@"; else nice -n 19 "$@"; fi
-}
+# Heavy work runs at the lowest CPU and I/O priority. A command prefix, not a
+# function, so a backgrounded heavy command is the process a stop signals.
+HEAVY=(nice -n 19)
+if command -v ionice >/dev/null 2>&1; then HEAVY+=(ionice -c3); fi
 
 # link_version NAME: the version current or previous points at, or nothing.
 link_version() {
@@ -157,10 +165,59 @@ set_link() {
   ln -s "versions/$2" "$tmp" && mv -T -f -- "$tmp" "$ROOT/$1"
 }
 
+# take_lock: hold the run lock on fd 9 and, from then on, take a stop on request.
 take_lock() {
   mkdir -p "$STATE" || return 1
   exec 9>>"$STATE/lock" || return 1
-  flock -n 9
+  flock -n 9 || return 1
+  trap 'on_stop 15 SIGTERM' TERM
+  trap 'on_stop 2 SIGINT' INT
+  trap 'on_stop 1 SIGHUP' HUP
+}
+
+# What a stop has to undo: the running npm install and the staging folder it
+# writes. SWITCHING marks the link renames a stop waits for.
+CHILD='' STAGE='' SWITCHING='' STOP_PENDING=''
+
+# on_stop NUM NAME: stop now, or after the switch in progress.
+on_stop() {
+  if [ -n "$SWITCHING" ]; then
+    STOP_PENDING="$1 $2"
+    return 0
+  fi
+  stop_now "$1" "$2" ''
+}
+
+# stop_now NUM NAME NOTE: signal the npm install first, then remove its staging
+# folder, release the lock, log the stop and exit 128+NUM. Never alarms.
+stop_now() {
+  local live what
+  trap '' TERM INT HUP
+  if [ -n "$CHILD" ]; then
+    kill -TERM "$CHILD" 2>/dev/null
+    wait "$CHILD" 2>/dev/null
+  fi
+  what='no staging folder was in progress'
+  if [ -n "$STAGE" ] && [ -e "$STAGE" ]; then
+    if rm -rf -- "$STAGE"; then
+      what="removed the unfinished staging folder $STAGE"
+    else
+      what="could not remove the unfinished staging folder $STAGE"
+    fi
+  fi
+  flock -u 9 2>/dev/null
+  exec 9>&-
+  live=$(link_version current)
+  log "stopped on request ($2)$3: $what; lock released; live claude unchanged (${live:-no managed version}); no alarm; next: rerun fm-claude-update.sh run, install or rollback"
+  printf 'fm-claude-update: stopped on request (%s); live claude unchanged (%s)\n' "$2" "${live:-no managed version}" >&2
+  exit $((128 + $1))
+}
+
+# switch_done: the link renames are finished; take a stop that waited for them.
+switch_done() {
+  local pending=$STOP_PENDING
+  SWITCHING='' STOP_PENDING=''
+  [ -z "$pending" ] || stop_now "${pending%% *}" "${pending#* }" ' during a switch, after the switch finished'
 }
 
 # alarm WHAT EVIDENCE NEXT: record the standing failure, then exit 1.
@@ -210,7 +267,7 @@ verify() {
     DETAIL="$real is ${size:-0} bytes, under the $MIN_BYTES-byte floor (a stub: the package's install step did not place the native binary)"
     return 1
   fi
-  out=$(DISABLE_AUTOUPDATER=1 timeout 60 "$entry" --version 2>&1 </dev/null) || {
+  out=$(DISABLE_AUTOUPDATER=1 timeout 60 "$entry" --version 2>&1 </dev/null 9>&-) || {
     DETAIL="$entry --version failed: $(printf '%s' "$out" | head -n 1)"
     return 1
   }
@@ -271,6 +328,7 @@ install_fresh() {
   room_ok || alarm "not enough room: under ${MIN_FREE_MB} MiB free for $ROOT" "df $ROOT" "free space, then rerun fm-claude-update.sh run"
   mkdir -p "$ROOT/staging" "$ROOT/failed" "$ROOT/versions"
   stage="$ROOT/staging/$ver-$(stamp)"
+  STAGE=$stage
   mkdir -p "$stage/.fm-claude-update"
   log_file="$stage/.fm-claude-update/install.log"
   : >"$log_file"
@@ -278,10 +336,16 @@ install_fresh() {
   while :; do
     try=$((try + 1))
     printf '== fm-claude-update: attempt %s of %s at %s\n' "$try" "$INSTALL_TRIES" "$(utc)" >>"$log_file"
-    heavy timeout "$INSTALL_SECS" "$npm" install --global --prefix "$stage" \
+    # In the background, so a stop interrupts the wait at once; timeout forwards
+    # the stop to npm's process group and kills it 30 s later if still running.
+    # npm never inherits the lock's fd 9, so nothing it leaves behind holds it.
+    "${HEAVY[@]}" timeout -k 30 "$INSTALL_SECS" "$npm" install --global --prefix "$stage" \
       --allow-scripts="$PKG" --foreground-scripts --include=optional --no-audit --no-fund \
-      --loglevel=verbose "$PKG@$ver" >>"$log_file" 2>&1
+      --loglevel=verbose "$PKG@$ver" >>"$log_file" 2>&1 9>&- &
+    CHILD=$!
+    wait "$CHILD"
     rc=$?
+    CHILD=''
     if [ "$rc" -ne 0 ]; then
       DETAIL="npm install exited $rc"
     elif verify "$stage" "$ver"; then
@@ -289,6 +353,7 @@ install_fresh() {
     fi
     if [ "$try" -ge "$INSTALL_TRIES" ]; then
       fail_folder "$stage" "$ver" "$DETAIL (after $try attempts)"
+      STAGE=''
       if [ "$rc" -ne 0 ]; then
         alarm "npm install of $PKG@$ver exited $rc (after $try attempts)" "$FAILED/.fm-claude-update/install.log" "read that log, then rerun fm-claude-update.sh run"
       fi
@@ -353,14 +418,18 @@ switch_to() {
   fi
   if [ ! -d "$ROOT/versions/$ver" ]; then
     install_fresh "$ver" "$why"
+    SWITCHING=1
     mv -T -- "$STAGED" "$ROOT/versions/$ver" \
       || alarm "could not move $STAGED into versions/$ver" "$STAGED" "check $ROOT, then rerun"
+    STAGE=''
   fi
+  SWITCHING=1
   verify "$ROOT/versions/$ver" "$ver" \
     || alarm "versions/$ver failed verification after the move: $DETAIL" "$ROOT/versions/$ver" "check $ROOT, then rerun"
   if [ "$old" = "$ver" ]; then
     healthy "$ver already live and verified ($DETAIL)"
     say "claude-update: $ver is already live and verified"
+    switch_done
     return 0
   fi
   if [ -n "$old" ]; then
@@ -375,6 +444,7 @@ switch_to() {
   prune_versions
   healthy "switched ${old:-nothing} -> $ver ($DETAIL)"
   say "claude-update: switched ${old:-nothing} -> $ver; previous ${old:-none} kept for rollback"
+  switch_done
 }
 
 cmd_run() {
@@ -435,13 +505,17 @@ cmd_stage() {
     [ "$ver" != none ] || { say "claude-update stage: no release is ${MIN_AGE_HOURS}h old yet; nothing staged"; return 0; }
   fi
   install_fresh "$ver" "staging only: nothing switches"
+  SWITCHING=1
   if [ -e "$ROOT/versions/$ver" ]; then
     rm -rf -- "$STAGED"
+    STAGE=''
     say "claude-update stage: a fresh $ver installed and verified ($DETAIL); versions/$ver already exists and was left untouched; nothing switched"
   else
     mv -T -- "$STAGED" "$ROOT/versions/$ver" || alarm "could not move $STAGED into versions/$ver" "$STAGED" "check $ROOT"
+    STAGE=''
     say "claude-update stage: $ver installed and verified at $ROOT/versions/$ver ($DETAIL); nothing switched"
   fi
+  switch_done
 }
 
 cmd_rollback() {
@@ -452,6 +526,7 @@ cmd_rollback() {
   prev=$(link_version previous)
   [ -n "$prev" ] || alarm "rollback refused: no previous version is kept" "$ROOT" "install a known-good version with fm-claude-update.sh install VERSION"
   verify "$ROOT/versions/$prev" "$prev" || alarm "rollback refused: previous $prev does not verify: $DETAIL" "$ROOT/versions/$prev" "install a known-good version with fm-claude-update.sh install VERSION"
+  SWITCHING=1
   [ -z "$cur" ] || set_link previous "$cur" || alarm "could not point previous at $cur" "$ROOT" "check $ROOT"
   set_link current "$prev" || alarm "could not point current at $prev" "$ROOT" "check $ROOT"
   if [ -n "$cur" ] && ! grep -qxF -- "$cur" "$STATE/skipped-versions" 2>/dev/null; then
@@ -459,6 +534,7 @@ cmd_rollback() {
   fi
   healthy "rolled back ${cur:-nothing} -> $prev"
   say "claude-update: rolled back ${cur:-nothing} -> $prev; run skips ${cur:-nothing} until it is removed from $STATE/skipped-versions"
+  switch_done
 }
 
 cmd_status() {

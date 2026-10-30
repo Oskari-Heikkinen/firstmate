@@ -18,7 +18,7 @@ metadata:
     - path: bin/fm-component-spawn-lib.sh
       sha256: 8cff6ca011203c0631df69d4ffb5602cf86d433c2219b6b5f5b28f5eaaf48aed
     - path: bin/fm-component-drift.sh
-      sha256: 28f4a051931f4daa11582aa8ba0238b8ce188d19777d44ade361373489317800
+      sha256: 86f1f63853b2efdb96157ca65c3131bf5b7cc80df2f1dd5fef133b4019c2f445
     - path: bin/fm-lean-review.sh
       sha256: 3fab912ec49bcb2d0255aa6b03d17c7cfc10a633d98c68ccbe1c237abdf5318e
     - path: bin/fm-rereview-brief.sh

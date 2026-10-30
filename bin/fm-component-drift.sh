@@ -50,12 +50,16 @@
 #   - tasks-axi, and the node it runs on, must be on the run's PATH (a user
 #     timer's PATH lacks both unless its service sets one); a run where
 #     `tasks-axi --version` fails checks nothing and fails.
-# Once the engine starts, a failed run (exit 1, or exit 2 when it crashed, was
-# stopped, or was refused because another run holds the lock) wakes main
+# Once the engine starts, a failed run (exit 1, or exit 2 when it crashed or
+# was refused because another run holds the lock) wakes main
 # through main's bin/fm-inbox.sh note with the summary and the log; an alarm
 # main's inbox has not taken is kept and resent by the next run. A usage error
 # or a --home that does not exist exits 2 before then and reaches only stderr
 # (the journal, under the timer), since there is no home to alarm.
+# A stop on request (SIGTERM or SIGINT, to this script or the engine, as
+# `systemctl --user stop` sends) is not a failure: the engine saves the
+# ledger, logs "stopped on request" and exits 128+signal with no alarm, and
+# the next run resolves an add it cut short and retries its wakes.
 #
 # State is <home>/state/component-drift/ of the --home: ledger.json (one entry
 # per drifted skill: its drift fingerprint, task and owner home), log (one
@@ -68,7 +72,8 @@
 # Exit codes: 0 ran and nothing failed (items may have been filed); 1 ran but
 # tasks-axi was missing, a map could not be checked, a task state could not
 # be read, or an add, rewrite or wake failed; 2 usage error, no such home,
-# crashed, was stopped, or another run holds the lock.
+# crashed, or another run holds the lock; 143 (130 for SIGINT) stopped on
+# request.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -117,7 +122,16 @@ trap 'rm -rf "$TMP"' EXIT
 list_homes > "$TMP/homes.tsv"
 low=(nice -n 19)
 command -v ionice >/dev/null 2>&1 && low+=(ionice -c3)
-rc=0
 "${low[@]}" python3 "$SCRIPT_DIR/fm-component-drift.py" --home "$home" --homes "$TMP/homes.tsv" \
-  --code-root "$CODE_ROOT" ${now:+--now "$now"} || rc=$?
+  --code-root "$CODE_ROOT" ${now:+--now "$now"} &
+engine=$!
+# A stop sent to this script reaches the engine, and the exit is the engine's
+# own: a signal only interrupts wait, so wait again until one returns unbroken.
+stop=''
+trap 'stop=1; kill -TERM "$engine" 2>/dev/null || :' TERM INT HUP
+while :; do
+  stop='' rc=0
+  wait "$engine" || rc=$?
+  [ -n "$stop" ] || break
+done
 exit "$rc"

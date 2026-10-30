@@ -4,11 +4,16 @@
 # tasks-axi nor the node it runs on, so PATH names their directories first:
 # replace %h/.local/npm/bin and /opt/node24/bin with the directories
 # `command -v tasks-axi node` prints.
+# TimeoutStartSec bounds a hung run, so the next day's run is not skipped;
+# its stop is the same SIGTERM as `systemctl --user stop`, which the run
+# takes as stopped on request (exit 143, listed as a success here).
 [Unit]
 Description=Firstmate component-skill drift run
 
 [Service]
 Type=oneshot
+TimeoutStartSec=1h
+SuccessExitStatus=143
 Nice=19
 IOSchedulingClass=idle
 Environment=PATH=%h/.local/npm/bin:/opt/node24/bin:/usr/local/bin:/usr/bin:/bin
