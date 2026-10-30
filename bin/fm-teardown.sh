@@ -500,13 +500,98 @@ teardown_cleanup_release() {
   FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-park.sh" cleanup-release "$ID" "$1"
 }
 teardown_cleanup_release screen || exit 1
+canonical_existing_dir() {
+  local target=$1
+  [ -n "$target" ] || return 1
+  [ -d "$target" ] || return 1
+  ( cd "$target" && pwd -P )
+}
+
+# Positive slot ownership, read from the claim the task that took the slot wrote
+# into the slot itself (bin/fm-wake-lib.sh owns the claim and its states). It is
+# defined ahead of the project lock because the unlocked evidence copy below peeks
+# with it; it only reads.
+#
+# For a slot this task still claims, or one with no claim, the record scan
+# (require_exclusive_worktree_slot_record) proves that no OTHER task record names it. It cannot prove that THIS record is
+# not the stale one, because the task that took the slot next may leave no record
+# this scan can reach: its own worker may have exited and its record been cleaned
+# up, or it may belong to a home this machine does not register. The claim closes that gap from the other side - it names the
+# task that actually took the slot, and it is written under the same project lock
+# that allocates it - so a claim naming another task is proof the slot was
+# reassigned after this record was written.
+#
+# For a legacy record without lease fields, a claim naming another task means
+# only that record's cleanup proceeds; every slot step is skipped even if the
+# successor now has a durable lease. A leased record still requires its exact
+# acquisition proof. Returns TEARDOWN_SLOT_REASSIGNED_RC for reassignment so
+# each caller gates its slot steps on one determination; the claimant stays in
+# FM_TREEHOUSE_SLOT_OWNER_ID and FM_TREEHOUSE_SLOT_OWNER_HOME.
+#
+# An absent claim proceeds as the slot's owner: a slot taken before claims
+# existed, or already returned to the pool, carries none, and refusing those
+# would strand every task in flight across the change for no evidence at all.
+# Those keep exactly the record-scan protection they had before.
+#
+# A leased record whose slot now carries no lease at all, under an absent or own
+# claim, was already returned (a cleanup interrupted after its return).
+# That returns TEARDOWN_SLOT_RELEASED_RC; only the task's own caller may accept
+# it, and only once released_slot_work_is_landed proves the work landed.
+TEARDOWN_SLOT_REASSIGNED_RC=3
+TEARDOWN_SLOT_RELEASED_RC=4
+require_owned_worktree_slot_record() {  # <task-id> <worktree> [meta]
+  local record_id=$1 worktree=$2 marker meta=${3:-$STATE/$1.meta} holder lease
+  holder=$(fm_meta_get "$meta" treehouse_lease_holder)
+  lease=$(fm_meta_get "$meta" treehouse_lease_id)
+  fm_treehouse_slot_owner_state "$worktree" "$record_id"
+  # A legacy stale pointer has no lease to match: proving the successor's
+  # acquisition is irrelevant when every access to that slot will be skipped.
+  # All other cases retain the full lease proof before any slot mutation.
+  if [ -n "$holder$lease" ] || [ "$FM_TREEHOUSE_SLOT_OWNER" != other ]; then
+    if ! fm_treehouse_slot_lease_read "$worktree"; then
+      echo "REFUSED: cannot prove pool lease state for $worktree; nothing was changed" >&2
+      return 1
+    fi
+    if [ -n "$holder$lease" ] && [ "$FM_TREEHOUSE_LEASED" = 0 ] \
+      && { [ "$FM_TREEHOUSE_SLOT_OWNER" = mine ] || [ "$FM_TREEHOUSE_SLOT_OWNER" = absent ]; }; then
+      return "$TEARDOWN_SLOT_RELEASED_RC"
+    fi
+    if [ -n "$holder$lease" ] || [ "$FM_TREEHOUSE_LEASED" = 1 ]; then
+      if ! fm_treehouse_slot_lease_matches "$worktree" "$holder" "$lease"; then
+        echo "REFUSED: task $record_id's pool lease no longer matches its recorded holder/id; preserving $worktree and its task record" >&2
+        return 1
+      fi
+    fi
+  fi
+  case "$FM_TREEHOUSE_SLOT_OWNER" in
+    mine|absent) return 0 ;;
+    other)
+      echo "warning: task $record_id's recorded worktree $worktree was reassigned to task $FM_TREEHOUSE_SLOT_OWNER_ID${FM_TREEHOUSE_SLOT_OWNER_HOME:+ (home $FM_TREEHOUSE_SLOT_OWNER_HOME)}, which claimed that pool slot after this record was written; that slot is no longer $record_id's, so its processes, copy, and claim are left untouched and only $record_id's own cleanup runs." >&2
+      return "$TEARDOWN_SLOT_REASSIGNED_RC"
+      ;;
+  esac
+  marker=$(fm_treehouse_slot_owner_marker "$worktree" 2>/dev/null) || marker="beside $worktree"
+  echo "REFUSED: task $record_id's recorded worktree $worktree carries a slot-owner claim that cannot be read, so the slot cannot be proved to still be this task's; nothing was changed - not even with --force." >&2
+  echo "Inspect or repair the claim file at $marker (task= and home= lines), then re-run teardown." >&2
+  return 1
+}
+
 TREEHOUSE_PROJECT_LOCK=
 TREEHOUSE_PROJECT_LOCK_HELD=0
 TREEHOUSE_SLOT_LOCK_REQUIRED=0
 TEARDOWN_EVIDENCE_SCAN=
-# Only durable record bytes are read here, never a disposable root. Keep the
-# temporary scan outside data/<id> so it cannot cite or invalidate itself.
-trap '[ -z "$TEARDOWN_EVIDENCE_SCAN" ] || rm -rf -- "$TEARDOWN_EVIDENCE_SCAN"' EXIT
+TEARDOWN_EVIDENCE_OWNED=1
+# The record scan reads only durable record bytes. Keep it outside data/<id> so
+# it cannot cite or invalidate itself; the staged copy is discarded with it
+# unless the locked finish installed it, as is the earlier copy an install
+# replaced. Either tree can be as large as the copy, so teardown_release_locks
+# removes them only after it releases every lock.
+teardown_discard_evidence() {
+  fm_task_evidence_discard
+  [ -z "$TEARDOWN_EVIDENCE_SCAN" ] || rm -rf -- "$TEARDOWN_EVIDENCE_SCAN"
+  TEARDOWN_EVIDENCE_SCAN=
+}
+trap teardown_discard_evidence EXIT
 if [ -f "$META" ] && [ ! -L "$META" ]; then
   TEARDOWN_LOCK_KIND=$(fm_meta_get "$META" kind)
   [ -n "$TEARDOWN_LOCK_KIND" ] || TEARDOWN_LOCK_KIND=ship
@@ -519,6 +604,23 @@ if [ -f "$META" ] && [ ! -L "$META" ]; then
     TEARDOWN_EVIDENCE_SCAN=$(mktemp -d "${TMPDIR:-/tmp}/fm-evidence-scan.XXXXXX") || exit 1
     fm_task_evidence_scan prepare "$DATA/$ID" "$TEARDOWN_EVIDENCE_SCAN" \
       "$TEARDOWN_LOCK_WT" "$TEARDOWN_EVIDENCE_TMP" || exit 1
+    # Copying declared evidence walks the whole declared tree, so it must not
+    # hold the shared project lock, which every home's spawn and return on this
+    # project waits for. Peek, as teardown_live_slot_path and
+    # require_owned_task_worktree_slot will decide under the lock, at whether
+    # the copy is still this task's to read (a reassigned or released slot's is
+    # not), and stage now; the locked finish refuses when either has changed.
+    if fm_treehouse_pool_slot "$TEARDOWN_LOCK_PROJECT" "$TEARDOWN_LOCK_WT" \
+       && TEARDOWN_EVIDENCE_SLOT=$(canonical_existing_dir "$TEARDOWN_LOCK_WT"); then
+      TEARDOWN_EVIDENCE_PEEK_RC=0
+      require_owned_worktree_slot_record "$ID" "$TEARDOWN_EVIDENCE_SLOT" "$META" 2>/dev/null \
+        || TEARDOWN_EVIDENCE_PEEK_RC=$?
+      case "$TEARDOWN_EVIDENCE_PEEK_RC" in
+        "$TEARDOWN_SLOT_REASSIGNED_RC"|"$TEARDOWN_SLOT_RELEASED_RC") TEARDOWN_EVIDENCE_OWNED=0 ;;
+      esac
+    fi
+    fm_task_evidence_stage "$ID" "$DATA" "$TEARDOWN_LOCK_WT" "$TEARDOWN_EVIDENCE_OWNED" \
+      "$TEARDOWN_EVIDENCE_TMP" "$TEARDOWN_EVIDENCE_SCAN" || exit 1
   fi
   if [ "$TEARDOWN_LOCK_KIND" != secondmate ] \
      && [ "$TEARDOWN_LOCK_BACKEND" != orca ] \
@@ -549,8 +651,6 @@ DESCENDANT_TREEHOUSE_LOCK_PATHS=()
 DESCENDANT_REASSIGNED_SLOTS=()
 teardown_release_locks() {
   local status=$? i
-  [ -z "$TEARDOWN_EVIDENCE_SCAN" ] || rm -rf -- "$TEARDOWN_EVIDENCE_SCAN"
-  TEARDOWN_EVIDENCE_SCAN=
   if declare -F teardown_release_herdr_locks >/dev/null 2>&1; then
     teardown_release_herdr_locks || true
   fi
@@ -587,6 +687,7 @@ teardown_release_locks() {
     TREEHOUSE_PROJECT_LOCK_HELD=0
   fi
   fm_lease_guard_release || true
+  teardown_discard_evidence
   return "$status"
 }
 trap teardown_release_locks EXIT
@@ -1897,13 +1998,6 @@ inspectable_git_worktree() {
   git -C "$top" rev-parse --git-dir >/dev/null 2>&1
 }
 
-canonical_existing_dir() {
-  local target=$1
-  [ -n "$target" ] || return 1
-  [ -d "$target" ] || return 1
-  ( cd "$target" && pwd -P )
-}
-
 retry_wait_secs_is_valid() {
   [[ "$1" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]
 }
@@ -2574,11 +2668,11 @@ collect_local_firstmate_states() {
 }
 
 # The slot's owner claim is read first because it outranks the record scan (see
-# require_owned_worktree_slot_record below for the claim's states). A claim
-# naming another task means no slot step will run, so a colliding record cannot
-# be harmed and scanning would only strand this record. A claim naming this task
-# proves another worker record naming the slot as its worktree is the stale one
-# - its copy was already reused when the pool handed the slot on - so that
+# require_owned_worktree_slot_record, defined before the project lock, for the
+# claim's states). A claim naming another task means no slot step will run, so
+# a colliding record cannot be harmed and scanning would only strand this
+# record. A claim naming this task proves another worker record naming the slot
+# as its worktree is the stale one - its copy was already reused when the pool handed the slot on - so that
 # collision warns instead of refusing - but only once the recovery-grade
 # classifier (fm_backend_agent_state) reads that record's endpoint as dead or
 # missing, because a relaunch can put a live worker back into its old slot
@@ -2638,73 +2732,6 @@ require_exclusive_task_worktree_slot() {
   local slot
   slot=$(teardown_live_slot_path) || return 0
   require_exclusive_worktree_slot_record "$META" "$ID" "$STATE" "$slot"
-}
-
-# Positive slot ownership, read from the claim the task that took the slot wrote
-# into the slot itself (bin/fm-wake-lib.sh owns the claim and its states).
-#
-# For a slot this task still claims, or one with no claim, the record scan above
-# proves that no OTHER task record names it. It cannot prove that THIS record is
-# not the stale one, because the task that took the slot next may leave no record
-# this scan can reach: its own worker may have exited and its record been cleaned
-# up, or it may belong to a home this machine does not register. The claim closes that gap from the other side - it names the
-# task that actually took the slot, and it is written under the same project lock
-# that allocates it - so a claim naming another task is proof the slot was
-# reassigned after this record was written.
-#
-# For a legacy record without lease fields, a claim naming another task means
-# only that record's cleanup proceeds; every slot step is skipped even if the
-# successor now has a durable lease. A leased record still requires its exact
-# acquisition proof. Returns TEARDOWN_SLOT_REASSIGNED_RC for reassignment so
-# each caller gates its slot steps on one determination; the claimant stays in
-# FM_TREEHOUSE_SLOT_OWNER_ID and FM_TREEHOUSE_SLOT_OWNER_HOME.
-#
-# An absent claim proceeds as the slot's owner: a slot taken before claims
-# existed, or already returned to the pool, carries none, and refusing those
-# would strand every task in flight across the change for no evidence at all.
-# Those keep exactly the record-scan protection they had before.
-#
-# A leased record whose slot now carries no lease at all, under an absent or own
-# claim, was already returned (a cleanup interrupted after its return).
-# That returns TEARDOWN_SLOT_RELEASED_RC; only the task's own caller may accept
-# it, and only once released_slot_work_is_landed proves the work landed.
-TEARDOWN_SLOT_REASSIGNED_RC=3
-TEARDOWN_SLOT_RELEASED_RC=4
-require_owned_worktree_slot_record() {  # <task-id> <worktree> [meta]
-  local record_id=$1 worktree=$2 marker meta=${3:-$STATE/$1.meta} holder lease
-  holder=$(fm_meta_get "$meta" treehouse_lease_holder)
-  lease=$(fm_meta_get "$meta" treehouse_lease_id)
-  fm_treehouse_slot_owner_state "$worktree" "$record_id"
-  # A legacy stale pointer has no lease to match: proving the successor's
-  # acquisition is irrelevant when every access to that slot will be skipped.
-  # All other cases retain the full lease proof before any slot mutation.
-  if [ -n "$holder$lease" ] || [ "$FM_TREEHOUSE_SLOT_OWNER" != other ]; then
-    if ! fm_treehouse_slot_lease_read "$worktree"; then
-      echo "REFUSED: cannot prove pool lease state for $worktree; nothing was changed" >&2
-      return 1
-    fi
-    if [ -n "$holder$lease" ] && [ "$FM_TREEHOUSE_LEASED" = 0 ] \
-      && { [ "$FM_TREEHOUSE_SLOT_OWNER" = mine ] || [ "$FM_TREEHOUSE_SLOT_OWNER" = absent ]; }; then
-      return "$TEARDOWN_SLOT_RELEASED_RC"
-    fi
-    if [ -n "$holder$lease" ] || [ "$FM_TREEHOUSE_LEASED" = 1 ]; then
-      if ! fm_treehouse_slot_lease_matches "$worktree" "$holder" "$lease"; then
-        echo "REFUSED: task $record_id's pool lease no longer matches its recorded holder/id; preserving $worktree and its task record" >&2
-        return 1
-      fi
-    fi
-  fi
-  case "$FM_TREEHOUSE_SLOT_OWNER" in
-    mine|absent) return 0 ;;
-    other)
-      echo "warning: task $record_id's recorded worktree $worktree was reassigned to task $FM_TREEHOUSE_SLOT_OWNER_ID${FM_TREEHOUSE_SLOT_OWNER_HOME:+ (home $FM_TREEHOUSE_SLOT_OWNER_HOME)}, which claimed that pool slot after this record was written; that slot is no longer $record_id's, so its processes, copy, and claim are left untouched and only $record_id's own cleanup runs." >&2
-      return "$TEARDOWN_SLOT_REASSIGNED_RC"
-      ;;
-  esac
-  marker=$(fm_treehouse_slot_owner_marker "$worktree" 2>/dev/null) || marker="beside $worktree"
-  echo "REFUSED: task $record_id's recorded worktree $worktree carries a slot-owner claim that cannot be read, so the slot cannot be proved to still be this task's; nothing was changed - not even with --force." >&2
-  echo "Inspect or repair the claim file at $marker (task= and home= lines), then re-run teardown." >&2
-  return 1
 }
 
 # The one ownership determination for this task's recorded slot. Every later
@@ -3884,7 +3911,9 @@ fi
 
 # Declared evidence leaves the copy and the task's temp folder before either
 # is returned or removed; unsafe declarations and existing uncovered references
-# refuse here, while nothing has been changed yet. bin/fm-task-evidence-lib.sh
+# refuse here, while nothing has been changed yet. The copy was staged before
+# the project lock; finishing refuses unless its inputs, the ownership decided
+# above and every copied source are unchanged since. bin/fm-task-evidence-lib.sh
 # owns the declaration, copy-out, and refusal contract; --force lifts neither.
 if [ "$KIND" != secondmate ]; then
   TEARDOWN_EVIDENCE_COPY_OWNED=0
@@ -3895,7 +3924,8 @@ if [ "$KIND" != secondmate ]; then
     echo "REFUSED: task evidence roots changed since the unlocked scan; retry teardown" >&2
     exit 1
   fi
-  fm_task_evidence_preserve "$ID" "$DATA" "$WT" "$TEARDOWN_EVIDENCE_COPY_OWNED" "$TASK_TMP" \
+  fm_task_evidence_scan verify "$DATA/$ID" "$TEARDOWN_EVIDENCE_SCAN" || exit 1
+  fm_task_evidence_finish "$ID" "$DATA" "$WT" "$TEARDOWN_EVIDENCE_COPY_OWNED" "$TASK_TMP" \
     "$TEARDOWN_EVIDENCE_SCAN" || exit 1
   fm_task_evidence_scan verify "$DATA/$ID" "$TEARDOWN_EVIDENCE_SCAN" || exit 1
 fi

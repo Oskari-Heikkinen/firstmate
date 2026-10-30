@@ -1,25 +1,40 @@
 #!/usr/bin/env perl
-# Bulk text prefilter for fm-task-evidence-lib.sh; never inspects a disposable
-# root. Usage: perl fm-task-evidence-scan.pl prepare|verify <dir> <scratch>
-# [<copy-root> <tmp-root>]. prepare inventories records, runs grep in bounded
+# Bulk text prefilter and copy-change detector for fm-task-evidence-lib.sh.
+# Usage: perl fm-task-evidence-scan.pl prepare|verify <dir> <scratch>
+# [<copy-root> <tmp-root>]; snapshot <path> <scratch> <index> <key>; recheck
+# <staging> <scratch> <count>. prepare inventories records, runs grep in bounded
 # argv batches (per-record retries only after grep errors), and saves validated
 # filename-NUL/line-LF pairs in matches. GNU and BSD grep share --null framing.
 # verify does one metadata-only walk, refusing additions, removals, replacement
 # or edits since prepare. Evidence and staging trees are excluded in both walks.
-# Citation parsing, object survival, copy verification and manifests remain in
-# the library, under teardown's project lock. Perl and grep are existing runtime
-# dependencies; Time::HiRes and Storable are Perl core modules. Unreadable
+# prepare and verify never inspect a disposable root.
+# snapshot records one declared source's (or carried earlier copy's) metadata
+# inventory before it is copied; recheck repeats every walk, refuses any change,
+# and rehashes the regular files whose mtime or ctime is not older than their
+# snapshot by the timestamp margin below, against the staged manifest. Both run
+# while staging, before teardown takes its project lock, so the copy and every
+# walk of it stay outside that lock (the library header owns that contract).
+# Citation parsing, object survival and installation remain in the library,
+# under the lock. Perl and grep are existing runtime dependencies;
+# Time::HiRes, Storable and Digest::SHA are Perl core modules. Unreadable
 # records/directories retain the old grep/find skip policy, with one non-blocking
-# WARNING per skipped path across prepare and verify calls for this scan.
+# WARNING per skipped path across prepare and verify calls for this scan; a
+# snapshot records an unreadable path as such instead, so the copy's own refusal
+# is unchanged.
 use strict;
 use warnings;
 use Time::HiRes ();
 use Storable qw(nstore retrieve);
+use Digest::SHA ();
 
 my ($mode, $dir, $scratch, @roots) = @ARGV;
 sub refuse { die "REFUSED: evidence record scan: $_[0]; retry teardown\n"; }
-defined($scratch) && ($mode eq 'prepare' || $mode eq 'verify')
+sub refuse_copy { die "REFUSED: evidence copy check: $_[0]; nothing was changed; retry teardown\n"; }
+defined($scratch) && defined($mode) && $mode =~ /\A(?:prepare|verify|snapshot|recheck)\z/
     or refuse('invalid invocation');
+# Coarse filesystem clocks and 2 s FAT timestamps can give a later write the
+# same recorded time as the snapshot's; recheck rehashes such a file.
+my $racy_margin = 3;
 
 my $skipped_file = "$scratch/skipped";
 my $skipped = -e $skipped_file ? eval { retrieve($skipped_file) } : {};
@@ -32,54 +47,119 @@ sub skip_path {
         or refuse('cannot save skipped-path inventory');
 }
 
+# Records mode (prepare/verify) walks <dir> without the evidence trees and keeps
+# the skip policy; a snapshot walks one copied path and keeps every member.
+# Returns the signatures and, for regular files, the newer of mtime and ctime.
 sub inventory {
-    my %entries;
-    return \%entries unless -e $dir || -l $dir;
-    my @pending = ($dir);
+    my ($root, $records) = @_;
+    my (%entries, %times);
+    return (\%entries, \%times) unless -e $root || -l $root;
+    my @pending = ($root);
     while (@pending) {
         my $path = pop @pending;
-        next if $path eq "$dir/evidence" || $path =~ /^\Q$dir\E\/\.evidence\.[^\/]*$/;
+        next if $records && ($path eq "$root/evidence" || $path =~ /^\Q$root\E\/\.evidence\.[^\/]*$/);
         my @s = Time::HiRes::lstat($path);
-        if (!@s) { skip_path($path); next; }
+        if (!@s) {
+            if ($records) { skip_path($path); } else { $entries{$path} = 'unreadable'; }
+            next;
+        }
         # Directory timestamps change when preservation installs its own tree.
         # Membership is compared via the complete inventory instead. Symlinks
         # are not followed (matching find -type f); retain their own identity.
         my $is_dir = ($s[2] & 0170000) == 0040000;
         $entries{$path} = join(':', @s[0,1,2,4,5,6], $is_dir ? () :
             ($s[3], $s[7], sprintf('%.9f', $s[9]), sprintf('%.9f', $s[10])));
-        if ($path eq "$dir/evidence.list" && -l $path) {
+        if ($records && $path eq "$root/evidence.list" && -l $path) {
             my @target = Time::HiRes::stat($path);
             $entries{$path} .= @target ? join(':', 'target', @target[0,1,2,3,4,5,6,7],
                 map { sprintf('%.9f', $_) } @target[9,10]) : ':missing-target';
         }
+        if (!$records && ($s[2] & 0170000) == 0120000) {
+            my $text = readlink($path);
+            $entries{$path} .= defined($text) ? ":link:$text" : ':unreadable-link';
+        }
+        $times{$path} = $s[9] > $s[10] ? $s[9] : $s[10] if ($s[2] & 0170000) == 0100000;
         if ($is_dir) {
             if (opendir(my $dh, $path)) {
                 push @pending, map { "$path/$_" } grep { $_ ne '.' && $_ ne '..' } readdir($dh);
                 closedir($dh);
-            } else {
+            } elsif ($records) {
                 skip_path($path);
+            } else {
+                $entries{$path} .= ':unlisted';
             }
         }
     }
-    return \%entries;
+    return (\%entries, \%times);
 }
-sub same {
+# The first path whose presence or signature differs, or undef when none does.
+sub changed {
     my ($a, $b) = @_;
-    keys(%$a) == keys(%$b) or return 0;
-    for my $path (keys %$a) {
-        return 0 unless exists($b->{$path}) && $a->{$path} eq $b->{$path};
+    for my $path (sort keys %$a) {
+        return $path unless exists($b->{$path}) && $a->{$path} eq $b->{$path};
     }
-    return 1;
+    for my $path (sort keys %$b) {
+        return $path unless exists($a->{$path});
+    }
+    return undef;
+}
+sub same { return !defined(changed(@_)); }
+
+if ($mode eq 'snapshot') {
+    my ($index, $key) = @roots;
+    defined($key) && $index =~ /\A[0-9]+\z/ or refuse_copy('invalid snapshot invocation');
+    my $t0 = Time::HiRes::time() - $racy_margin;
+    my ($entries) = inventory($dir, 0);
+    eval { nstore({ root => $dir, key => $key, t0 => $t0, entries => $entries },
+        "$scratch/snapshot.$index") } or refuse_copy("cannot save the snapshot of $dir");
+    exit 0;
+}
+
+if ($mode eq 'recheck') {
+    my ($count) = @roots;
+    defined($count) && $count =~ /\A[0-9]+\z/ or refuse_copy('invalid recheck invocation');
+    my %staged;
+    my @racy;
+    for my $index (0 .. $count - 1) {
+        my $snap = eval { retrieve("$scratch/snapshot.$index") };
+        $snap or refuse_copy("cannot read copy snapshot $index");
+        my ($root, $key, $t0) = @$snap{qw(root key t0)};
+        my ($entries, $times) = inventory($root, 0);
+        my $path = changed($snap->{entries}, $entries);
+        defined($path) and refuse_copy("$path changed while it was copied outside the project lock");
+        for my $file (sort keys %$times) {
+            push @racy, [$file, $key . substr($file, length($root))] if $times->{$file} >= $t0;
+        }
+    }
+    exit 0 unless @racy;
+    open(my $manifest, '<', "$dir/MANIFEST.sha256") or refuse_copy('cannot read the staged manifest');
+    while (my $line = <$manifest>) {
+        chomp($line);
+        # sha256sum and shasum mark an escaped name with a leading backslash.
+        $line =~ /\A\\?([0-9a-f]{64})  (.*)\z/s or refuse_copy('malformed staged manifest line');
+        $staged{$2} = $1;
+    }
+    close($manifest) or refuse_copy("cannot read the staged manifest: $!");
+    for my $item (@racy) {
+        my ($file, $name) = @$item;
+        # A file the copy did not manifest was never verified; nothing to compare.
+        next unless exists($staged{$name});
+        my $sha = Digest::SHA->new(256);
+        my $hash = eval { $sha->addfile($file, 'b'); $sha->hexdigest };
+        defined($hash) && $hash eq $staged{$name}
+            or refuse_copy("$file changed while it was copied outside the project lock");
+    }
+    exit 0;
 }
 
 if ($mode eq 'verify') {
     my $saved = eval { retrieve("$scratch/inventory") };
     $saved or refuse('cannot read record inventory');
-    same($saved, inventory()) or refuse('durable records changed since the unlocked scan');
+    same($saved, (inventory($dir, 1))[0]) or refuse('durable records changed since the unlocked scan');
     exit 0;
 }
 
-my $before = inventory();
+my ($before) = inventory($dir, 1);
 open(my $out, '>', "$scratch/matches") or refuse("cannot stage matches: $!");
 binmode($out);
 s{/$}{} for @roots; # Match the library's lexical root normalization.
@@ -157,6 +237,6 @@ while (@files && @patterns) {
     }
 }
 close($out) or refuse("cannot close matches: $!");
-same($before, inventory()) or refuse('durable records changed during the unlocked scan');
+same($before, (inventory($dir, 1))[0]) or refuse('durable records changed during the unlocked scan');
 eval { nstore($before, "$scratch/inventory") }
     or refuse('cannot save record inventory');

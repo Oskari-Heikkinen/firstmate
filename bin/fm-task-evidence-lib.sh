@@ -3,8 +3,10 @@
 # that lives inside its disposable copy or its per-task temp folder, how that
 # evidence is copied out before cleanup returns or removes those places, and
 # when cleanup must refuse because a durable record still points into them.
-# bin/fm-teardown.sh calls fm_task_evidence_preserve before any destructive
-# step; the declaration contract below is the only place it is stated.
+# bin/fm-teardown.sh stages the copy with fm_task_evidence_stage before it
+# takes the project lock and installs it with fm_task_evidence_finish before
+# any destructive step; other callers use fm_task_evidence_preserve, which runs
+# both. The declaration contract below is the only place it is stated.
 #
 # Declaration: data/<id>/evidence.list, one path per line; blank lines and
 # lines starting with # are ignored. A relative path names a file or directory
@@ -31,14 +33,23 @@
 # retried cleanup after the copy was already returned) keeps its earlier copy
 # when that copy still verifies against the earlier manifest; otherwise the
 # declaration refuses, naming the path.
+# Staging runs without a lock, so before each source (or carried earlier copy)
+# is read its metadata inventory is snapshotted; staging's last step repeats
+# every walk, rehashes each file modified within a few seconds of its snapshot,
+# and refuses with nothing changed when any member was added, removed,
+# replaced, retargeted or edited since (bin/fm-task-evidence-scan.pl owns the
+# comparison). No walk of a declared tree runs at finishing, so a caller's lock
+# hold does not grow with the tree; finishing refuses when its inputs differ
+# from staging's. Every other check and refusal below runs at finishing, in the
+# original order.
 #
 # Dangling references: every text file under data/<id>/ other than the
 # evidence tree is scanned for absolute paths strictly inside the copy or the
 # tasktmp folder. The bulk text prefilter runs once over the records, in bounded
 # grep argv batches for both roots together. Teardown prepares it before taking
 # the project lock; metadata inventories refuse changed record identities,
-# membership or timestamps before parsing and after preservation. The parser's
-# existence-aware checks and preservation still run under the project lock.
+# membership or timestamps before finishing and after it. The parser's
+# existence-aware checks and installation run under the project lock.
 # Unquoted citations end at whitespace or markup; single,
 # double or backtick quoted citations must close on the same line. Word-internal
 # apostrophes are prose, not quote openers. At every citation boundary,
@@ -557,34 +568,81 @@ fm_task_evidence_carry_prior() {
 # up. Without it, this wrapper prepares and cleans up its own temporary scan.
 # Returns 0 when every declared path is copied and verified and no durable
 # record references an existing uncovered path; prints each refusal and returns 1
-# otherwise. Either root may be empty.
+# otherwise. Either root may be empty. A caller that must not hold its lock
+# through the copy runs fm_task_evidence_stage and fm_task_evidence_finish itself.
 fm_task_evidence_preserve() (
   # Standalone callers get the same bulk prefilter. Teardown supplies its
   # already-prepared unlocked scan; only this wrapper owns temporary storage.
   local scan=${6:-}
+  trap 'fm_task_evidence_discard' EXIT
   if [ -z "$scan" ]; then
     scan=$(mktemp -d "${TMPDIR:-/tmp}/fm-evidence-scan.XXXXXX") || return 1
-    trap 'rm -rf -- "$scan"' EXIT
+    trap 'fm_task_evidence_discard; rm -rf -- "$scan"' EXIT
     fm_task_evidence_scan prepare "$2/$1" "$scan" "$3" "$5" || return 1
   fi
   fm_task_evidence_scan verify "$2/$1" "$scan" || return 1
-  fm_task_evidence_preserve_scanned "$1" "$2" "$3" "$4" "$5" "$scan"
+  fm_task_evidence_stage "$1" "$2" "$3" "$4" "$5" "$scan" || return 1
+  fm_task_evidence_finish "$1" "$2" "$3" "$4" "$5" "$scan"
 )
 
 fm_task_evidence_scan() {
   perl "${BASH_SOURCE[0]%/*}/fm-task-evidence-scan.pl" "$@"
 }
 
-fm_task_evidence_preserve_scanned() {
+# fm_task_evidence_stage <id> <data-dir> <copy-root> <copy-owned 0|1> <tmp-root> <scan-dir>
+# The first half of preservation, which needs no lock: snapshot each declared
+# source (or carried earlier copy) into the scan, copy and verify it into
+# staging, then recheck every snapshot, so the caller takes its lock right
+# after the last walk. Every message it would print is held in the scan for
+# fm_task_evidence_finish to print at its original place, so a caller's earlier
+# refusals keep their order. Returns 1 only when it cannot record that outcome;
+# the staging tree then stays for fm_task_evidence_discard.
+FM_TE_STAGE_DONE=0
+FM_TE_STAGE_STAGING=
+fm_task_evidence_stage() {
+  FM_TE_STAGE_DONE=0 FM_TE_STAGE_STAGING='' FM_TE_STAGE_DECLARED='' FM_TE_STAGE_REFUSED=0
+  FM_TE_STAGE_ABSENT=0 FM_TE_STAGE_EARLY=0 FM_TE_STAGE_SNAPSHOTS=0 FM_TE_STAGE_CHANGED=0
+  if ! { fm_task_evidence_stage_copy "$@"; } 2> "$6/stage.err"; then
+    echo "REFUSED: cannot record staged task evidence for $1; nothing was changed" >&2
+    return 1
+  fi
+  # A copy that verified when staged is still the source's only while nothing
+  # it read has changed since its snapshot.
+  if [ -n "$FM_TE_STAGE_STAGING" ] && [ "$FM_TE_STAGE_EARLY" = 0 ] \
+     && [ "$FM_TE_STAGE_REFUSED" = 0 ] \
+     && ! fm_task_evidence_scan recheck "$FM_TE_STAGE_STAGING" "$6" \
+       "$FM_TE_STAGE_SNAPSHOTS" 2>> "$6/stage.err"; then
+    FM_TE_STAGE_CHANGED=1
+  fi
+  FM_TE_STAGE_ID=$1 FM_TE_STAGE_DATA=$2 FM_TE_STAGE_COPY=$3 FM_TE_STAGE_OWNED=$4
+  FM_TE_STAGE_TMP=$5 FM_TE_STAGE_SCAN=$6 FM_TE_STAGE_DONE=1
+}
+
+# Remove a staged tree that no finish installed and the earlier tree a finish
+# replaced. Both can be as large as the copy, so a caller that holds a lock
+# runs this after releasing it. Safe in an EXIT trap.
+FM_TE_STAGE_REPLACED=
+fm_task_evidence_discard() {
+  [ -z "${FM_TE_STAGE_STAGING:-}" ] || rm -rf -- "$FM_TE_STAGE_STAGING"
+  [ -z "${FM_TE_STAGE_REPLACED:-}" ] || rm -rf -- "$FM_TE_STAGE_REPLACED"
+  FM_TE_STAGE_STAGING='' FM_TE_STAGE_REPLACED=''
+}
+
+# Snapshot <path> as staged key <key> before anything reads it for the copy.
+fm_task_evidence_snapshot() {  # <path> <key> <scan-dir>
+  fm_task_evidence_scan snapshot "$1" "$3" "$FM_TE_STAGE_SNAPSHOTS" "$2" || return 1
+  FM_TE_STAGE_SNAPSHOTS=$((FM_TE_STAGE_SNAPSHOTS + 1))
+}
+
+fm_task_evidence_stage_copy() {
   local id=$1 data=$2 copy_root=$3 copy_owned=$4 tmp_root=$5 scan=$6
   local dir="$data/$id" list evidence staging manifest line path src root key
-  local declared='' refused=0 refs ref ref_mode d overlap record
-  local next_record next_line record_lines scan_eof
-  local link target label rel physical_copy physical_tmp suffix hash rc i
-  [ -d "$dir" ] || return 0
+  local declared='' refused=0 d overlap hash rc i suffix
+  if [ ! -d "$dir" ]; then FM_TE_STAGE_ABSENT=1; return 0; fi
   if [ ! -r "$scan/matches" ]; then
     echo "REFUSED: evidence record scan: cannot read prepared matches; retry teardown" >&2
-    return 1
+    FM_TE_STAGE_EARLY=1
+    return 0
   fi
   copy_root=${copy_root%/}
   tmp_root=${tmp_root%/}
@@ -594,9 +652,11 @@ fm_task_evidence_preserve_scanned() {
     staging="$dir/.evidence.new.$$"
     manifest="$staging/MANIFEST.sha256"
     rm -rf -- "$staging"
+    FM_TE_STAGE_STAGING=$staging
     if ! { mkdir -p -- "$staging" && : > "$manifest" && : > "$manifest.links"; }; then
       echo "REFUSED: cannot stage evidence for $id under $dir" >&2
-      return 1
+      FM_TE_STAGE_EARLY=1
+      return 0
     fi
     while IFS= read -r line || [ -n "$line" ]; do
       path=$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
@@ -635,6 +695,7 @@ fm_task_evidence_preserve_scanned() {
       if [ "$FM_TE_LABEL" = copy ]; then root=$copy_root; else root=$tmp_root; fi
       src="$root/$FM_TE_REL"
       if [ "$FM_TE_LABEL" = copy ] && [ "$copy_owned" != 1 ]; then
+        fm_task_evidence_snapshot "$evidence/$key" "$key" "$scan" || { refused=1; continue; }
         rc=0
         fm_task_evidence_carry_prior "$evidence" "$key" "$staging" "$manifest" || rc=$?
         case "$rc" in
@@ -646,11 +707,14 @@ fm_task_evidence_preserve_scanned() {
         esac
         continue
       fi
+      fm_task_evidence_snapshot "$src" "$key" "$scan" || { refused=1; continue; }
       if [ -e "$src" ] || [ -L "$src" ]; then
         fm_task_evidence_copy_source "$src" "$root" "$staging/$key" "$key" "$manifest" || {
           echo "REFUSED: could not copy and verify declared evidence $src for $id" >&2
           refused=1
         }
+      elif ! fm_task_evidence_snapshot "$evidence/$key" "$key" "$scan"; then
+        refused=1
       elif ! fm_task_evidence_carry_prior "$evidence" "$key" "$staging" "$manifest"; then
         echo "REFUSED: declared evidence $src for $id does not exist and no verified earlier copy is preserved" >&2
         refused=1
@@ -684,6 +748,47 @@ fm_task_evidence_preserve_scanned() {
       done
     fi
   fi
+  FM_TE_STAGE_DECLARED=$declared
+  FM_TE_STAGE_REFUSED=$refused
+}
+
+# fm_task_evidence_finish <id> <data-dir> <copy-root> <copy-owned 0|1> <tmp-root> <scan-dir>
+# The second half, run under the caller's destructive lock with the arguments
+# fm_task_evidence_stage was given: refuse with nothing changed when they differ,
+# print the staged messages, refuse when staging's recheck found a change, and
+# run the existence-aware checks and installation. It walks and removes no
+# declared tree: a staged tree it did not install and the earlier tree it
+# replaced stay for fm_task_evidence_discard, which a caller runs after
+# releasing its lock. Returns as fm_task_evidence_preserve.
+fm_task_evidence_finish() {
+  local id=$1 data=$2 copy_root=$3 copy_owned=$4 tmp_root=$5 scan=$6
+  local dir="$data/$id" list evidence staging manifest line root key
+  local declared refused refs ref ref_mode record
+  local next_record next_line record_lines scan_eof
+  local link target label rel physical_copy physical_tmp rc
+  if [ "$FM_TE_STAGE_DONE" != 1 ] || [ "$FM_TE_STAGE_ID" != "$id" ] \
+     || [ "$FM_TE_STAGE_DATA" != "$data" ] || [ "$FM_TE_STAGE_COPY" != "$copy_root" ] \
+     || [ "$FM_TE_STAGE_OWNED" != "$copy_owned" ] || [ "$FM_TE_STAGE_TMP" != "$tmp_root" ] \
+     || [ "$FM_TE_STAGE_SCAN" != "$scan" ]; then
+    echo "REFUSED: task evidence inputs changed since the unlocked copy for $id; nothing was changed; retry teardown" >&2
+    return 1
+  fi
+  FM_TE_STAGE_DONE=0
+  staging=$FM_TE_STAGE_STAGING
+  declared=$FM_TE_STAGE_DECLARED
+  refused=$FM_TE_STAGE_REFUSED
+  if [ ! -f "$scan/stage.err" ] || ! cat -- "$scan/stage.err" >&2; then
+    echo "REFUSED: cannot read staged task evidence messages for $id; retry teardown" >&2
+    return 1
+  fi
+  [ "$FM_TE_STAGE_CHANGED" = 0 ] || return 1
+  [ "$FM_TE_STAGE_ABSENT" = 0 ] || return 0
+  [ "$FM_TE_STAGE_EARLY" = 0 ] || return 1
+  copy_root=${copy_root%/}
+  tmp_root=${tmp_root%/}
+  list="$dir/evidence.list"
+  evidence="$dir/evidence"
+  [ -z "$staging" ] || manifest="$staging/MANIFEST.sha256"
 
   physical_copy=$copy_root
   physical_tmp=$tmp_root
@@ -791,24 +896,23 @@ fm_task_evidence_preserve_scanned() {
 
   fm_task_evidence_scan verify "$dir" "$scan" || refused=1
   if [ "$refused" != 0 ]; then
-    [ -z "${staging:-}" ] || rm -rf -- "$staging"
     echo "Declare each path in $list so cleanup copies it out, or remove the reference, then re-run." >&2
     return 1
   fi
   [ -n "${staging:-}" ] || return 0
   if [ ! -s "$manifest" ] && [ ! -s "$manifest.links" ] && [ ! -e "$evidence" ]; then
-    rm -rf -- "$staging"
     return 0
   fi
   if [ -e "$evidence" ] || [ -L "$evidence" ]; then
     rm -rf -- "$dir/.evidence.old.$$"
-    mv -- "$evidence" "$dir/.evidence.old.$$" || { rm -rf -- "$staging"; return 1; }
+    mv -- "$evidence" "$dir/.evidence.old.$$" || return 1
   fi
   if ! mv -- "$staging" "$evidence"; then
     [ ! -e "$dir/.evidence.old.$$" ] || mv -- "$dir/.evidence.old.$$" "$evidence"
     echo "REFUSED: could not install the verified evidence copy for $id" >&2
     return 1
   fi
-  rm -rf -- "$dir/.evidence.old.$$"
+  FM_TE_STAGE_STAGING=
+  [ ! -e "$dir/.evidence.old.$$" ] || FM_TE_STAGE_REPLACED=$dir/.evidence.old.$$
   return 0
 }
