@@ -452,7 +452,6 @@ class Home:
         out = [actor]
         if actor.startswith("systemd-service:") and actor.endswith(".service"):
             out.append("systemd-timer:" + actor[len("systemd-service:"):-len(".service")] + ".timer")
-            out += [t for t in self.timers(actor) if t not in out]
         return out
 
     def log(self, text):
