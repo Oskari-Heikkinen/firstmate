@@ -730,7 +730,7 @@ cmd_status_json() {
   v2_site; rc=$?
   case "$rc" in
     0) ;;
-    75) reason=$(jq -cn --arg c "$V2_CODE" --arg d "$V2_DETAIL" '[{code: $c, volume: null, term: null, detail: $d}]') ;;
+    75) ;;
     *) v2_say "$V2_KIND" "$V2_CODE" "$V2_DETAIL"; return ;;
   esac
   map="$(config_dir)/class-map.json"
