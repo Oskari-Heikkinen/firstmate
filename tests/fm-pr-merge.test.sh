@@ -775,57 +775,85 @@ test_verified_merge_records_pr_and_head() {
   pass "fm-pr-merge records pr= and pr_head= for a verified GitHub merge"
 }
 
-# A merged change to a Firstmate helper another home runs under a pin is recorded
-# for its declared consumers' review (docs/helper-consumers.md). The code root
-# here is a fixture whose origin is the merged PR's repository, redirected to a
-# local bare repository that already holds the merged helper change.
-test_merged_helper_change_is_recorded_for_its_consumers() {
-  local case_dir rc root bare accepted merged record before
-  case_dir=$(make_case helper-pending)
-  add_gh_mocks "$case_dir" deadbeefcafefeed0000000000000000deadbeef
-  root="$case_dir/code-root"
-  fm_git_init_commit "$root"
-  mkdir -p "$root/bin"
-  printf 'echo v1\n' > "$root/bin/helper.sh"
-  git -C "$root" add -A
-  git -C "$root" commit -qm helper-v1
+# helper_world <case_dir> <ref> [<project-url> <pr-url>]: a code root whose
+# origin is the PR's repository (GitHub's example/repo unless named),
+# redirected to a local bare repository, a fixture declaration of its
+# bin/helper.sh accepting v1, and a landing clone whose commit changing the
+# helper to v2 is pushed to <ref> on origin: main as though already merged, or
+# the PR's own branch. Sets HW_ROOT, HW_URL, HW_HEAD, HW_ACCEPTED and HW_MERGED.
+helper_world() {
+  local case_dir=$1 ref=$2 project=${3:-https://github.com/example/repo} bare
+  HW_URL=${4:-https://github.com/example/repo/pull/9}
+  HW_ROOT="$case_dir/code-root"
+  fm_git_init_commit "$HW_ROOT"
+  mkdir -p "$HW_ROOT/bin"
+  printf 'echo v1\n' > "$HW_ROOT/bin/helper.sh"
+  git -C "$HW_ROOT" add -A
+  git -C "$HW_ROOT" commit -qm helper-v1
   bare="$case_dir/origin.git"
-  git clone -q --bare "$root" "$bare"
-  git -C "$root" remote add origin https://github.com/example/repo
-  git -C "$root" config "url.file://$bare.insteadOf" https://github.com/example/repo
+  git clone -q --bare "$HW_ROOT" "$bare"
+  git -C "$HW_ROOT" remote add origin "$project"
+  git -C "$HW_ROOT" config "url.file://$bare.insteadOf" "$project"
   git clone -q "$bare" "$case_dir/landing"
   printf 'echo v2\n' > "$case_dir/landing/bin/helper.sh"
   git -C "$case_dir/landing" commit -qam helper-v2
-  git -C "$case_dir/landing" push -q origin HEAD:main
-  accepted=$(git -C "$root" cat-file blob HEAD:bin/helper.sh | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')
-  merged=$(git -C "$case_dir/landing" cat-file blob HEAD:bin/helper.sh | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')
+  git -C "$case_dir/landing" push -q origin "HEAD:$ref"
+  HW_HEAD=$(git -C "$case_dir/landing" rev-parse HEAD)
+  HW_ACCEPTED=$(git -C "$HW_ROOT" cat-file blob HEAD:bin/helper.sh | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')
+  HW_MERGED=$(git -C "$case_dir/landing" cat-file blob HEAD:bin/helper.sh | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')
   mkdir -p "$case_dir/helper-consumers.d"
-  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=pinned' 'owner=other-mate' \
-    "helper=$root/bin/helper.sh" "accept=$accepted" > "$case_dir/helper-consumers.d/pinned.conf"
-  before=$(git -C "$root" rev-parse HEAD)
+  helper_world_accept "$case_dir" "$HW_ACCEPTED"
+}
 
+helper_world_accept() {  # <case_dir> <sha256>...
+  local case_dir=$1 sha
+  shift
+  {
+    printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=pinned' 'owner=other-mate' "helper=$HW_ROOT/bin/helper.sh"
+    for sha in "$@"; do printf 'accept=%s\n' "$sha"; done
+  } > "$case_dir/helper-consumers.d/pinned.conf"
+}
+
+run_helper_world_merge() {  # <case_dir> [merge args]...: sets rc
+  local case_dir=$1
+  shift
   set +e
-  FM_TEST_ROOT_OVERRIDE="$root" FM_HELPER_CONSUMERS="$case_dir/helper-consumers.d" \
+  FM_TEST_ROOT_OVERRIDE="$HW_ROOT" FM_HELPER_CONSUMERS="$case_dir/helper-consumers.d" \
     FM_HELPER_VERSIONS="$case_dir/helper-versions" \
-    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 \
+    run_pr_merge "$case_dir" task-x1 "$HW_URL" "$@" \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
+}
+
+# A merged change to a Firstmate helper another home runs under a pin is recorded
+# for its declared consumers' review (docs/helper-consumers.md). The merged head
+# is already on main here, so the landing gate sees no change to land.
+test_merged_helper_change_is_recorded_for_its_consumers() {
+  local case_dir rc record before
+  case_dir=$(make_case helper-pending)
+  helper_world "$case_dir" main
+  add_gh_mocks "$case_dir" "$HW_HEAD"
+  before=$(git -C "$HW_ROOT" rev-parse HEAD)
+
+  run_helper_world_merge "$case_dir"
 
   expect_code 0 "$rc" "helper-pending: fm-pr-merge should succeed"
-  record="$case_dir/helper-versions/helper.sh/$merged"
+  record="$case_dir/helper-versions/helper.sh/$HW_MERGED"
   [ -f "$record/pending.json" ] || fail "helper-pending: the merged helper version has no pending record ($(cat "$case_dir/stderr"))"
   [ -f "$record/helper.sh" ] || fail "helper-pending: the merged helper version has no review artefact"
-  assert_grep "helper-pending: bin/helper.sh version ${merged:0:12} recorded" "$case_dir/stderr" \
+  assert_grep "helper-pending: bin/helper.sh version ${HW_MERGED:0:12} recorded" "$case_dir/stderr" \
     "helper-pending: the record is reported"
-  assert_equals "$before" "$(git -C "$root" rev-parse HEAD)" "helper-pending: recording moved the code root's checkout"
+  assert_equals "$before" "$(git -C "$HW_ROOT" rev-parse HEAD)" "helper-pending: recording moved the code root's checkout"
   pass "a merged change to a declared helper is recorded for its consumers' review"
 }
 
 # The candidate-time consumer notice (docs/helper-consumers.md): a verified PR
 # head that changes a declared helper gets its pending record before the merge,
-# and the merge goes ahead unchanged. The head lives only on the PR's ref in the
-# bare origin, so the notice must fetch it by its sha.
+# and the notice never changes the outcome; the landing gate decides it. The
+# head lives only on the PR's ref in the bare origin, so the notice must fetch
+# it by its sha. These merges carry the operator's break, so the gate lets them
+# through; the held case shows the notice runs on a head the gate refuses.
 #
 # helper_candidate_world <case-dir> <origin-url>: a code root at helper v1 whose
 # origin is <origin-url> (served by a local bare repository), a declaration
@@ -859,14 +887,14 @@ helper_candidate_world() {
 }
 
 # run_helper_candidate_merge <case-dir> <label> <pr-url> <head>: runs the merge
-# against the case's code root and asserts the notice ran before the forge
-# merge and recorded the candidate.
+# with the operator's break for pinned against the case's code root and asserts
+# the notice ran before the forge merge and recorded the candidate.
 run_helper_candidate_merge() {
   local case_dir=$1 label=$2 url=$3 head=$4 rc cand record
   set +e
   FM_TEST_ROOT_OVERRIDE="$case_dir/code-root" FM_HELPER_CONSUMERS="$case_dir/helper-consumers.d" \
     FM_HELPER_VERSIONS="$case_dir/helper-versions" \
-    run_pr_merge "$case_dir" task-x1 "$url" > "$case_dir/stdout" 2> "$case_dir/stderr"
+    run_pr_merge "$case_dir" task-x1 "$url" --allow-helper-break pinned > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
   expect_code 0 "$rc" "$label: fm-pr-merge should succeed"
@@ -888,6 +916,31 @@ test_helper_candidate_is_noticed_before_the_merge() {
   run_helper_candidate_merge "$case_dir" helper-candidate https://github.com/example/repo/pull/9 "$head"
   assert_logged_gh_merge "$case_dir" 9 example/repo --squash
   pass "a PR head changing a declared helper is noticed before the merge, which goes ahead unchanged"
+}
+
+test_held_helper_candidate_is_noticed_and_not_merged() {
+  local case_dir head rc cand
+  case_dir=$(make_case helper-candidate-held)
+  head=$(helper_candidate_world "$case_dir" https://github.com/example/repo)
+  add_gh_mocks "$case_dir" "$head"
+  set +e
+  FM_TEST_ROOT_OVERRIDE="$case_dir/code-root" FM_HELPER_CONSUMERS="$case_dir/helper-consumers.d" \
+    FM_HELPER_VERSIONS="$case_dir/helper-versions" \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "helper-candidate-held: an unaccepted helper head must not merge"
+  cand=$(cat "$case_dir/cand")
+  assert_grep "helper-candidate: bin/helper.sh@${cand:0:12} unaccepted by pinned" \
+    "$case_dir/stderr" "helper-candidate-held: the notice is not printed for a held head"
+  [ -f "$case_dir/helper-versions/helper.sh/$cand/pending.json" ] \
+    || fail "helper-candidate-held: the held candidate has no pending record"
+  assert_grep "lands declared helper bytes a consumer has not accepted; nothing was merged" \
+    "$case_dir/stderr" "helper-candidate-held: the hold is not named"
+  if grep -q '^pr merge ' "$case_dir/gh.log"; then
+    fail "helper-candidate-held: the forge merge ran for a held head"
+  fi
+  pass "a held PR head is noticed for its consumers and refused by the landing gate"
 }
 
 test_gitlab_helper_candidate_is_noticed_before_the_merge() {
@@ -919,11 +972,13 @@ test_forgejo_helper_candidate_is_noticed_before_the_merge() {
   pass "a Forgejo pull request head changing a declared helper is noticed before the merge, which goes ahead unchanged"
 }
 
-# A notice that fails or hangs never holds the merge: it prints its one line and
-# the merge runs. A code root that is no checkout makes the notice exit 2; an
-# origin whose upload-pack hangs on its first call stalls the notice's fetch past
-# the shortened bound, and the later post-merge record fetches normally.
-test_failed_helper_candidate_notice_does_not_hold_the_merge() {
+# A notice that fails or hangs never decides the merge: it prints its one line
+# and the landing gate decides. A code root that is no checkout makes the notice
+# exit 2, and the gate, which cannot read it either, refuses; an origin whose
+# upload-pack hangs on its first call stalls the notice's fetch past the
+# shortened bound, the gate fetches normally, and the operator's break lets the
+# merge through.
+test_failed_helper_candidate_notice_leaves_the_merge_to_the_gate() {
   local case_dir rc
   case_dir=$(make_case helper-candidate-failed)
   add_gh_mocks "$case_dir" deadbeefcafefeed0000000000000000deadbeef
@@ -936,11 +991,15 @@ test_failed_helper_candidate_notice_does_not_hold_the_merge() {
     run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
-  expect_code 0 "$rc" "helper-candidate-failed: fm-pr-merge should succeed"
-  assert_grep "helper-candidate: notice failed (exit 2); the merge goes ahead, and the post-merge record still runs" \
+  expect_code 1 "$rc" "helper-candidate-failed: the gate must refuse a code root it cannot read"
+  assert_grep "helper-candidate: notice failed (exit 2); the helper landing gate decides the merge, and the post-merge record still runs" \
     "$case_dir/stderr" "helper-candidate-failed: the failed notice is not reported"
-  assert_logged_gh_merge "$case_dir" 9 example/repo --squash
-  pass "a failed candidate-time notice is reported and the merge goes ahead"
+  assert_grep "PR merge refused - the helper landing gate failed (exit 2); nothing was merged" \
+    "$case_dir/stderr" "helper-candidate-failed: the refusal is not the gate's"
+  if grep -q '^pr merge ' "$case_dir/gh.log"; then
+    fail "helper-candidate-failed: the forge merge ran past a failed gate"
+  fi
+  pass "a failed candidate-time notice is reported and the landing gate decides the merge"
 }
 
 test_hung_helper_candidate_notice_does_not_hold_the_merge() {
@@ -961,17 +1020,174 @@ SH
   set +e
   FM_TEST_ROOT_OVERRIDE="$case_dir/code-root" FM_HELPER_CONSUMERS="$case_dir/helper-consumers.d" \
     FM_HELPER_VERSIONS="$case_dir/helper-versions" FM_TEST_HELPER_NOTICE_TIMEOUT=2 \
-    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 > "$case_dir/stdout" 2> "$case_dir/stderr"
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 --allow-helper-break pinned \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
   expect_code 0 "$rc" "helper-candidate-hung: fm-pr-merge should succeed"
   [ -e "$case_dir/upload-pack-called" ] || fail "helper-candidate-hung: the notice never reached the hanging fetch"
-  assert_grep "helper-candidate: notice stopped after 2s; the merge goes ahead, and the post-merge record still runs" \
+  assert_grep "helper-candidate: notice stopped after 2s; the helper landing gate decides the merge, and the post-merge record still runs" \
     "$case_dir/stderr" "helper-candidate-hung: the stopped notice is not reported"
   assert_no_grep "helper-candidate: bin/helper.sh@" "$case_dir/stderr" \
     "helper-candidate-hung: the stopped notice still printed a notice line"
   assert_logged_gh_merge "$case_dir" 9 example/repo --squash
-  pass "a hung candidate-time notice is stopped at its bound and the merge goes ahead"
+  pass "a hung candidate-time notice is stopped at its bound and the landing gate decides the merge"
+}
+
+# The gate fetches under the task's control lock too, so it is bounded: an
+# origin whose upload-pack hangs on every call stops the notice and then the
+# gate at their shortened bounds, and the stopped gate refuses the merge.
+test_hung_helper_gate_is_stopped_and_not_merged() {
+  local case_dir head rc
+  case_dir=$(make_case helper-gate-hung)
+  head=$(helper_candidate_world "$case_dir" https://github.com/example/repo)
+  add_gh_mocks "$case_dir" "$head"
+  printf '%s\n' '#!/usr/bin/env bash' 'exec sleep 60' > "$case_dir/upload-pack"
+  chmod +x "$case_dir/upload-pack"
+  git -C "$case_dir/code-root" config remote.origin.uploadpack "$case_dir/upload-pack"
+  set +e
+  FM_TEST_ROOT_OVERRIDE="$case_dir/code-root" FM_HELPER_CONSUMERS="$case_dir/helper-consumers.d" \
+    FM_HELPER_VERSIONS="$case_dir/helper-versions" FM_TEST_HELPER_NOTICE_TIMEOUT=1 FM_TEST_HELPER_GATE_TIMEOUT=2 \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 --allow-helper-break pinned \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "helper-gate-hung: a stopped gate must not merge"
+  assert_grep "PR merge refused - the helper landing gate stopped after 2s; nothing was merged" \
+    "$case_dir/stderr" "helper-gate-hung: the stopped gate is not named"
+  assert_no_grep "the helper landing gate failed" "$case_dir/stderr" \
+    "helper-gate-hung: the stopped gate fell through to the generic failure"
+  if grep -q '^pr merge ' "$case_dir/gh.log"; then
+    fail "helper-gate-hung: the forge merge ran past a stopped gate"
+  fi
+  pass "a hung helper landing gate is stopped at its bound and nothing merges"
+}
+
+# The helper landing gate: a pull request whose head lands helper bytes a
+# declared consumer has not accepted is not merged, and merges once accepted.
+test_unaccepted_helper_change_is_not_merged() {
+  local case_dir rc
+  case_dir=$(make_case helper-gate-hold)
+  helper_world "$case_dir" refs/heads/pr-9
+  add_gh_mocks "$case_dir" "$HW_HEAD"
+
+  run_helper_world_merge "$case_dir"
+
+  expect_code 1 "$rc" "helper-gate: an unaccepted helper change must not merge"
+  assert_grep "PR merge refused - https://github.com/example/repo/pull/9 lands declared helper bytes a consumer has not accepted; nothing was merged" \
+    "$case_dir/stderr" "helper-gate: the refusal is named"
+  assert_grep "hold"$'\t'"$HW_ROOT/bin/helper.sh"$'\t'"$HW_MERGED"$'\t'"pinned" "$case_dir/stderr" \
+    "helper-gate: the hold names the helper, version and consumer"
+  if grep -q '^pr merge ' "$case_dir/gh.log"; then
+    fail "helper-gate: the forge merge ran for an unaccepted helper change"
+  fi
+
+  case_dir=$(make_case helper-gate-accepted)
+  helper_world "$case_dir" refs/heads/pr-9
+  helper_world_accept "$case_dir" "$HW_ACCEPTED" "$HW_MERGED"
+  add_gh_mocks "$case_dir" "$HW_HEAD"
+  run_helper_world_merge "$case_dir"
+  expect_code 0 "$rc" "helper-gate: an accepted helper change merges ($(cat "$case_dir/stderr"))"
+  assert_logged_gh_merge "$case_dir" 9 example/repo --squash
+  pass "fm-pr-merge refuses a helper change until every declared consumer accepts it"
+}
+
+# The gate runs on every forge: GitLab and Forgejo refuse the same change.
+test_unaccepted_helper_change_is_not_merged_on_gitlab_or_forgejo() {
+  local case_dir rc
+  case_dir=$(make_gitlab_case helper-gate-gitlab)
+  helper_world "$case_dir" refs/heads/mr-7 "$MR_PROJECT_URL" "$MR_URL"
+  write_mr_json "$case_dir/mr.json" head="$HW_HEAD" pipeline_sha="$HW_HEAD"
+  run_helper_world_merge "$case_dir"
+  expect_code 1 "$rc" "helper-gate: an unaccepted helper change must not merge on GitLab"
+  assert_grep "PR merge refused - $MR_URL lands declared helper bytes a consumer has not accepted; nothing was merged" \
+    "$case_dir/stderr" "helper-gate: the GitLab refusal is named"
+  assert_equals "" "$(glab_merge_line "$case_dir/glab.log")" "helper-gate: glab merged an unaccepted helper change"
+
+  case_dir=$(make_forgejo_case helper-gate-forgejo)
+  helper_world "$case_dir" refs/heads/pr-9 "https://$FJ_HOST/$FJ_OWNER/$FJ_REPO" "$FJ_URL"
+  write_forgejo_pr_json "$case_dir/pr.json" head="$HW_HEAD"
+  printf '%s\n' "$HW_HEAD" > "$case_dir/tea-expected-head"
+  run_helper_world_merge "$case_dir"
+  expect_code 1 "$rc" "helper-gate: an unaccepted helper change must not merge on Forgejo"
+  assert_grep "PR merge refused - $FJ_URL lands declared helper bytes a consumer has not accepted; nothing was merged" \
+    "$case_dir/stderr" "helper-gate: the Forgejo refusal is named"
+  assert_equals "" "$(tea_merge_line "$case_dir/tea.log")" "helper-gate: tea merged an unaccepted helper change"
+  pass "fm-pr-merge refuses an unaccepted helper change on GitLab and Forgejo too"
+}
+
+test_helper_break_option_needs_a_consumer() {
+  local case_dir rc
+  case_dir=$(make_case helper-break-usage)
+  helper_world "$case_dir" refs/heads/pr-9
+  add_gh_mocks "$case_dir" "$HW_HEAD"
+  run_helper_world_merge "$case_dir" --allow-helper-break
+  expect_code 2 "$rc" "helper-break: --allow-helper-break without a consumer is a usage error"
+  assert_grep "error: --allow-helper-break requires a consumer name" "$case_dir/stderr" "helper-break: the missing consumer is named"
+  run_helper_world_merge "$case_dir" --allow-helper-break=pinned
+  expect_code 2 "$rc" "helper-break: --allow-helper-break=<consumer> is a usage error"
+  assert_grep "error: --allow-helper-break requires a separate consumer name argument" "$case_dir/stderr" \
+    "helper-break: the joined form is named"
+  if grep -q '^pr merge ' "$case_dir/gh.log" 2>/dev/null; then
+    fail "helper-break: a usage error reached the forge merge"
+  fi
+  pass "fm-pr-merge --allow-helper-break takes one separate consumer name"
+}
+
+test_helper_break_override_merges_and_is_reported() {
+  local case_dir rc
+  case_dir=$(make_case helper-gate-break)
+  helper_world "$case_dir" refs/heads/pr-9
+  add_gh_mocks "$case_dir" "$HW_HEAD"
+
+  run_helper_world_merge "$case_dir" --allow-helper-break pinned
+
+  expect_code 0 "$rc" "helper-gate: the operator's break lets the merge through ($(cat "$case_dir/stderr"))"
+  assert_grep "break"$'\t'"$HW_ROOT/bin/helper.sh"$'\t'"$HW_MERGED"$'\t'"pinned" "$case_dir/stderr" \
+    "helper-gate: the break is reported"
+  assert_logged_gh_merge "$case_dir" 9 example/repo --squash
+  pass "fm-pr-merge --allow-helper-break merges past the named consumer's hold and reports it"
+}
+
+# A gate failure other than a hold refuses too: here the operator's break
+# cannot be written to the hold log, so the gate exits 2 and nothing merges.
+test_failed_helper_gate_is_not_merged() {
+  local case_dir rc
+  case_dir=$(make_case helper-gate-failed)
+  helper_world "$case_dir" refs/heads/pr-9
+  add_gh_mocks "$case_dir" "$HW_HEAD"
+  mkdir -p "$case_dir/helper-versions/holds.log"
+
+  run_helper_world_merge "$case_dir" --allow-helper-break pinned
+
+  expect_code 1 "$rc" "helper-gate-failed: a failed gate must not merge"
+  assert_grep "PR merge refused - the helper landing gate failed (exit 2); nothing was merged" \
+    "$case_dir/stderr" "helper-gate-failed: the failed gate is named"
+  if grep -q '^pr merge ' "$case_dir/gh.log"; then
+    fail "helper-gate-failed: the forge merge ran after the helper gate failed"
+  fi
+  pass "fm-pr-merge refuses when the helper landing gate fails"
+}
+
+# With no readable origin for the code root, the gate cannot tell whether the
+# pull request is this project's, so it fails and nothing merges.
+test_helper_gate_refuses_a_code_root_without_origin() {
+  local case_dir rc
+  case_dir=$(make_case helper-gate-no-origin)
+  helper_world "$case_dir" refs/heads/pr-9
+  add_gh_mocks "$case_dir" "$HW_HEAD"
+  git -C "$HW_ROOT" remote remove origin
+
+  run_helper_world_merge "$case_dir"
+
+  expect_code 1 "$rc" "helper-gate-no-origin: a code root without origin must not merge"
+  assert_grep "cannot read the origin URL of" "$case_dir/stderr" "helper-gate-no-origin: the broken origin is named"
+  assert_grep "PR merge refused - the helper landing gate failed (exit 2); nothing was merged" \
+    "$case_dir/stderr" "helper-gate-no-origin: the refusal is named"
+  if grep -q '^pr merge ' "$case_dir/gh.log"; then
+    fail "helper-gate-no-origin: the forge merge ran without a helper gate"
+  fi
+  pass "fm-pr-merge refuses when the code root's origin cannot be read"
 }
 
 # The forge call is the point of no return: once gh-axi has merged, nothing this
@@ -4658,10 +4874,18 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_verified_merge_records_pr_and_head \
   test_merged_helper_change_is_recorded_for_its_consumers \
   test_helper_candidate_is_noticed_before_the_merge \
+  test_held_helper_candidate_is_noticed_and_not_merged \
   test_gitlab_helper_candidate_is_noticed_before_the_merge \
   test_forgejo_helper_candidate_is_noticed_before_the_merge \
-  test_failed_helper_candidate_notice_does_not_hold_the_merge \
+  test_failed_helper_candidate_notice_leaves_the_merge_to_the_gate \
   test_hung_helper_candidate_notice_does_not_hold_the_merge \
+  test_hung_helper_gate_is_stopped_and_not_merged \
+  test_unaccepted_helper_change_is_not_merged \
+  test_unaccepted_helper_change_is_not_merged_on_gitlab_or_forgejo \
+  test_helper_break_option_needs_a_consumer \
+  test_helper_break_override_merges_and_is_reported \
+  test_failed_helper_gate_is_not_merged \
+  test_helper_gate_refuses_a_code_root_without_origin \
   test_late_finishing_old_cancellation_is_superseded \
   test_required_checks_reported_and_green_merge \
   test_github_plan_gated_403_reads_as_no_queue \
