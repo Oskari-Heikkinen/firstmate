@@ -33,6 +33,8 @@ These checks exist because a passing forge reading answers a narrower question t
   A head that does not is integrated on current main by its worker and re-runs main's required set on the integrated head before it is handed back; never land the earlier reviewed head over a moved main.
 - Integration is the worker's step, and it checks for leftover conflict markers before any commit (`git diff --check` and `git diff --cached --check` name them).
   Registries and generated files are regenerated from the integrated sources at integration time, never hand-merged, because a hand-merged copy can match neither side.
+- A Firstmate head that changes a helper another home pins lands only after every declared consumer accepts its exact bytes: `bin/fm-ci-push.sh land`, `bin/fm-pr-merge.sh` and the direct-push Definition of done run the landing gate and refuse until then, and [`docs/helper-consumers.md`](../../../docs/helper-consumers.md) "The landing gate" owns the rule.
+  A held worker parks on the gate rather than polling; relay the hold to the consumer's owner, and never pass `--allow-helper-break` yourself, because breaking a consumer is the operator's own command, which the gate records in the hold log and then honours for that exact version on every landing path.
 - Name the repository on every `gh` call, with `-R <owner>/<repo>` or the full PR URL: in a copy with an `upstream` remote a bare PR number resolves upstream and acts on the wrong pull request.
 - Never chain `bin/fm-teardown.sh` after `bin/fm-pr-merge.sh` in one command.
   Teardown counts a pushed branch as landed, so a refused or queued merge followed by teardown removes the task while its PR is still open.

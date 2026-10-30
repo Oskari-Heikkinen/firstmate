@@ -1,12 +1,21 @@
-# Direct-push push races and post-landing check wait
+# Direct-push push races, helper acceptance and post-landing check wait
 
-Read this when a direct-push landing push is refused or succeeds.
+Read this when a direct-push landing push is refused or succeeds, or the helper landing gate holds it.
 Your Definition of done names the wait bound, what a red check means, and when you may report the landed `done:`; this file bounds push races and says how to wait.
 
 ## Push races
 
 Lost push races are governed by this bound instead of the general rule to stop after hitting the same obstacle twice: after 5 refused pushes, append `blocked [at=<epoch>]: lost the push race 5 times; {what keeps landing}` and stop instead of looping.
 A lost race whose rebase was clean and left an already-green patch unchanged (an equal `git patch-id --stable`) follows the landing rule in force for your task, which your Definition of done or firstmate's latest landing instruction states; unless that rule lets the rebased head land on its earlier run, it gets a new exact-head run before the next push, a `ci/<task-id>` run on a Firstmate-repository task.
+
+## Helper acceptance wait
+
+When `bin/fm-helper-consumers.sh check-land` exits 3, the head lands helper bytes a declared consumer has not accepted, and its records name each helper, version and consumer; [`docs/helper-consumers.md`](../../../../docs/helper-consumers.md) "The landing gate" owns the contract.
+Do not push, and do not poll: park on the gate itself.
+Write the park handoff with `## Waiting for` set to `cmd:<this worktree's absolute path>/bin/fm-helper-consumers.sh check-land --condition <base> <head>`, where `<base>` and `<head>` are the full commit ids of `origin/<default-branch>` and `HEAD` the gate just checked, then park with the park command your launch instructions name.
+That condition exits 0 once every named consumer has accepted those bytes, 1 while one still holds, and any other status wakes firstmate as an error.
+When the park resumes you, go back to the landing loop step your Definition of done names.
+Never pass `--allow-helper-break` or `--allow-break` yourself: breaking a consumer is the operator's own command, and the break it logs lets the gate pass that exact version from then on, so a parked wait resumes by itself; a `break` line written through `bin/fm-helper-consumers.sh log` releases nothing.
 
 ## Post-landing check wait
 

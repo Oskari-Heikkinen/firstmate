@@ -28,10 +28,13 @@
 #   - Secondmate homes resolve from both state/<id>.meta and the
 #     data/secondmates.md registry, deduped, and the firstmate repo is never
 #     re-processed as one of its own secondmates.
-#   - Each held pass appends one held line per held helper version to the hold
-#     log, and the pass that advances appends cleared for it, noting a break; a
-#     failed check or a malformed declaration's hold is logged too.
-#   - A version held for the hold limit from its first held line deploys: the
+#   - Each held pass appends one line per held helper version to the hold log,
+#     `bypass` (marking the version for the alarm) unless the log's landing
+#     break lines name every awaited consumer, then `held`; the pass that
+#     advances appends cleared for it, noting a break, a skipped pass clears
+#     nothing, and a pass already current at the target clears too; a failed
+#     check or a malformed declaration's hold is logged too.
+#   - A version held for the hold limit from its first held or bypass line: the
 #     pass reports it, logs one expired line before its cleared line, and says
 #     when the owners' alarm is not armed; a rerun logs nothing more; the home's
 #     config/helper-hold-max overrides the 1 h default, and a broken one holds.
@@ -772,8 +775,9 @@ test_helper_gate_holds_redundant_divergence_reconcile() {
   pass "the helper gate also holds the redundant-divergence reconcile"
 }
 
-# The hold log: each held pass appends one held line per held version, with
-# its own time, and the pass that advances clears it.
+# The hold log: each held pass appends one line per held version, with its own
+# time, and the pass that advances clears it. With no landing break line, the
+# landing gate was bypassed, so the line is `bypass` and the version is marked.
 test_helper_hold_log_records_held_and_cleared() {
   local w out log home target b
   w=$(new_world helper-hold-log)
@@ -787,14 +791,15 @@ test_helper_hold_log_records_held_and_cleared() {
   out=$(FM_HELPER_CONSUMERS_NOW=1793350000 run_update_helpers "$w")
   assert_contains "$out" "held-for-helper:" "the first pass holds"
   assert_not_contains "$out" "hold-log:" "the held line is written"
-  assert_equals 1 "$(wc -l < "$log" | tr -d ' ')" "a held pass writes exactly one held line"
-  assert_equals "$(printf '%s\t' 2026-10-30T08:46:40Z held "$home" "$target" "$w/main/bin/tool.sh" "$b")pinned" "$(cut -f 1-7 "$log")" \
-    "the held line names the time, home, target, helper version and consumer"
+  assert_equals 1 "$(wc -l < "$log" | tr -d ' ')" "a held pass writes exactly one hold line"
+  assert_equals "$(printf '%s\t' 2026-10-30T08:46:40Z bypass "$home" "$target" "$w/main/bin/tool.sh" "$b")pinned" "$(cut -f 1-7 "$log")" \
+    "the bypass line names the time, home, target, helper version and consumer"
+  [ -f "$w/helper-versions/.bypass/tool.sh@$b" ] || fail "the bypassed version is not marked for the alarm"
 
   out=$(FM_HELPER_CONSUMERS_NOW=1793351800 run_update_helpers "$w")
   assert_contains "$out" "held-for-helper:" "the rerun holds again"
-  assert_equals 2 "$(wc -l < "$log" | tr -d ' ')" "a rerun writes a second held line"
-  assert_equals "$(printf '%s\t' 2026-10-30T09:16:40Z)held" "$(tail -n 1 "$log" | cut -f 1-2)" "the rerun's line carries its own time"
+  assert_equals 2 "$(wc -l < "$log" | tr -d ' ')" "a rerun writes a second hold line"
+  assert_equals "$(printf '%s\t' 2026-10-30T09:16:40Z)bypass" "$(tail -n 1 "$log" | cut -f 1-2)" "the rerun's line carries its own time"
 
   declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')" "$b"
   out=$(FM_HELPER_CONSUMERS_NOW=1793357200 run_update_helpers "$w")
@@ -807,7 +812,7 @@ test_helper_hold_log_records_held_and_cleared() {
   out=$(run_update_helpers "$w")
   assert_contains "$out" "firstmate: already current" "the next pass is current"
   assert_equals 3 "$(wc -l < "$log" | tr -d ' ')" "a pass with no open hold writes nothing"
-  pass "each held pass logs one held line and the advance logs cleared"
+  pass "each held pass logs one bypass line and the advance logs cleared"
 }
 
 # The hold log's other paths: a failed gate check logs one held line with `-`
@@ -838,9 +843,9 @@ test_helper_hold_log_failed_check_unproven_and_break() {
   log="$w/helper-versions/holds.log"
   out=$(run_update_helpers "$w")
   assert_contains "$out" "awaiting malformed declaration broken" "a malformed declaration holds the pass"
-  assert_equals 1 "$(wc -l < "$log" | tr -d ' ')" "the unproven hold writes one held line"
-  assert_equals "$(printf '%s\t' held "$w/main/bin/tool.sh" "$b" broken)held-for-helper: awaiting malformed declaration broken" \
-    "$(cut -f 2,5-8 "$log")" "the held line names the malformed declaration"
+  assert_equals 1 "$(wc -l < "$log" | tr -d ' ')" "the unproven hold writes one line"
+  assert_equals "$(printf '%s\t' bypass "$w/main/bin/tool.sh" "$b" broken)held-for-helper: awaiting malformed declaration broken" \
+    "$(cut -f 2,5-8 "$log")" "the bypass line names the malformed declaration"
 
   w=$(new_world helper-hold-log-break)
   declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')"
@@ -850,6 +855,7 @@ test_helper_hold_log_failed_check_unproven_and_break() {
   out=$(run_update_helpers "$w" --allow-helper-break pinned)
   assert_contains "$out" "firstmate: updated " "the break advances the primary"
   assert_equals 2 "$(wc -l < "$log" | tr -d ' ')" "the break pass writes one cleared line"
+  assert_equals bypass "$(head -n 1 "$log" | cut -f 2)" "the held pass before the break was a bypass"
   assert_equals "$(printf '%s\t' cleared "$w/main/bin/tool.sh" "$b" pinned)pass updated at the target with --allow-helper-break for pinned" \
     "$(tail -n 1 "$log" | cut -f 2,5-8)" "the cleared line records the break"
   pass "a failed check, a malformed declaration and a break each leave their hold-log line"
@@ -911,6 +917,74 @@ test_helper_hold_limit_deploys_and_records_expired() {
   pass "a version held for the limit deploys once, logging expired, and the setting overrides the limit"
 }
 
+# A version the landing gate let through on an operator-run break is held by
+# the update gate as expected, so it is logged `held` and not marked; a break
+# that names another consumer, or a hold log that cannot be read, leaves the
+# hold a bypass.
+test_helper_hold_after_landing_break_is_held_not_bypass() {
+  local w out log b target
+  b=$(sha_of $'echo b\n')
+
+  w=$(new_world helper-hold-after-break)
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')"
+  bump_origin "$w" instr
+  log="$w/helper-versions/holds.log"
+  target=$(git -C "$w/origin.git" rev-parse main)
+  FM_HELPER_VERSIONS="$w/helper-versions" "$ROOT/bin/fm-helper-consumers.sh" \
+    log break "$w/home" "$target" "$w/land/bin/tool.sh" "$b" other,pinned "landing break" \
+    || fail "the fixture break line was not written"
+  out=$(run_update_helpers "$w")
+  assert_contains "$out" "held-for-helper:" "the broken version still holds the update"
+  assert_equals held "$(tail -n 1 "$log" | cut -f 2)" "a hold the landing break covers is logged held"
+  [ ! -e "$w/helper-versions/.bypass/tool.sh@$b" ] || fail "a hold after a landing break was marked bypassed"
+
+  w=$(new_world helper-hold-other-break)
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')"
+  bump_origin "$w" instr
+  log="$w/helper-versions/holds.log"
+  FM_HELPER_VERSIONS="$w/helper-versions" "$ROOT/bin/fm-helper-consumers.sh" \
+    log break "$w/home" - "$w/main/bin/tool.sh" "$b" other "landing break" \
+    || fail "the fixture break line was not written"
+  run_update_helpers "$w" >/dev/null
+  assert_equals bypass "$(tail -n 1 "$log" | cut -f 2)" "a break of another consumer leaves the hold a bypass"
+
+  w=$(new_world helper-hold-unreadable-log)
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')"
+  bump_origin "$w" instr
+  mkdir -p "$w/helper-versions/holds.log"
+  out=$(run_update_helpers "$w")
+  assert_contains "$out" "held-for-helper:" "the pass still holds"
+  [ -f "$w/helper-versions/.bypass/tool.sh@$b" ] || fail "an unreadable hold log did not count as no break"
+  pass "a landing break makes the later hold held, anything else a bypass"
+}
+
+# Only a pass that leaves the home at the target closes an open hold: one
+# skipped for another reason (off the default branch) leaves it open, and one
+# that finds the home already current there clears it.
+test_helper_hold_clears_only_at_the_target() {
+  local w out log
+  w=$(new_world helper-hold-current)
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')"
+  bump_origin "$w" instr
+  log="$w/helper-versions/holds.log"
+  run_update_helpers "$w" >/dev/null
+  assert_equals 1 "$(wc -l < "$log" | tr -d ' ')" "the held pass writes one hold line"
+
+  git -C "$w/main" checkout -q -b feature/wip
+  out=$(run_update_helpers "$w")
+  assert_contains "$out" "firstmate: skipped: on feature/wip, expected main" "the off-branch pass is skipped"
+  assert_equals 1 "$(wc -l < "$log" | tr -d ' ')" "a skipped pass clears no open hold"
+
+  git -C "$w/main" checkout -q main
+  git -C "$w/main" merge -q --ff-only origin/main
+  out=$(run_update_helpers "$w")
+  assert_contains "$out" "firstmate: already current" "the moved home is current"
+  assert_equals 2 "$(wc -l < "$log" | tr -d ' ')" "the current pass writes one cleared line"
+  assert_equals "$(printf '%s\t' cleared "$w/main/bin/tool.sh" "$(sha_of $'echo b\n')" pinned)pass current at the target" \
+    "$(tail -n 1 "$log" | cut -f 2,5-8)" "a pass already current at the target clears the hold"
+  pass "an open hold clears only on a pass that leaves the home at the target"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_follows_green_pointer_not_main
@@ -939,5 +1013,7 @@ test_helper_gate_holds_redundant_divergence_reconcile
 test_helper_hold_log_records_held_and_cleared
 test_helper_hold_log_failed_check_unproven_and_break
 test_helper_hold_limit_deploys_and_records_expired
+test_helper_hold_after_landing_break_is_held_not_bypass
+test_helper_hold_clears_only_at_the_target
 
 echo "# all fm-update tests passed"
