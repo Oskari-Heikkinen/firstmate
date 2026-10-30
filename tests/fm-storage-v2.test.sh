@@ -599,6 +599,9 @@ test_reserve_refusals_leave_nothing() {
     s reserve --volume d --class result-class --name u --bytes 1 --pid "$HOLD"
   no_effect 2 "fm-storage: refused: " "reserve with a --ttl" \
     s reserve --volume d --class result-class job --name u --bytes 1 --pid "$HOLD" --ttl 60
+  # The class map alone chooses the root; a caller's --root never reaches the owner.
+  no_effect 2 "fm-storage: refused: invalid-argument: --root is not a reserve option: " "reserve with a caller-chosen --root" \
+    s reserve --volume d --class result-class job --name u --bytes 1 --pid "$HOLD" --root "$DL/xp-units"
   port_class_map malformed
   no_effect 2 "fm-storage: refused: " "reserve against a malformed map" \
     s reserve --volume d --class result-class job --name u --bytes 1 --pid "$HOLD"
@@ -1009,6 +1012,28 @@ test_status_refusals() {
   pass "a malformed map refuses status with rc 2 and one line"
 }
 
+test_status_site_config_wait() {
+  world
+  # Only the roots reading fails: every volume reading stays ok.
+  rm -f "$DL/xp-units/.lattice-xp-root.json"
+  local before code
+  before=$(snap)
+  status
+  check_status "a root marker missing"
+  expect_code 75 "$SRC" "status --json while a site root is unproven"
+  assert_equals waiting "$(j .state)" "an unproven site root makes status wait"
+  one_line "$OBS/err" "site-config wait status"
+  assert_starts "$ERR" "fm-storage: wait: " "status names the site-config wait"
+  code=${ERR#fm-storage: wait: }
+  code=${code%%: *}
+  assert_equals "1 null $code" "$(j '[(.reasons | length | tostring), (.reasons[0].volume // "null"), .reasons[0].code] | join(" ")')" \
+    "the site-config wait is the one reason, on no volume"
+  assert_equals "ok ok ok" "$(j '[.volumes.linux.state, .volumes["host-c"].state, .volumes.d.state] | join(" ")')" \
+    "the volume readings stay ok"
+  assert_equals "$before" "$(snap)" "a waiting status writes nothing"
+  pass "a site-config wait makes status --json wait with one reason and its volume readings"
+}
+
 # --- 5. site-config -----------------------------------------------------------
 
 # roots_load: a strict reading of lattice-xp-roots/v1 as the consumer loads it.
@@ -1260,6 +1285,7 @@ test_status_coupling
 test_legacy_and_v2_charge_each_other
 test_c_terms_fail_closed
 test_status_refusals
+test_status_site_config_wait
 test_site_config
 test_site_config_refusals
 test_health
