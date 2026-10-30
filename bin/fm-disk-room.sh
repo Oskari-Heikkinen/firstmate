@@ -2056,7 +2056,7 @@ cmd_admission_status() {
     as_reason cannot-measure host-c '' "host-c-free: cannot read free space on ${host:-the host drive}"
     hwhy=${hwhy:-"cannot-measure: host-c-free: cannot read free space on ${host:-the host drive}"} ;;
   esac
-  if adm_collect "$(state_dir)/reservations" '' c keep; then
+  if adm_collect "$(state_dir)/reservations" '' c; then
     res=$ADM_SUM hostc=$ADM_HOSTC
   else
     poolwhy="owner-state: $ADM_ERR"
@@ -2101,7 +2101,7 @@ cmd_admission_status() {
         as_reason storage-offline d '' "the D: results directory has no filesystem identity" ;;
       *:|*:???????????????????*) dfree='' dwhy="cannot-measure: d-free: cannot read free space on $results"
         as_reason cannot-measure d '' "d-free: cannot read free space on $results" ;;
-      *) if adm_collect "$(state_dir)/reservations-d/$device" '' d keep; then
+      *) if adm_collect "$(state_dir)/reservations-d/$device" '' d; then
           ds=ok dres=$ADM_SUM droom=$(( dfree - ADM_SUM ))
         else
           dfree='' dwhy="owner-state: $ADM_ERR"
