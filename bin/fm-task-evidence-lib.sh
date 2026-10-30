@@ -608,12 +608,6 @@ fm_task_evidence_stage() {
   fi
   # A copy that verified when staged is still the source's only while nothing
   # it read has changed since its snapshot.
-  if [ -n "$FM_TE_STAGE_STAGING" ] && [ "$FM_TE_STAGE_EARLY" = 0 ] \
-     && [ "$FM_TE_STAGE_REFUSED" = 0 ] \
-     && ! fm_task_evidence_scan recheck "$FM_TE_STAGE_STAGING" "$6" \
-       "$FM_TE_STAGE_SNAPSHOTS" 2>> "$6/stage.err"; then
-    FM_TE_STAGE_CHANGED=1
-  fi
   FM_TE_STAGE_ID=$1 FM_TE_STAGE_DATA=$2 FM_TE_STAGE_COPY=$3 FM_TE_STAGE_OWNED=$4
   FM_TE_STAGE_TMP=$5 FM_TE_STAGE_SCAN=$6 FM_TE_STAGE_DONE=1
 }
@@ -777,6 +771,10 @@ fm_task_evidence_finish() {
   staging=$FM_TE_STAGE_STAGING
   declared=$FM_TE_STAGE_DECLARED
   refused=$FM_TE_STAGE_REFUSED
+  if [ -n "$staging" ] && [ "$FM_TE_STAGE_EARLY" = 0 ] && [ "$refused" = 0 ] \
+     && ! fm_task_evidence_scan recheck "$staging" "$scan" "$FM_TE_STAGE_SNAPSHOTS"; then
+    return 1
+  fi
   if [ ! -f "$scan/stage.err" ] || ! cat -- "$scan/stage.err" >&2; then
     echo "REFUSED: cannot read staged task evidence messages for $id; retry teardown" >&2
     return 1
