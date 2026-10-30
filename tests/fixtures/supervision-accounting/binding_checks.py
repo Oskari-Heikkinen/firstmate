@@ -13,7 +13,12 @@ import fm_supervision_bindings as bindings
 import fm_supervision_replay as replay
 
 accounting, blob, place, obj = old.accounting, old.blob, old.place, old.obj
-CREW = next(site for site in bindings.CALLER_SITES if site.startswith("bin/fm-classify-lib.sh:"))
+def pinned(script):
+    """Read a caller's pinned line from the bindings, so a re-pin never strands a fixture."""
+    return next(site for site in bindings.CALLER_SITES if site.startswith(script + ":"))
+
+
+CREW = pinned("bin/fm-classify-lib.sh")
 
 
 def reseal(value):
@@ -44,8 +49,8 @@ def make(count=6):
                           start_ns=start + 11, end_ns=start + 11, version_sha256=None,
                           result=blob(replay.canonical(1_000_000 + start + 11)), error=""))
         caller, err, status = {"crew-state": (CREW, b"", 0),
-                               "wake-drain": ("bin/fm-afk-return.sh:784", b"discard\n", 1),
-                               "fleet-snapshot": ("bin/fm-fleet-view.sh:29", b"discard\n", 7)}[request["kind"]]
+                               "wake-drain": (pinned("bin/fm-afk-return.sh"), b"discard\n", 1),
+                               "fleet-snapshot": (pinned("bin/fm-fleet-view.sh"), b"discard\n", 7)}[request["kind"]]
         capture["requests"].append(dict(id=request["id"], caller=caller, reads=reads,
                                        live=dict(stdout=blob(b"hello"), stderr=blob(err), exit_status=status, effects=[])))
     reseal(value)
@@ -247,17 +252,17 @@ class BindingChecks(unittest.TestCase):
 
     def test_projection_registry_identity_first_merge_and_masked_status(self):
         result = dict(stdout=b"first\nsecond\n\n", stderr=b"err\n", exit_status=7)
-        self.assertEqual(bindings.project("bin/fm-fleet-snapshot.sh:362", result, None), (b"first", b"", 0))
-        self.assertEqual(bindings.project("bin/fm-home-summary-refresh.sh:248", result, None),
+        self.assertEqual(bindings.project(pinned("bin/fm-fleet-snapshot.sh"), result, None), (b"first", b"", 0))
+        self.assertEqual(bindings.project(pinned("bin/fm-home-summary-refresh.sh"), result, None),
                          (result["stdout"], result["stderr"], 7))
-        self.assertEqual(bindings.project("bin/fm-contributions.sh:184", result, None), (result["stdout"], result["stderr"], 7))
+        self.assertEqual(bindings.project(pinned("bin/fm-contributions.sh"), result, None), (result["stdout"], result["stderr"], 7))
         chunks = [dict(stream="stdout", content=b"first\n"), dict(stream="stderr", content=b"err\n"),
                   dict(stream="stdout", content=b"second\n\n")]
-        self.assertEqual(bindings.project("bin/fm-session-start.sh:944", result, chunks), (b"first\nerr\nsecond", b"", 7))
+        self.assertEqual(bindings.project(pinned("bin/fm-session-start.sh"), result, chunks), (b"first\nerr\nsecond", b"", 7))
         with self.assertRaisesRegex(ValueError, "unavailable"):
-            bindings.project("bin/fm-session-start.sh:944", result, None)
+            bindings.project(pinned("bin/fm-session-start.sh"), result, None)
         with self.assertRaisesRegex(ValueError, "bytes mismatch"):
-            bindings.project("bin/fm-session-start.sh:944", result, chunks[:-1])
+            bindings.project(pinned("bin/fm-session-start.sh"), result, chunks[:-1])
         nul = dict(result, stdout=b"a\0b\n\n")
         self.assertEqual(bindings.project(CREW, nul, None), (b"ab", b"", 0))
 
@@ -376,7 +381,7 @@ class BindingChecks(unittest.TestCase):
         value["requests"] = value["requests"][:1]
         value["requests"][0].update(kind="wake-drain", task="")
         captured["requests"] = captured["requests"][:1]
-        captured["requests"][0].update(caller="bin/fm-session-start.sh:944",
+        captured["requests"][0].update(caller=pinned("bin/fm-session-start.sh"),
                                        live=dict(stdout=blob(b"hello\ndiscard"), stderr=blob(b""), exit_status=7, effects=[]))
         reseal(value)
         captured["workload_sha256"] = value["sha256"]
