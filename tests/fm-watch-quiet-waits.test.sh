@@ -2,8 +2,9 @@
 # tests/fm-watch-quiet-waits.test.sh - quiet waits and superseded blockers.
 # A `paused:` line may declare a machine-checkable wait condition
 # ([wait=heavy:<id>], [wait=until:<UTC>], [wait=merge-result:<sha>],
-# [wait=receipt:<path>]; status_declared_wait_check in bin/fm-classify-lib.sh
-# owns the vocabulary). While it holds, the watcher acknowledges a bare turn-end
+# [wait=receipt:<path>], [wait=file:<path>], [wait=inbox:<task>],
+# [wait=process:<pid>:<start>:<UTC>]; status_declared_wait_check in
+# bin/fm-classify-lib.sh owns the vocabulary). While it holds, the watcher acknowledges a bare turn-end
 # or a stale pane for that task itself, recording it in state/.quiet-wait-acks;
 # a condition that stops holding or an endpoint with no agent still wakes. A
 # typed `note [supersedes=<kind>]:` evidence line closes every open blocker in
@@ -258,6 +259,97 @@ SH
   rm -f "$dir/queue/result.sh" "$dir/queue/queue.log"
   assert_equals 1 "$(FM_HOME="$dir" wait_rc "$line" "$now")" "unreadable configured source cannot hold a wait"
   pass "merge-result checks reuse the configured queue helper and log"
+}
+
+# The file, inbox and process kinds are read through the evaluator fm-park.sh
+# uses (bin/fm-wait-cond-lib.sh), and a declared wait holds while it answers
+# "not met yet".
+test_shared_kinds_hold_while_the_park_condition_is_unmet() {
+  local now dir state spid spid_start line
+  now=$(date +%s)
+  dir="$TMP_ROOT/shared-kinds"; state="$dir/state"
+  mkdir -p "$state/w.inbox/handled"
+
+  [ "$(wait_rc "paused [wait=file:$dir/result.json]: fetching" "$now")" = 0 ] || fail "an absent file did not hold"
+  : > "$dir/result.json"
+  [ "$(wait_rc "paused [wait=file:$dir/result.json]: fetching" "$now")" = 1 ] || fail "a present file still held"
+  [ "$(wait_rc "paused [wait=file:relative/path]: fetching" "$now")" = 1 ] || fail "a relative file path held"
+
+  line="paused [wait=inbox:w]: waiting for the next instruction"
+  [ "$(FM_STATE_OVERRIDE="$state" wait_rc "$line" "$now")" = 1 ] || fail "an inbox wait for a task without a record held"
+  printf 'kind=ship\n' > "$state/w.meta"
+  [ "$(FM_STATE_OVERRIDE="$state" wait_rc "$line" "$now")" = 0 ] || fail "an empty inbox did not hold"
+  printf 'steer\n' > "$state/w.inbox/0001.msg"
+  [ "$(FM_STATE_OVERRIDE="$state" wait_rc "$line" "$now")" = 1 ] || fail "an inbox wait held with an unread message"
+  mv "$state/w.inbox/0001.msg" "$state/w.inbox/handled/"
+  [ "$(FM_STATE_OVERRIDE="$state" wait_rc "$line" "$now")" = 0 ] || fail "a handled message still ended the inbox wait"
+  printf 'park_token=t1\npark_pickup=t1\n' >> "$state/w.meta"
+  [ "$(FM_STATE_OVERRIDE="$state" wait_rc "$line" "$now")" = 1 ] || fail "an inbox wait held after an explicit pickup"
+  [ "$(FM_STATE_OVERRIDE="$state" wait_rc "paused [wait=inbox:../w]: escape" "$now")" = 1 ] || fail "an inbox path escape held"
+
+  sleep 300 &
+  spid=$!
+  fm_wait_pid_start_to spid_start "$spid" || fail "the start token of a live process was not read"
+  line="paused [wait=process:$spid:$spid_start:$(utc_at $((now + 600)))]: long command"
+  [ "$(wait_rc "$line" "$now")" = 0 ] || fail "a live process within its time did not hold"
+  # The same pid with another start token is a later process that reused it.
+  [ "$(wait_rc "paused [wait=process:$spid:1$spid_start:$(utc_at $((now + 600)))]: reused pid" "$now")" = 1 ] \
+    || fail "a reused pid held a process wait"
+  [ "$(wait_rc "paused [wait=process:$spid:$spid_start:$(utc_at $((now - 1)))]: past" "$now")" = 1 ] \
+    || fail "a process wait held past its time"
+  [ "$(wait_rc "paused [wait=process:$spid:$spid_start]: no time" "$now")" = 1 ] || fail "a process wait without a time held"
+  [ "$(wait_rc "paused [wait=process:$spid]: bare pid" "$now")" = 1 ] || fail "a bare pid held a process wait"
+  kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
+  [ "$(wait_rc "$line" "$now")" = 1 ] || fail "a finished process still held"
+
+  # fm-park.sh check reads the same kinds through the same evaluator.
+  rm -f "$dir/result.json"
+  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-park.sh" check "file:$dir/result.json" >/dev/null 2>&1
+  [ "$?" = 1 ] || fail "park check met an absent file"
+  : > "$dir/result.json"
+  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-park.sh" check "file:$dir/result.json" >/dev/null 2>&1 \
+    || fail "park check did not meet a present file"
+  FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-park.sh" check inbox:w >/dev/null 2>&1 \
+    || fail "park check did not meet an explicit pickup"
+  pass "file, inbox and process waits hold while the shared park evaluator answers not yet, and a reused pid never holds"
+}
+
+# The status writer records every line as given and warns once, naming the
+# valid kinds, when the supervisor cannot check its wait tag or a pause has none.
+test_status_writer_keeps_unknown_tags_and_warns() {
+  local dir statusf err expected spid tag rc line
+  dir="$TMP_ROOT/writer-tags"; mkdir -p "$dir/config"
+  statusf="$dir/w.status"; err="$dir/err"; expected="$dir/expected"
+  : > "$expected"
+  for line in 'paused [wait=pid:4242] [at=1790000000]: mutant sampling' \
+    'paused [wait=step5-light] [at=1790000001]: no colon' \
+    'paused [wait=process:4242] [at=1790000002]: no start token' \
+    'paused [at=1790000004]: untagged wait'; do
+    "$ROOT/bin/fm-worker-status.sh" "$statusf" "$dir/config" "$line" 2> "$err" \
+      || fail "the writer refused a line with an uncheckable wait tag: $line"
+    printf '%s\n' "$line" >> "$expected"
+    cmp -s "$statusf" "$expected" || fail "the line was not recorded byte-identical: $line"
+    [ "$(wc -l < "$err" | tr -d ' ')" = 1 ] || fail "the writer did not print exactly one warning: $(cat "$err")"
+    assert_contains "$(cat "$err")" "valid kinds: $FM_WAIT_KINDS" "the warning did not name the valid kinds"
+  done
+  assert_contains "$(cat "$dir/err")" "has no [wait=<kind>:<arg>] tag" "an untagged pause did not warn"
+  "$ROOT/bin/fm-worker-status.sh" "$statusf" "$dir/config" 'working [wait=pid:1] [at=1790000005]: not a pause' 2> "$err" \
+    || fail "the writer refused a working line"
+  [ ! -s "$err" ] || fail "a line that declares no wait warned: $(cat "$err")"
+
+  sleep 300 &
+  spid=$!
+  tag=$("$ROOT/bin/fm-worker-status.sh" --process-tag "$spid" +600) || fail "the process tag was not printed"
+  "$ROOT/bin/fm-worker-status.sh" "$statusf" "$dir/config" "paused $tag [at=1790000003]: long command" 2> "$err" \
+    || fail "the writer refused a process wait"
+  [ ! -s "$err" ] || fail "a checkable process wait warned: $(cat "$err")"
+  [ "$(wait_rc "$(tail -1 "$statusf")")" = 0 ] || fail "the printed process tag did not hold"
+  kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
+  rc=0; "$ROOT/bin/fm-worker-status.sh" --process-tag "$spid" +600 >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 1 ] || fail "a process tag was printed for a finished process (rc $rc)"
+  rc=0; "$ROOT/bin/fm-worker-status.sh" --process-tag "$$" 2020-01-01T00:00:00Z >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 2 ] || fail "a process tag was printed with a past time (rc $rc)"
+  pass "the status writer records an uncheckable wait tag byte-identical with one warning naming the valid kinds"
 }
 
 test_wait_tag_survives_stamping() {
@@ -578,6 +670,46 @@ test_stale_after_wait_lapses_wakes() {
   pass "a stale pane whose declared wait stopped holding wakes at once"
 }
 
+# The first report of a wait tag nothing can check, or of a process wait whose
+# pid now names a later process, still wakes at once.
+test_stale_under_uncheckable_or_reused_process_wait_wakes() {
+  local dir state pid spid spid_start line name
+  sleep 300 &
+  # shellcheck disable=SC2031 # The background PID is captured immediately in this shell.
+  spid=$!
+  fm_wait_pid_start_to spid_start "$spid" || fail "the start token of a live process was not read"
+  for name in unknown reused; do
+    case "$name" in
+      unknown) line='paused [wait=pid:4242]: mutant sampling' ;;
+      reused) line="paused [wait=process:$spid:1$spid_start:$(utc_at $(( $(date +%s) + 600 )))]: long command" ;;
+    esac
+    dir=$(stale_case "quiet-stale-$name" "$line")
+    state="$dir/state"
+    export FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting'
+    stale_watch_bg "$dir" grok
+    pid=$WATCH_PID
+    wait_for_exit "$pid" 100 || { kill "$spid" 2>/dev/null; fail "[$name] a stale pane under an uncheckable wait did not wake"; }
+    grep -F "no longer holds" "$dir/watch.out" >/dev/null \
+      || { kill "$spid" 2>/dev/null; fail "[$name] the first lapse report did not say the condition stopped holding: $(cat "$dir/watch.out")"; }
+    [ ! -s "$state/.quiet-wait-acks" ] || { kill "$spid" 2>/dev/null; fail "[$name] an uncheckable wait was quietly acknowledged"; }
+  done
+
+  # The same live process under its own start token is acknowledged quietly.
+  line="paused [wait=process:$spid:$spid_start:$(utc_at $(( $(date +%s) + 600 )))]: long command"
+  dir=$(stale_case quiet-stale-process "$line")
+  state="$dir/state"
+  stale_watch_bg "$dir" grok
+  pid=$WATCH_PID
+  if ! wait_quiet_ack "$state" "$pid" held stale "$(status_wait_tag "$line")" \
+    || ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; kill "$spid" 2>/dev/null; fail "a stale pane under a live process wait was not quietly acknowledged: $(cat "$dir/watch.out")"
+  fi
+  reap "$pid"
+  kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
+  [ ! -s "$state/.wake-queue" ] || fail "a stale pane under a live process wait was queued"
+  pass "an unknown wait kind or a reused pid wakes at once, while the live process it names is acknowledged quietly"
+}
+
 test_stale_with_dead_endpoint_wakes() {
   local dir state pid
   heavy_record sj3 running "$$"
@@ -768,6 +900,8 @@ test_shared_declared_wait_helpers
 test_wait_conditions_hold_only_while_checkable
 test_wait_tag_survives_stamping
 test_configured_merge_result_checker
+test_shared_kinds_hold_while_the_park_condition_is_unmet
+test_status_writer_keeps_unknown_tags_and_warns
 test_supersedes_note_closes_blockers_not_decisions
 test_supersedes_note_keeps_reserved_blockers
 test_worker_handoff_key_stays_ordinary
@@ -781,6 +915,7 @@ test_new_status_line_under_holding_wait_still_wakes
 test_turn_end_with_prose_until_still_wakes
 test_stale_under_holding_wait_is_acknowledged
 test_stale_after_wait_lapses_wakes
+test_stale_under_uncheckable_or_reused_process_wait_wakes
 test_stale_with_dead_endpoint_wakes
 test_stale_with_unreadable_liveness_wakes
 test_stopped_queue_wait_requires_exact_park_proof

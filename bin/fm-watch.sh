@@ -1423,7 +1423,12 @@ wait_record() {  # <kind> <subject> <whom> <action> <age-record>
 #
 # A declared clearing time that has ALREADY passed (`paused: ... until <t>`) is
 # not evidence: the wait the worker described is over, so it no longer explains
-# the silence, and the pane keeps the unchanged schedule. The records are read in
+# the silence, and the pane keeps the unchanged schedule. A declared long
+# command (`[wait=process:<pid>:<start>:<UTC>]`) explains it only while that
+# process still runs and its time lies ahead: once the process has ended, is a
+# zombie or its pid names a later process, or the time has passed, the check
+# reads the wait as lapsed and the pane alarms on the unchanged schedule.
+# The records are read in
 # this order rather than pooled because the routing already guarantees it is the
 # right one: a pane whose last line is `paused:` or `captain-held:` reaches this
 # timer only through pause_state_class answering `working`, so its crew state is
@@ -1479,7 +1484,7 @@ wait_record() {  # <kind> <subject> <whom> <action> <age-record>
 # `needs-decision` at all, and only in the at-threshold branch - at most once per
 # window per STALE_ESCALATE_SECS, never on an ordinary poll.
 wedge_wait_evidence() {  # <task> -> one wait_record on stdout
-  local task=$1 last statusf run wait_rc
+  local task=$1 last statusf run wait_rc cond pid
   [ -n "$task" ] || return 1
   statusf="$STATE/$task.status"
   status_declared_wait_line_to last "$statusf"
@@ -1492,10 +1497,20 @@ wedge_wait_evidence() {  # <task> -> one wait_record on stdout
     # A declared condition that stopped holding (a passed until, a finished
     # heavy job) no longer explains the quiet; a plain pause still does.
     wait_rc=0
-    status_declared_wait_check "$last" || wait_rc=$?
+    cond=''
+    status_declared_wait_check "$last" '' cond || wait_rc=$?
     [ "$wait_rc" -ne 1 ] || return 1
-    wait_record 'declared wait' 'awaiting external' \
-      external 'confirm the wait still holds' "$statusf"
+    case "$cond" in
+      process:*)
+        pid=${cond#process:}
+        wait_record 'declared long command' "awaiting process ${pid%%:*} until ${cond#process:*:*:}" \
+          external 'confirm the command still progresses' "$statusf"
+        ;;
+      *)
+        wait_record 'declared wait' 'awaiting external' \
+          external 'confirm the wait still holds' "$statusf"
+        ;;
+    esac
     return 0
   fi
   [ -e "$CONFIG/wedge-defer-parked-gate" ] || return 1

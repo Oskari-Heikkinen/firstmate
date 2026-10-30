@@ -42,7 +42,7 @@ def make(count=6):
         reads.append(dict(id="wall", operation="clock", place=None, clock="wall", offset=0, length=0,
                           start_ns=start + 11, end_ns=start + 11, version_sha256=None,
                           result=blob(replay.canonical(1_000_000 + start + 11)), error=""))
-        caller, err, status = {"crew-state": ("bin/fm-classify-lib.sh:3709", b"", 0),
+        caller, err, status = {"crew-state": ("bin/fm-classify-lib.sh:3801", b"", 0),
                                "wake-drain": ("bin/fm-afk-return.sh:784", b"discard\n", 1),
                                "fleet-snapshot": ("bin/fm-fleet-view.sh:29", b"discard\n", 7)}[request["kind"]]
         capture["requests"].append(dict(id=request["id"], caller=caller, reads=reads,
@@ -258,7 +258,7 @@ class BindingChecks(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bytes mismatch"):
             bindings.project("bin/fm-session-start.sh:944", result, chunks[:-1])
         nul = dict(result, stdout=b"a\0b\n\n")
-        self.assertEqual(bindings.project("bin/fm-classify-lib.sh:3709", nul, None), (b"ab", b"", 0))
+        self.assertEqual(bindings.project("bin/fm-classify-lib.sh:3801", nul, None), (b"ab", b"", 0))
 
     def test_passive_omission_still_refuses_both_sides(self):
         for name in ("legacy", "candidate"):

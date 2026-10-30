@@ -186,6 +186,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-control.sh`          | Agent lifecycle control plane: allowlisted `interrupt`, `exit`, and transactional `relaunch` verbs for an exact task id ([agent-control.md](agent-control.md)) |
 | `fm-park.sh`             | Park a ship or scout that only waits on an external result: validate its handoff, arm a resume watch, stop the agent, and relaunch it fresh with the handoff when the condition holds |
 | `fm-park-observe-lib.sh` | Cheap local condition change hints for the when runner; never resume authority |
+| `fm-wait-cond-lib.sh`    | Dependency-free evaluator of the condition kinds a park and a declared wait share (file, receipt, inbox, and a process named by pid plus start time) |
 | `fm-control-lib.sh`      | One executable owner of the control-plane verb allowlist, per-harness interrupt/exit mechanics, per-backend capability, and the endpoint-absence proof both `exit` and `relaunch` read |
 | `fm-busy-lib.sh`         | Single owner of the semantic busy-state contract: verdicts, source attribution, and per-harness sources |
 | `fm-busy-event.sh`       | The only writer of a task's semantic busy-state record and native-harness progress marker; arms an incarnation and applies lifecycle events |

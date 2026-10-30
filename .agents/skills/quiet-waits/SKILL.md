@@ -18,7 +18,9 @@ Each is deterministic, leaves a durable record, and never suppresses a needs-dec
 ## Declared waits the watcher acknowledges itself
 
 A worker declares a wait by appending a `paused:` line with one `[wait=<kind>:<arg>]` tag before the colon.
-The kinds, what makes each hold, and the rule that a missing checker or unreadable source counts as not holding are owned by `status_declared_wait_check` in [`bin/fm-classify-lib.sh`](../../../bin/fm-classify-lib.sh): `heavy:<job-id>`, `until:<UTC>`, `merge-result:<head-sha>`, and `receipt:<absolute-path>`.
+The kinds, what makes each hold, and the rule that a missing checker or unreadable source counts as not holding are owned by `status_declared_wait_check` in [`bin/fm-classify-lib.sh`](../../../bin/fm-classify-lib.sh): `heavy:<job-id>`, `until:<UTC>`, `merge-result:<head-sha>`, `receipt:<absolute-path>`, `file:<absolute-path>`, `inbox:<task-id>`, and `process:<pid>:<start>:<UTC>`.
+The `file`, `receipt`, `inbox` and `process` kinds are read through the same evaluator as a park's condition of that name ([`bin/fm-wait-cond-lib.sh`](../../../bin/fm-wait-cond-lib.sh)); a declared `inbox` wait also stops holding once the task has an unread steer, and a `process` wait names one process by pid plus start time, so a reused pid never holds it.
+`bin/fm-worker-status.sh` records every line as written and warns on stderr, naming the valid kinds, when a pause has no tag or one the supervisor cannot check; a pause with an uncheckable tag wakes the supervisor as a lapsed condition on its first report, like any other condition that stops holding.
 A pause without a tag keeps the ordinary four-hour recheck bound, even with a future prose `until <UTC>` clause; with a tag, the tag alone governs and a passed prose ETA is ignored.
 The heavy-slot tool writes its own `paused [key=heavy-<id>] [wait=heavy:<id>] ...` line when it queues a job and a keyed `resolved` line when it ends, so a worker using that tool writes nothing extra.
 

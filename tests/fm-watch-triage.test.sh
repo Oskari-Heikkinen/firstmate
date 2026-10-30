@@ -4179,6 +4179,65 @@ test_wedge_threshold_defers_to_a_declared_wait_under_a_working_verdict() {
   pass "a declared wait is not wedge-escalated by a working verdict, while an elapsed declaration and an undeclared lane both keep the unchanged ladder"
 }
 
+# A declared long command defers the wedge escalation only while the process it
+# names (pid plus start token) is alive and its stated `until` lies ahead; a
+# finished process, a pid that now names a later process, or a passed `until`
+# keeps the unchanged ladder.
+test_wedge_threshold_defers_to_a_live_declared_process_only() {
+  local dir state fakebin out capture window n spid start future past name line
+  local working='state: working · source: run-step · ci running'
+  window="test:fm-wedge"
+  future=$(iso_utc_at "$(( $(date +%s) + 3600 ))")
+  past=$(iso_utc_at "$(( $(date +%s) - 60 ))")
+  sleep 600 &
+  spid=$!
+  fm_wait_pid_start_to start "$spid" || { kill "$spid"; fail "the start token of a live process was not read"; }
+
+  dir=$(wedge_threshold_fixture declared-process-live \
+    "paused [wait=process:$spid:$start:$future]: mutation sampling" 0)
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
+  n=1
+  while [ "$n" -le 3 ]; do
+    wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" absorb \
+      || { kill "$spid"; fail "a live declared process wedge-escalated at threshold $n: $(cat "$out")"; }
+    n=$((n + 1))
+  done
+  [ "$(wedge_stale_wakes "$state" "$window")" -eq 0 ] \
+    || { kill "$spid"; fail "a live declared process queued a wedge wake: $(cat "$state/.wake-queue")"; }
+  grep -F 'possible wedge' "$out" >/dev/null \
+    && { kill "$spid"; fail "a live declared process was reported as a possible wedge"; }
+
+  # Its bounded recheck names the process and its time, not a generic wait.
+  dir=$(wedge_threshold_fixture declared-process-aged \
+    "paused [wait=process:$spid:$start:$future]: mutation sampling" 2000)
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
+  FM_TEST_PAUSE_RESURFACE=240 wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" exit \
+    || { kill "$spid"; fail "a declared process older than the recheck cadence was never rechecked: $(cat "$out")"; }
+  assert_contains "$(cat "$out")" "declared long command" "the recheck did not name the declared long command"
+  assert_contains "$(cat "$out")" "awaiting process $spid until $future" "the recheck did not name the process and its time"
+  grep -F 'possible wedge' "$out" >/dev/null \
+    && { kill "$spid"; fail "the declared-process recheck was worded as a possible wedge"; }
+  ack_stopped_cycle "$state" || { kill "$spid"; fail "could not acknowledge the declared-process recheck"; }
+
+  for name in past reused finished; do
+    case "$name" in
+      past) line="paused [wait=process:$spid:$start:$past]: mutation sampling" ;;
+      reused) line="paused [wait=process:$spid:1$start:$future]: mutation sampling" ;;
+      finished)
+        kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null
+        line="paused [wait=process:$spid:$start:$future]: mutation sampling" ;;
+    esac
+    dir=$(wedge_threshold_fixture "declared-process-$name" "$line" 0)
+    state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
+    wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" exit \
+      || { kill "$spid" 2>/dev/null; fail "a $name declared process stayed silent past the threshold: $(cat "$out")"; }
+    grep -F "possible wedge, escalation 1" "$out" >/dev/null \
+      || { kill "$spid" 2>/dev/null; fail "a $name declared process did not keep the unchanged wedge wording: $(cat "$out")"; }
+    ack_stopped_cycle "$state" || { kill "$spid" 2>/dev/null; fail "could not acknowledge the $name escalation"; }
+  done
+  pass "a live declared process defers the wedge escalation, while a passed until, a reused pid and a finished process keep the unchanged ladder"
+}
+
 # `fm-send --resolve-key default` answers a keyless decision by appending a
 # stated default-key resolved line after whatever the worker wrote last. When
 # that is a keyless pause the worker is still waiting, so the answer must not
@@ -8191,6 +8250,7 @@ TRIAGE_CASES=(
   test_wedge_threshold_recheck_names_the_captain_for_a_held_lane
   test_gone_endpoint_reports_once_instead_of_escalating_forever
   test_wedge_threshold_defers_to_a_declared_wait_under_a_working_verdict
+  test_wedge_threshold_defers_to_a_live_declared_process_only
   test_own_work_wait_is_absorbed_then_long_cadence
   test_stale_churn_without_a_captain_call_still_alarms
   test_live_and_unproven_endpoints_still_wedge_escalate

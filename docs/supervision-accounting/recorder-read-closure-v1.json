@@ -461,21 +461,21 @@
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-classify-lib.sh:1790",
+     "site": "bin/fm-classify-lib.sh:1882",
      "source": "\"$FM_STATUS_IDENTITY_READER\" \"$f\"",
      "template": "<arg1: status file> passed to $FM_STATUS_IDENTITY_READER"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-classify-lib.sh:1860",
+     "site": "bin/fm-classify-lib.sh:1952",
      "source": "\"$FM_STATUS_SIZE_READER\" \"$f\"",
      "template": "<arg1: status file> passed to $FM_STATUS_SIZE_READER"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-classify-lib.sh:1890",
+     "site": "bin/fm-classify-lib.sh:1982",
      "source": "\"$FM_STATUS_SPAN_READER\" \"$f\" \"$start\" \"$length\"",
      "template": "<arg1: status file> passed to $FM_STATUS_SPAN_READER"
     },
@@ -2331,413 +2331,413 @@
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1190",
+     "site": "bin/fm-classify-lib.sh:1282",
      "source": "_fm_status_kind_to kind \"$@\"",
      "template": "<arg1: status file with .status replaced by .meta>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1198",
+     "site": "bin/fm-classify-lib.sh:1290",
      "source": "if [ -f \"$_fm_sk_meta\" ] && [ -r \"$_fm_sk_meta\" ] && [ ! -L \"$_fm_sk_meta\" ]; then",
      "template": "<arg2: status file with .status replaced by .meta>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1201",
+     "site": "bin/fm-classify-lib.sh:1293",
      "source": "done < \"$_fm_sk_meta\"",
      "template": "<arg2: status file with .status replaced by .meta>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1391",
+     "site": "bin/fm-classify-lib.sh:1483",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 0",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1403",
+     "site": "bin/fm-classify-lib.sh:1495",
      "source": "done < \"$f\"",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1568",
+     "site": "bin/fm-classify-lib.sh:1660",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 0",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1575",
+     "site": "bin/fm-classify-lib.sh:1667",
      "source": "\"$f\") || [ \"$?\" -eq 1 ] || candidates=$(cat \"$f\")",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1794",
+     "site": "bin/fm-classify-lib.sh:1886",
      "source": "ident=$(LC_ALL=C /usr/bin/stat -f '%d:%i' \"$f\" 2>/dev/null) || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1795",
+     "site": "bin/fm-classify-lib.sh:1887",
      "source": "epoch=$(LC_ALL=C /usr/bin/stat -f '%B' \"$f\" 2>/dev/null) || epoch=0",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1796",
+     "site": "bin/fm-classify-lib.sh:1888",
      "source": "if [ \"$epoch\" != 0 ]; then birth=$(LC_ALL=C /usr/bin/stat -f '%FB' \"$f\" 2>/dev/null) || birth=''; else birth=''; fi",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1798",
+     "site": "bin/fm-classify-lib.sh:1890",
      "source": "ident=$(LC_ALL=C stat -c '%d:%i' \"$f\" 2>/dev/null) || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1799",
+     "site": "bin/fm-classify-lib.sh:1891",
      "source": "epoch=$(LC_ALL=C stat -c '%W' \"$f\" 2>/dev/null) || epoch=0",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:180",
+     "site": "bin/fm-classify-lib.sh:186",
      "source": "[ -f \"$1\" ] && [ -r \"$1\" ] || return 0",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1800",
+     "site": "bin/fm-classify-lib.sh:1892",
      "source": "if [ \"$epoch\" != 0 ]; then birth=$(LC_ALL=C stat -c '%w' \"$f\" 2>/dev/null) || birth=''; else birth=''; fi",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:184",
+     "site": "bin/fm-classify-lib.sh:190",
      "source": "last_status_line_to __fm_lsl_out \"$1\"",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1864",
+     "site": "bin/fm-classify-lib.sh:1956",
      "source": "LC_ALL=C /usr/bin/stat -f '%z' \"$f\" 2>/dev/null",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1866",
+     "site": "bin/fm-classify-lib.sh:1958",
      "source": "LC_ALL=C stat -c '%s' \"$f\" 2>/dev/null",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1873",
+     "site": "bin/fm-classify-lib.sh:1965",
      "source": "LC_ALL=C /usr/bin/stat -f '%m' \"$f\" 2>/dev/null",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1875",
+     "site": "bin/fm-classify-lib.sh:1967",
      "source": "LC_ALL=C stat -c '%Y' \"$f\" 2>/dev/null",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1904",
+     "site": "bin/fm-classify-lib.sh:1996",
      "source": "' \"$f\" \"$start\" \"$length\"",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1935",
+     "site": "bin/fm-classify-lib.sh:2027",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || { [ \"$exact_mode\" = 0 ] || return 1; return 0; }",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:197",
+     "site": "bin/fm-classify-lib.sh:203",
      "source": "[ -f \"$__fm_lsl_f\" ] && [ -r \"$__fm_lsl_f\" ] || return 0",
      "template": "<arg2: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:198",
+     "site": "bin/fm-classify-lib.sh:204",
      "source": "if _fm_status_lines_read \"$__fm_lsl_f\"; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:210",
+     "site": "bin/fm-classify-lib.sh:216",
      "source": "elif ! __fm_lsl_scan=$(tail -n \"$FM_CLASSIFY_EVENT_WINDOW_LINES\" \"$__fm_lsl_f\" 2>/dev/null | _fm_status_event_scan); then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:211",
+     "site": "bin/fm-classify-lib.sh:217",
      "source": "__fm_lsl_scan=$(_fm_status_event_scan < \"$__fm_lsl_f\") || :",
      "template": "<arg2: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2157",
+     "site": "bin/fm-classify-lib.sh:2249",
      "source": "boundary=$(_fm_status_read_span \"$f\" \"$((start - 1))\" 1 2>/dev/null | LC_ALL=C tr -d '\\000'; printf x)",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2160",
+     "site": "bin/fm-classify-lib.sh:2252",
      "source": "if ! _fm_status_read_span \"$f\" \"$start\" \"$((end - start))\" > \"$span_file\" 2>/dev/null \\",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2299",
+     "site": "bin/fm-classify-lib.sh:2391",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2328",
+     "site": "bin/fm-classify-lib.sh:2420",
      "source": "status_open_decisions_cursor_offset \"$f\"",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2332",
+     "site": "bin/fm-classify-lib.sh:2424",
      "source": "ident=$(_fm_open_decisions_file_ident \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2334",
+     "site": "bin/fm-classify-lib.sh:2426",
      "source": "cur_ident=$(_fm_open_decisions_file_ident \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2335",
+     "site": "bin/fm-classify-lib.sh:2427",
      "source": "size=$(_fm_status_file_size \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:234",
+     "site": "bin/fm-classify-lib.sh:240",
      "source": "done 2>/dev/null < \"$1\" || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2344",
+     "site": "bin/fm-classify-lib.sh:2436",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2358",
+     "site": "bin/fm-classify-lib.sh:2450",
      "source": "current=$(_fm_open_decisions_file_ident \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2359",
+     "site": "bin/fm-classify-lib.sh:2451",
      "source": "size=$(_fm_status_file_size \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2431",
+     "site": "bin/fm-classify-lib.sh:2523",
      "source": "LC_ALL=C /usr/bin/stat -f '%HT:%p' \"$1\" 2>/dev/null",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2433",
+     "site": "bin/fm-classify-lib.sh:2525",
      "source": "LC_ALL=C stat -c '%F:%f' \"$1\" 2>/dev/null",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2454",
+     "site": "bin/fm-classify-lib.sh:2546",
      "source": "{ _sos_stat=$(LC_ALL=C exec stat -c $'%F:%f\\n%s\\n%d:%i\\n%W\\n%w' \"$_sos_f\"); } 2>/dev/null || _sos_stat=''",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2467",
+     "site": "bin/fm-classify-lib.sh:2559",
      "source": "_sos_path_state=$(_status_observed_path_state \"$_sos_f\") || _sos_path_state=stat-error",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2469",
+     "site": "bin/fm-classify-lib.sh:2561",
      "source": "if [ -L \"$_sos_f\" ]; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2470",
+     "site": "bin/fm-classify-lib.sh:2562",
      "source": "{ _sos_link_target=$(exec readlink \"$_sos_f\"); } 2>/dev/null || _sos_link_target=readlink-error",
      "template": "<arg2: status file>"
     },
     {
      "mode": "E",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2472",
+     "site": "bin/fm-classify-lib.sh:2564",
      "source": "elif [ ! -e \"$_sos_f\" ]; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2474",
+     "site": "bin/fm-classify-lib.sh:2566",
      "source": "elif [ ! -f \"$_sos_f\" ]; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2476",
+     "site": "bin/fm-classify-lib.sh:2568",
      "source": "elif [ -r \"$_sos_f\" ]; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2485",
+     "site": "bin/fm-classify-lib.sh:2577",
      "source": "_sos_size=$(_fm_status_file_size \"$_sos_f\") || _sos_size='size-error'",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2494",
+     "site": "bin/fm-classify-lib.sh:2586",
      "source": "_sos_ident=$(_fm_open_decisions_file_ident \"$_sos_f\") || _sos_ident=identity-error",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2498",
+     "site": "bin/fm-classify-lib.sh:2590",
      "source": "if [ -r \"$_sos_f\" ]; then _sos_access=readable; else _sos_access=unreadable; fi",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2601",
+     "site": "bin/fm-classify-lib.sh:2693",
      "source": "current=$(_fm_open_decisions_file_ident \"$2\") || { printf '0'; return 0; }",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2847",
+     "site": "bin/fm-classify-lib.sh:2939",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2889",
+     "site": "bin/fm-classify-lib.sh:2981",
      "source": "cur_ident=$(_fm_open_decisions_file_ident \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2891",
+     "site": "bin/fm-classify-lib.sh:2983",
      "source": "size=$(_fm_status_file_size \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2926",
+     "site": "bin/fm-classify-lib.sh:3018",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 0",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2932",
+     "site": "bin/fm-classify-lib.sh:3024",
      "source": "actual_size=$(_fm_status_file_size \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2943",
+     "site": "bin/fm-classify-lib.sh:3035",
      "source": "_fm_status_read_span \"$f\" \"$offset\" \"$((size - offset))\" > \"$chunk_file\" 2>/dev/null \\",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:472",
+     "site": "bin/fm-classify-lib.sh:478",
      "source": "last_status_line_to __fm_dwl_last \"$__fm_dwl_f\"",
      "template": "<arg2: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:481",
+     "site": "bin/fm-classify-lib.sh:487",
      "source": "if _fm_status_lines_read \"$__fm_dwl_f\"; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:484",
+     "site": "bin/fm-classify-lib.sh:490",
      "source": "__fm_dwl_line=$(tail -n \"$FM_CLASSIFY_EVENT_WINDOW_LINES\" \"$__fm_dwl_f\" 2>/dev/null \\",
      "template": "<arg2: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:486",
+     "site": "bin/fm-classify-lib.sh:492",
      "source": "|| _fm_status_declared_wait_scan \"$__fm_dwl_resolve\" \"$__fm_dwl_re\" < \"$__fm_dwl_f\") || :",
      "template": "<arg2: status file>"
     },
@@ -3370,70 +3370,70 @@
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-classify-lib.sh:1421",
+     "site": "bin/fm-classify-lib.sh:1513",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-classify-lib.sh:1423",
+     "site": "bin/fm-classify-lib.sh:1515",
      "source": "candidates=$(grep -E '^[[:space:]]*(needs-decision|blocked)' \"$f\" 2>/dev/null || true)",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-classify-lib.sh:1425",
+     "site": "bin/fm-classify-lib.sh:1517",
      "source": "candidates=$(grep -F \"[key=$key]\" \"$f\" 2>/dev/null || true)",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-classify-lib.sh:1452",
+     "site": "bin/fm-classify-lib.sh:1544",
      "source": "if [ -n \"$set_file\" ] && [ -f \"$set_file\" ] && [ -r \"$set_file\" ] && [ ! -L \"$set_file\" ]; then",
      "template": "$SNAPSHOT_TASK_DIR/<t>.open-decisions (FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE)"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-classify-lib.sh:1453",
+     "site": "bin/fm-classify-lib.sh:1545",
      "source": "open=$(<\"$set_file\")",
      "template": "$SNAPSHOT_TASK_DIR/<t>.open-decisions (FM_CREW_STATE_OPEN_DECISIONS_OVERRIDE)"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-classify-lib.sh:1925",
+     "site": "bin/fm-classify-lib.sh:2017",
      "source": "' \"$1\"",
      "template": "<arg1: chunk file> (mktemp ${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX)"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-classify-lib.sh:2060",
+     "site": "bin/fm-classify-lib.sh:2152",
      "source": "chunk_size=$(_fm_chunk_size_and_tail \"$chunk_file\" 2>/dev/null) || { rm -f \"$chunk_file\"; return 1; }",
      "template": "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX (chunk from :2044 mktemp)"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-classify-lib.sh:2069",
+     "site": "bin/fm-classify-lib.sh:2161",
      "source": "done < \"$chunk_file\"",
      "template": "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX (chunk from :2044 mktemp)"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-classify-lib.sh:2161",
+     "site": "bin/fm-classify-lib.sh:2253",
      "source": "|| ! span_size=$(LC_ALL=C wc -c < \"$span_file\" 2>/dev/null) \\",
      "template": "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX (span file, mktemp :2159)"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-classify-lib.sh:2178",
+     "site": "bin/fm-classify-lib.sh:2270",
      "source": "done < \"$span_file\"",
      "template": "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX (span file, mktemp :2159)"
     },
@@ -4122,7 +4122,7 @@
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:1625",
+     "site": "bin/fm-classify-lib.sh:1717",
      "source": "exclude=$(fm_parent_channel_outbound_status \"$(dirname \"$state\")\" \"$state\") || return 0",
      "template": "S/ (state dir) and its parent home: parent-channel outbound status binding"
     }
@@ -4139,35 +4139,35 @@
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2097",
+     "site": "bin/fm-classify-lib.sh:2189",
      "source": "chunk_size=$(LC_ALL=C wc -c < \"$chunk_file\" 2>/dev/null) \\",
      "template": "S/.<t>.open-decisions-cursor.read.<pid>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2114",
+     "site": "bin/fm-classify-lib.sh:2206",
      "source": "done < \"$chunk_file\"",
      "template": "S/.<t>.open-decisions-cursor.read.<pid>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2275",
+     "site": "bin/fm-classify-lib.sh:2367",
      "source": "' \"$scratch\" \"$start\" \"$skip_first\"); then :; else rm -f \"$scratch\"; return 1; fi",
      "template": "S/.<t>.open-decisions-cursor.span.<pid>.latest"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2966",
+     "site": "bin/fm-classify-lib.sh:3058",
      "source": "' \"$chunk_file\" \"$@\" || rc=$?",
      "template": "S/.<t>.open-decisions-cursor.unread.<pid>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2973",
+     "site": "bin/fm-classify-lib.sh:3065",
      "source": "done < \"$chunk_file\"",
      "template": "S/.<t>.open-decisions-cursor.unread.<pid>"
     },
@@ -5206,15 +5206,15 @@
      "source": "for f in \"$STATE\"/*.status; do"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2191",
+     "site": "bin/fm-classify-lib.sh:2283",
      "source": "for f in \"$state\"/*.status; do"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2210",
+     "site": "bin/fm-classify-lib.sh:2302",
      "source": "for f in \"$state\"/*.status; do"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3028",
+     "site": "bin/fm-classify-lib.sh:3120",
      "source": "for f in \"$state\"/*.status; do"
     },
     {
@@ -5293,35 +5293,35 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-classify-lib.sh:1945",
+     "site": "bin/fm-classify-lib.sh:2037",
      "source": "if [ -f \"$cf\" ] && [ -r \"$cf\" ] && [ ! -L \"$cf\" ]; then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:1946",
+     "site": "bin/fm-classify-lib.sh:2038",
      "source": "cursor_data=$(LC_ALL=C command cat \"$cf\" 2>/dev/null) || cursor_data=''"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2327",
+     "site": "bin/fm-classify-lib.sh:2419",
      "source": "if [ -e \"$legacy\" ] || [ -L \"$legacy\" ]; then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2721",
+     "site": "bin/fm-classify-lib.sh:2813",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2850",
+     "site": "bin/fm-classify-lib.sh:2942",
      "source": "if [ -e \"$cf\" ] || [ -L \"$cf\" ]; then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2851",
+     "site": "bin/fm-classify-lib.sh:2943",
      "source": "[ -f \"$cf\" ] && [ -r \"$cf\" ] && [ ! -L \"$cf\" ] || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2852",
+     "site": "bin/fm-classify-lib.sh:2944",
      "source": "if cursor_data=$(LC_ALL=C command cat \"$cf\" 2>/dev/null); then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2930",
+     "site": "bin/fm-classify-lib.sh:3022",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     }
    ],
@@ -5337,11 +5337,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-classify-lib.sh:1945",
+     "site": "bin/fm-classify-lib.sh:2037",
      "source": "if [ -f \"$cf\" ] && [ -r \"$cf\" ] && [ ! -L \"$cf\" ]; then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:1946",
+     "site": "bin/fm-classify-lib.sh:2038",
      "source": "cursor_data=$(LC_ALL=C command cat \"$cf\" 2>/dev/null) || cursor_data=''"
     }
    ],
@@ -6016,11 +6016,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-classify-lib.sh:2596",
+     "site": "bin/fm-classify-lib.sh:2688",
      "source": "raw=$(cat \"$1\" 2>/dev/null) || { printf '0'; return 0; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2755",
+     "site": "bin/fm-classify-lib.sh:2847",
      "source": "classified=$(status_presentation_marker_offset \"$(status_signal_seen_marker_path \"$state\" \"$task\")\" \"$f\")"
     },
     {
@@ -6043,39 +6043,39 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-classify-lib.sh:2303",
+     "site": "bin/fm-classify-lib.sh:2395",
      "source": "if [ -e \"$manifest\" ] || [ -L \"$manifest\" ]; then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2304",
+     "site": "bin/fm-classify-lib.sh:2396",
      "source": "[ -f \"$manifest\" ] && [ -r \"$manifest\" ] && [ ! -L \"$manifest\" ] || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2305",
+     "site": "bin/fm-classify-lib.sh:2397",
      "source": "data=$(LC_ALL=C command cat \"$manifest\" 2>/dev/null) || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2348",
+     "site": "bin/fm-classify-lib.sh:2440",
      "source": "[ -e \"$manifest\" ] || { printf '0'; return 0; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2349",
+     "site": "bin/fm-classify-lib.sh:2441",
      "source": "[ -f \"$manifest\" ] && [ -r \"$manifest\" ] && [ ! -L \"$manifest\" ] || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2350",
+     "site": "bin/fm-classify-lib.sh:2442",
      "source": "data=$(LC_ALL=C command cat \"$manifest\" 2>/dev/null) || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2721",
+     "site": "bin/fm-classify-lib.sh:2813",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2785",
+     "site": "bin/fm-classify-lib.sh:2877",
      "source": "backstop=$(status_outcome_backstop_cursor_offset \"$f\") || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2930",
+     "site": "bin/fm-classify-lib.sh:3022",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
@@ -6624,27 +6624,27 @@
      "source": "fm_meta_get_to _fmbtt_value \"$2\" window"
     },
     {
-     "site": "bin/fm-classify-lib.sh:1570",
+     "site": "bin/fm-classify-lib.sh:1662",
      "source": "kind=$(_fm_status_kind \"$f\")"
     },
     {
-     "site": "bin/fm-classify-lib.sh:1936",
+     "site": "bin/fm-classify-lib.sh:2028",
      "source": "kind=$(_fm_status_kind \"$f\")"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2720",
+     "site": "bin/fm-classify-lib.sh:2812",
      "source": "_fm_status_kind_to kind \"$f\""
     },
     {
-     "site": "bin/fm-classify-lib.sh:2848",
+     "site": "bin/fm-classify-lib.sh:2940",
      "source": "fold_version=\"$FM_OPEN_DECISIONS_FOLD_VERSION:$(_fm_status_kind \"$f\")\""
     },
     {
-     "site": "bin/fm-classify-lib.sh:3032",
+     "site": "bin/fm-classify-lib.sh:3124",
      "source": "_fm_status_kind_to kind \"$f\""
     },
     {
-     "site": "bin/fm-classify-lib.sh:3057",
+     "site": "bin/fm-classify-lib.sh:3149",
      "source": "_fm_status_kind_to kind \"$f\""
     },
     {
@@ -6897,143 +6897,143 @@
      "source": "[ \"$(status_key_closing_verb \"$f\" \"$key\")\" = \"$resolve\" ] || continue"
     },
     {
-     "site": "bin/fm-classify-lib.sh:1455",
+     "site": "bin/fm-classify-lib.sh:1547",
      "source": "open=$(status_open_decisions \"$1\" \"$2\")"
     },
     {
-     "site": "bin/fm-classify-lib.sh:1462",
+     "site": "bin/fm-classify-lib.sh:1554",
      "source": "[ -n \"$current\" ] || status_declared_wait_line_to current \"$1\""
     },
     {
-     "site": "bin/fm-classify-lib.sh:1463",
+     "site": "bin/fm-classify-lib.sh:1555",
      "source": "[ -n \"$current\" ] || last_status_line_to current \"$1\""
     },
     {
-     "site": "bin/fm-classify-lib.sh:1989",
+     "site": "bin/fm-classify-lib.sh:2081",
      "source": "cur_ident=$(_fm_open_decisions_file_ident \"$f\") || { _fm_open_decisions_unread \"$exact_mode\" \"$trusted_open\"; return; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:1991",
+     "site": "bin/fm-classify-lib.sh:2083",
      "source": "actual_size=$(_fm_status_file_size \"$f\") \\"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2022",
+     "site": "bin/fm-classify-lib.sh:2114",
      "source": "if _fm_open_decisions_span_inert \"$f\" \"$size\" \"$offset\"; then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2058",
+     "site": "bin/fm-classify-lib.sh:2150",
      "source": "_fm_status_read_span \"$f\" \"$offset\" \"$want\" > \"$chunk_file\" 2>/dev/null \\"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2095",
+     "site": "bin/fm-classify-lib.sh:2187",
      "source": "_fm_status_read_span \"$f\" \"$offset\" \"$((size - offset))\" > \"$chunk_file\" 2>/dev/null \\"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2192",
+     "site": "bin/fm-classify-lib.sh:2284",
      "source": "[ -e \"$f\" ] || continue"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2195",
+     "site": "bin/fm-classify-lib.sh:2287",
      "source": "open=$(status_open_decisions_incremental \"$f\") || continue"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2211",
+     "site": "bin/fm-classify-lib.sh:2303",
      "source": "[ -e \"$f\" ] || continue"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2213",
+     "site": "bin/fm-classify-lib.sh:2305",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || continue"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2215",
+     "site": "bin/fm-classify-lib.sh:2307",
      "source": "size=$(_fm_status_file_size \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2217",
+     "site": "bin/fm-classify-lib.sh:2309",
      "source": "ident=$(_fm_open_decisions_file_ident \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2245",
+     "site": "bin/fm-classify-lib.sh:2337",
      "source": "before_mtime=$(_fm_status_file_mtime \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2246",
+     "site": "bin/fm-classify-lib.sh:2338",
      "source": "before_size=$(_fm_status_file_size \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2248",
+     "site": "bin/fm-classify-lib.sh:2340",
      "source": "before_ident=$(_fm_open_decisions_file_ident \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2260",
+     "site": "bin/fm-classify-lib.sh:2352",
      "source": "_fm_status_read_span \"$f\" \"$start\" \"$length\" > \"$scratch\" 2>/dev/null \\"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2282",
+     "site": "bin/fm-classify-lib.sh:2374",
      "source": "after_mtime=$(_fm_status_file_mtime \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2283",
+     "site": "bin/fm-classify-lib.sh:2375",
      "source": "after_size=$(_fm_status_file_size \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2285",
+     "site": "bin/fm-classify-lib.sh:2377",
      "source": "after_ident=$(_fm_open_decisions_file_ident \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2721",
+     "site": "bin/fm-classify-lib.sh:2813",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2723",
+     "site": "bin/fm-classify-lib.sh:2815",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" \"$endpoint\" note working \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2725",
+     "site": "bin/fm-classify-lib.sh:2817",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" \"$endpoint\" note \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2778",
+     "site": "bin/fm-classify-lib.sh:2870",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2779",
+     "site": "bin/fm-classify-lib.sh:2871",
      "source": "cur_ident=$(_fm_open_decisions_file_ident \"$f\") || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2780",
+     "site": "bin/fm-classify-lib.sh:2872",
      "source": "size=$(_fm_status_file_size \"$f\") || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2785",
+     "site": "bin/fm-classify-lib.sh:2877",
      "source": "backstop=$(status_outcome_backstop_cursor_offset \"$f\") || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2806",
+     "site": "bin/fm-classify-lib.sh:2898",
      "source": "open=$(status_open_decisions_incremental \"$f\" \"$endpoint\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2930",
+     "site": "bin/fm-classify-lib.sh:3022",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3029",
+     "site": "bin/fm-classify-lib.sh:3121",
      "source": "[ -e \"$f\" ] || continue"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3034",
+     "site": "bin/fm-classify-lib.sh:3126",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" '' note working \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3036",
+     "site": "bin/fm-classify-lib.sh:3128",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" '' note \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3059",
+     "site": "bin/fm-classify-lib.sh:3151",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" \"$endpoint\" note working \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3061",
+     "site": "bin/fm-classify-lib.sh:3153",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" \"$endpoint\" note \"$resolve\" \"$held\") || return 1"
     },
     {
@@ -7102,11 +7102,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-classify-lib.sh:1161",
+     "site": "bin/fm-classify-lib.sh:1253",
      "source": "fm_alert_store_holds \"$f\" \"$1\""
     },
     {
-     "site": "bin/fm-classify-lib.sh:1285",
+     "site": "bin/fm-classify-lib.sh:1377",
      "source": "|| ( _fm_decision_key_protected \"$_odb_key\" ) \\"
     }
    ],
@@ -7123,11 +7123,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-classify-lib.sh:1161",
+     "site": "bin/fm-classify-lib.sh:1253",
      "source": "fm_alert_store_holds \"$f\" \"$1\""
     },
     {
-     "site": "bin/fm-classify-lib.sh:1285",
+     "site": "bin/fm-classify-lib.sh:1377",
      "source": "|| ( _fm_decision_key_protected \"$_odb_key\" ) \\"
     }
    ],
