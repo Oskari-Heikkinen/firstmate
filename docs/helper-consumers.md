@@ -10,7 +10,8 @@ This page is the owner of the rule that prevents that, the declaration format a 
 A Firstmate helper that another home runs under a pin is a reviewed helper with declared consumers.
 Firstmate deploys a new version of it to the path those consumers run only after every declared consumer accepts that exact version.
 A consumer accepts a version through an independent review of those exact bytes; an interface version or self-test the helper advertises is evidence for that review, never acceptance by itself.
-Landing does not wait for acceptance: a change to the helper lands on the default branch once its own gates pass, and [the update gate](#the-update-gate) then holds every update that would deploy it until its consumers accept it.
+Landing does not wait for acceptance: a change to the helper lands on the default branch once its own gates pass, and [the update gate](#the-update-gate) then holds every update that would deploy it until its consumers accept it, or until [the hold limit](#the-hold-limit) passes.
+The wait is bounded so that one consumer's unfinished review never blocks every other update of the home: past the limit the update deploys the version, the consumer's owner is alarmed, and the consumer refuses the bytes it has not accepted until its own review accepts them.
 Never pin a Firstmate checkout without a declaration: an undeclared pin is invisible to Firstmate, and the next update that touches the helper stops it.
 
 ## Declarations
@@ -56,8 +57,24 @@ For each declared helper inside the checkout being moved whose bytes would chang
 
 When the main checkout is held, `/updatefirstmate` holds its whole pass, so every home stays on one Firstmate version, prints a `held-for-helper:` line, and records the hold in the hold log below.
 The captain may still say to update anyway for a named consumer or malformed declaration; that consumer then waits until it accepts the new version, and the update records the override.
+The hold of the main checkout is bounded by [the hold limit](#the-hold-limit).
 The override covers only the homes on the machine where the update runs: a remote second mate's home is checked against its own machine's declarations, reports its hold, and catches up by itself once its own consumer accepts.
 With no declarations, nothing changes: every update and sync behaves exactly as it did before declarations existed.
+
+## The hold limit
+
+A version that has held `/updatefirstmate` for the hold limit, counted from its first `held` line in [the hold log](#the-hold-log), no longer holds it: the next pass deploys it, writes one `expired` line for it, and the [alarm](#the-unaccepted-version-alarm) raises a level to the owner of every consumer that has not accepted it.
+That consumer then refuses those bytes visibly and waits until its own review accepts them, as [What a consumer does](#what-a-consumer-does) asks.
+Until the limit passes, the pass holds as before, and its `held-for-helper:` line says from when a pass may proceed.
+
+The limit is the operator's override in `config/helper-hold-max`, read on every pass: one whole number of seconds, or of minutes or hours with an `m` or `h` suffix.
+Without the file the limit is 1 hour.
+An empty, unreadable or malformed file is a failed reading: no limit applies, the pass holds, its `held-for-helper:` line names the file, and the alarm raises a level for it.
+A hold log that cannot be read counts every version as held from now, never as past the limit, so the pass holds and the alarm raises a level for the log.
+A version no pass has logged as held yet has not started its wait, so it holds.
+A hold on a malformed or unreadable declaration, or on a failed gate check, has no limit, because no consumer's acceptance can be read to alarm on; the declaration level of the alarm already raises it.
+The limit bounds only the main checkout's hold: the secondmate and remote syncs, whose holds are not logged, still hold until acceptance.
+The operator's `--allow-helper-break` still moves past a hold at once, and the landing check is unchanged.
 
 ## Pending versions
 
@@ -89,7 +106,8 @@ A note with no such file has no field, and any other entry is left out and repor
 Every held `/updatefirstmate` pass appends to one machine-wide, append-only log, `holds.log`, beside the pending versions in `${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/helper-versions/`.
 A held pass writes one `held` line for each helper version it waits on, and a rerun that is still held writes another with its own time.
 When the gate check itself fails, so no version is known, the pass writes one `held` line with `-` for the helper, version and consumers.
-The first later pass of that home that updates or finds itself already current writes one `cleared` line for each version it still had open, noting any `--allow-helper-break` it used.
+A pass that deploys a version past [the hold limit](#the-hold-limit) first writes one `expired` line for it.
+The first later pass of that home that updates or finds itself already current writes one `cleared` line for each version it still had open, noting any `--allow-helper-break` it used or hold limit it passed.
 The log is the record of how long each hold lasted: `bin/fm-helper-consumers.sh holds --windows` reads it back as one line per hold window, with its start, end or `open`, length, held passes, versions and closing note, and `holds --open` lists the holds not yet cleared.
 
 `bin/fm-helper-consumers.sh log` is the log's only writer, and any tool that records a hold, a bypass or a break calls it rather than writing the file:
@@ -108,6 +126,7 @@ Each call appends one tab-separated line in a single write:
 - `cleared` - a later pass of `<home>` advanced past that held version.
 - `bypass` - a held pass on a version that reached the default branch around a landing check that should have refused it; it opens and clears like `held`.
 - `break` - an operator-run `--allow-helper-break` moved past `<consumers>`' acceptance of that version; it is a record only and opens or clears nothing.
+- `expired` - a pass of `<home>` deployed that version unaccepted by `<consumers>` because it had been held for the hold limit; it is a record only, opens or clears nothing, and the alarm raises it to the consumers' owners.
 
 `<home>` is an absolute path, `<sha256>` may be `absent` for a deleted helper, and `-` stands for an unknown target commit, helper, version or consumer list; the script header owns the exact field rules and exit codes.
 This interface is stable: new outcomes and new trailing fields may be added, but no field or outcome is renamed, removed or reordered, and readers ignore what they do not know.
@@ -119,6 +138,12 @@ The alarm runs in the main home as the custom watcher check `helper-unaccepted`,
 Each pass raises one level, `helper-unaccepted-<helper>-<sha12>`, per pending version that the branch carries and some declaring consumer has not accepted, once the commit that brought those bytes to the branch is older than the limit.
 The level clears when every declaring consumer accepts the version, or when the branch moves on to other bytes for that helper.
 It reaches the main home and the local home of the version's declared owner, as a level in each home's alert store (see [Alert store](alert-store.md)); an owner this machine cannot reach is named in main's level instead.
+
+A version an update deployed past [the hold limit](#the-hold-limit), as its `expired` line records, raises one level per version instead, `helper-unaccepted-deployed-<helper>-<sha12>`, for as long as that version is live and some declaring consumer has not accepted it.
+It reaches main and the owner of each consumer still waiting on it at once, with no age limit, and replaces that version's branch level, so each home holds one level per version and a rerun raises nothing new.
+A consumer whose declaration is malformed counts as not accepting, and main's level names it with no owner.
+The level clears when every consumer accepts the version, its declaration is removed, or the helper's live bytes change.
+An unreadable hold log or hold limit file raises its own level.
 
 The limit is the operator's override in `config/helper-unaccepted-max`, read on every pass: one whole number of seconds, or of minutes or hours with an `m` or `h` suffix.
 Without the file the limit is 2 hours.
