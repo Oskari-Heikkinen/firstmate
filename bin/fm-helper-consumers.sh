@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # fm-helper-consumers.sh - declared consumers of Firstmate helpers that another
 # home runs under a pin, and the deploy-after-acceptance gate that keeps a new
-# helper version off their path until each of them accepts it.
+# helper version off their path until each of them accepts it, and the landing
+# gate that keeps it off the default branch until then.
 #
 # docs/helper-consumers.md owns the rule, the declaration format, and what each
 # consumer must do; this header owns the exact commands.
@@ -9,6 +10,8 @@
 # Usage:
 #   fm-helper-consumers.sh list
 #   fm-helper-consumers.sh check-advance [--allow-break <consumer>]... [--hold-bound <home>] <checkout> <target-rev>
+#   fm-helper-consumers.sh check-land [--repo <dir>] [--fetch] [--if-repo <host>/<path>]
+#                                     [--condition] [--allow-break <consumer>]... [<base>] <head>
 #   fm-helper-consumers.sh pending [--repo <dir>] [--fetch] [--if-repo <host>/<path>] [<rev> | <from>..<to>]
 #   fm-helper-consumers.sh pending [--repo <dir>] [--fetch] [--if-repo <host>/<path>] --candidate <rev>
 #   fm-helper-consumers.sh log <outcome> <home> <target-commit> <helper> <sha256> <consumers> [<note>]
@@ -41,7 +44,8 @@
 # A malformed or unreadable declaration cannot prove what its consumer accepts,
 # so while one exists every change to a helper that any declaration names - its
 # own helper= lines included when they can still be read - holds as `unproven`,
-# unless --allow-break names that declaration's file stem.
+# unless --allow-break names that declaration's file stem, which then takes a
+# `break` record naming the stem for each such change.
 # --hold-bound <home> applies the hold limit, a whole number of seconds,
 # optionally suffixed m or h, in ${FM_CONFIG_OVERRIDE:-<home>/config}/helper-hold-max
 # (1h when the file is absent). When every record that would hold is a `hold`
@@ -62,6 +66,40 @@
 # nothing and exits 0 before reading the checkout, so a home without
 # declarations behaves exactly as before. bin/fm-ff-lib.sh's ff_target runs this
 # before every byte-changing step and treats any status but 0 as a hold.
+#
+# check-land is the landing gate. It classes each declared helper whose bytes
+# landing <head> on <base> (default: the origin default branch) would change,
+# with check-advance's classifier and outcomes: <base>'s bytes are the current
+# version and <head>'s the target. A helper counts when its own checkout is
+# the same project as --repo (default: this script's own checkout), as for
+# pending. When <base> is not an ancestor of <head>, a helper only <base>
+# changed since their merge base is left alone, and one both changed holds as
+#   diverged<TAB><helper><TAB><head-sha256><TAB><consumer>[,...]
+# because the bytes such a landing yields are unknown until <head> is rebased;
+# --allow-break does not release it. --allow-break is the operator-run break,
+# as for check-advance; when a head it releases may land, each `break` record
+# is first written to the hold log as a `break` line for FM_HOME (else the
+# checkout), and a line that cannot be written exits 2. A `break` line
+# check-land itself wrote (marked `taken-by=check-land`, which `log` never
+# writes) releases its consumers for that exact helper basename and sha256 on
+# every later run, with or without --condition, and is printed as a `break`
+# record but not logged again; bytes with another sha256 need their own
+# acceptance or break, a `break` line from `log` releases nothing, and a missing
+# or unreadable hold log records no break. --fetch fetches origin first, and
+# <head> by its id when it is missing. --if-repo exits 0 quietly unless
+# --repo's origin is that forge host and path, and exits 2 when that origin
+# URL is absent or unreadable, because the gate cannot then tell whether the
+# landing is this project's. --condition exits 1
+# rather than 3 while held, as a park cmd: condition needs, and refuses
+# --allow-break. A declared helper that cannot be located (no such
+# directory, or not in a git checkout) is a stale declaration: it is reported
+# as `malformed`, and a head that changes any file with the helper's basename
+# holds as `unproven` with that file's bytes at <head>, because a moved helper
+# keeps its name; --allow-break naming the consumer releases it, and every
+# other head passes. Exit 0 to land, 3 to hold, 2 on a usage error, a failed
+# fetch, or an unreadable checkout or revision. With no declarations it prints
+# nothing and exits 0 before reading anything else. Every landing path runs it
+# and refuses on any status but 0.
 #
 # pending records each declared helper version at <rev> (default: the origin
 # default branch) that some declaring consumer does not accept yet, once per
@@ -110,17 +148,20 @@
 # interface is stable: outcomes and trailing fields may be added, nothing is
 # renamed, removed or reordered, and readers ignore fields they do not know.
 # Each line is one tab-separated record, written by a single append:
-#   <utc time> <outcome> <home> <target-commit> <helper> <sha256> <consumers> <note>
+#   <utc time> <outcome> <home> <target-commit> <helper> <sha256> <consumers> <note> [<taken-by>]
 # <outcome> is one of:
 #   held     a pass of <home> held at <target-commit> because <consumers> have
 #            not accepted <helper> version <sha256>;
 #   cleared  a later pass of <home> advanced past that held version;
 #   bypass   a held pass on a version that reached the default branch around
-#            a landing check that should have refused it (written once landings
-#            are gated); it opens and clears like held;
+#            the landing gate, which no break line names; it opens and clears
+#            like held, and also marks the version so alarm raises it at once;
 #   break    an operator-run --allow-helper-break moved past <consumers>'
-#            acceptance of <helper> version <sha256>; a record only, it opens
-#            and clears nothing;
+#            acceptance of <helper> version <sha256>; it opens and clears no
+#            hold. The landing gate writes its own with the ninth field
+#            `taken-by=check-land` and reads only those as releasing that
+#            version; `log` takes no ninth field, so a `break` line it
+#            writes is a record only.
 #   expired  a pass of <home> deployed <helper> version <sha256> unaccepted by
 #            <consumers> because its hold passed the hold limit (see
 #            check-advance --hold-bound); a record only, it opens and clears
@@ -150,7 +191,8 @@
 # (origin/HEAD, else origin/main or origin/master, as last fetched; default
 # --repo is this checkout) stays unaccepted by a declaring consumer for longer
 # than the limit in ${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/helper-unaccepted-max,
-# counted from the commit that brought those bytes to the branch. The file holds
+# counted from the commit that brought those bytes to the branch, or at once
+# when a bypass line in the hold log marked that version. The file holds
 # one whole number of seconds, optionally suffixed m or h (2h when the file is
 # absent). The level clears when every declaring consumer accepts the version or
 # the branch carries other bytes. An unreadable or malformed record, declaration
@@ -349,11 +391,217 @@ cmd_list() {
   return "$rc"
 }
 
+# ---------------------------------------------------------------- classifier
+
+# The path of declared helper <canon> relative to its checkout, in REL, when
+# this run checks it: `inside` takes a helper under <top> (check-advance's
+# checkout); `project` takes a helper whose own checkout is the same project
+# as <top> (check-land). Returns 1 for a helper it does not check, and 2 in
+# `project` mode for one it cannot locate.
+locate() {  # <mode> <top> <helper>
+  local canon htop
+  if ! canon=$(canonical_file "$3"); then
+    [ "$1" = project ] || return 1
+    return 2
+  fi
+  case "$1" in
+    inside)
+      case "$canon" in "$2"/*) REL=${canon#"$2"/}; return 0 ;; esac
+      return 1
+      ;;
+  esac
+  htop=$(git -C "$(dirname -- "$canon")" rev-parse --show-toplevel 2>/dev/null) || return 2
+  htop=$(CDPATH='' cd -- "$htop" && pwd -P) || die "cannot resolve the checkout of $3"
+  same_project "$2" "$htop" || return 1
+  REL=${canon#"$htop"/}
+}
+
+# The bytes <rel> has before (PAIR_CUR) and after (PAIR_TGT) <head> lands on
+# <base>. Returns 1 when the landing leaves them as they are, and 4 when
+# <base> and <head> both changed them since <merge-base> (empty to compare
+# <base> and <head> alone), so the bytes the landing yields are not known.
+pair() {  # <repo> <base> <head> <merge-base> <rel>
+  local mid
+  PAIR_CUR=$(blob_sha "$1" "$2" "$5") || die "cannot hash $5 at $2"
+  PAIR_TGT=$(blob_sha "$1" "$3" "$5") || die "cannot hash $5 at $3"
+  [ "$PAIR_CUR" != "$PAIR_TGT" ] || return 1
+  [ -n "$4" ] || return 0
+  mid=$(blob_sha "$1" "$4" "$5") || die "cannot hash $5 at $4"
+  [ "$mid" != "$PAIR_TGT" ] || return 1
+  [ "$mid" = "$PAIR_CUR" ] || return 4
+}
+
+# Whether <head> changes, since <merge-base>, a file with the basename of
+# declared helper <helper>, which a helper that cannot be located may have
+# become; that file's bytes at <head> are left in NAME_TGT. The changed paths
+# are read once per classify run.
+same_name() {  # <top> <head> <merge-base> <helper>
+  local name path
+  if [ "$CHANGED_READ" = 0 ]; then
+    CHANGED=$(git -C "$1" -c core.quotePath=false diff --name-only --no-renames "$3" "$2") \
+      || die "cannot list the files $2 changes in $1"
+    CHANGED_READ=1
+  fi
+  name=${4##*/}
+  while IFS= read -r path; do
+    [ "${path##*/}" = "$name" ] || continue
+    NAME_TGT=$(blob_sha "$1" "$2" "$path") || die "cannot hash $path at $2"
+    return 0
+  done <<< "$CHANGED"
+  return 1
+}
+
+# Whether LOGGED, the operator breaks check-land read from the hold log, holds
+# one of <consumer> for this exact helper version; check-advance reads none.
+LOGGED=""
+logged() {  # <helper> <sha256> <consumer>
+  case "$LOGGED" in *$'\n'"${1##*/}@$2 $3"$'\n'*) return 0 ;; esac
+  return 1
+}
+
+# Split the comma list <stems> into PRIOR, those with a logged break for this
+# helper version, and KEPT, the rest.
+split_logged() {  # <helper> <sha256> <stems>
+  local s stems
+  KEPT="" PRIOR=""
+  [ -n "$3" ] || return 0
+  IFS=, read -r -a stems <<< "$3"
+  for s in "${stems[@]}"; do
+    if logged "$1" "$2" "$s"; then PRIOR="$PRIOR${PRIOR:+,}$s"; else KEPT="$KEPT${KEPT:+,}$s"; fi
+  done
+}
+
+# The shared classifier of check-advance and check-land: one record per
+# outcome for every declared helper whose bytes <head> changes on <base>, in
+# RECORDS, with HELD=1 when any record holds. The header owns the outcomes; a
+# release by a logged break is the internal kind `logged`, printed as `break`.
+classify() {  # <mode> <top> <base> <head> <merge-base> <allow>
+  local mode=$1 top=$2 base=$3 head=$4 mb=$5 allow=$6 file helper stem rc
+  local bad="" freed="" watched="" seen
+  RECORDS="" HELD=0 CHANGED_READ=0
+  while IFS= read -r file; do
+    if ! parse_decl "$file"; then
+      RECORDS="${RECORDS}malformed$TAB$file$TAB$DECL_ERROR$TAB-"$'\n'
+      stem=$(basename -- "$file" .conf)
+      case " $allow " in
+        *" $stem "*) freed="$freed${freed:+,}$stem" ;;
+        *) bad="$bad${bad:+,}$stem" ;;
+      esac
+      watched="$watched$(salvage_helpers "$file")"$'\n'
+      continue
+    fi
+    watched="$watched$DECL_HELPERS"
+    while IFS= read -r helper; do
+      [ -n "$helper" ] || continue
+      rc=0
+      locate "$mode" "$top" "$helper" || rc=$?
+      case "$rc" in
+        0) ;;
+        2) RECORDS="${RECORDS}malformed$TAB$file${TAB}declared helper $helper cannot be located$TAB-"$'\n'
+           same_name "$top" "$head" "$mb" "$helper" || continue
+           case " $allow " in
+             *" $DECL_CONSUMER "*) RECORDS="${RECORDS}break$TAB$helper$TAB$NAME_TGT$TAB$DECL_CONSUMER"$'\n' ;;
+             *) if logged "$helper" "$NAME_TGT" "$DECL_CONSUMER"; then
+                  RECORDS="${RECORDS}logged$TAB$helper$TAB$NAME_TGT$TAB$DECL_CONSUMER"$'\n'
+                else
+                  RECORDS="${RECORDS}unproven$TAB$helper$TAB$NAME_TGT$TAB$DECL_CONSUMER"$'\n'
+                  HELD=1
+                fi ;;
+           esac
+           continue ;;
+        *) continue ;;
+      esac
+      rc=0
+      pair "$top" "$base" "$head" "$mb" "$REL" || rc=$?
+      case "$rc" in
+        0) ;;
+        1) continue ;;
+        *) RECORDS="${RECORDS}diverged$TAB$helper$TAB$PAIR_TGT$TAB$DECL_CONSUMER"$'\n'
+           HELD=1
+           continue ;;
+      esac
+      if accepts "$PAIR_TGT"; then
+        continue
+      fi
+      case " $allow " in
+        *" $DECL_CONSUMER "*)
+          RECORDS="${RECORDS}break$TAB$helper$TAB$PAIR_TGT$TAB$DECL_CONSUMER"$'\n'
+          continue
+          ;;
+      esac
+      if ! accepts "$PAIR_CUR"; then
+        RECORDS="${RECORDS}waiting$TAB$helper$TAB$PAIR_TGT$TAB$DECL_CONSUMER"$'\n'
+      elif logged "$helper" "$PAIR_TGT" "$DECL_CONSUMER"; then
+        RECORDS="${RECORDS}logged$TAB$helper$TAB$PAIR_TGT$TAB$DECL_CONSUMER"$'\n'
+      else
+        RECORDS="${RECORDS}hold$TAB$helper$TAB$PAIR_TGT$TAB$DECL_CONSUMER"$'\n'
+        HELD=1
+      fi
+    done <<< "$DECL_HELPERS"
+  done < <(declarations)
+
+  # A declaration that cannot be parsed cannot prove what its consumer accepts,
+  # so while one is malformed or unreadable, every change to a helper any
+  # declaration names holds, unless --allow-break or a logged break names that
+  # file's stem; at the landing gate a stem it names gets a break record for
+  # each such change, so it is logged, and a diverged head still holds. The
+  # update gate drops a named stem without a record, as it always has.
+  [ "$mode" = project ] || freed=""
+  [ -n "$bad$freed" ] || return 0
+  seen=$'\n'
+  while IFS= read -r helper; do
+    [ -n "$helper" ] || continue
+    case "$seen" in *$'\n'"$helper"$'\n'*) continue ;; esac
+    seen="$seen$helper"$'\n'
+    rc=0
+    locate "$mode" "$top" "$helper" || rc=$?
+    case "$rc" in
+      0) ;;
+      2) same_name "$top" "$head" "$mb" "$helper" || continue
+         [ -z "$freed" ] || RECORDS="${RECORDS}break$TAB$helper$TAB$NAME_TGT$TAB$freed"$'\n'
+         split_logged "$helper" "$NAME_TGT" "$bad"
+         [ -z "$PRIOR" ] || RECORDS="${RECORDS}logged$TAB$helper$TAB$NAME_TGT$TAB$PRIOR"$'\n'
+         [ -n "$KEPT" ] || continue
+         RECORDS="${RECORDS}unproven$TAB$helper$TAB$NAME_TGT$TAB$KEPT"$'\n'
+         HELD=1
+         continue ;;
+      *) continue ;;
+    esac
+    case "$seen" in *$'\n'"@$top/$REL"$'\n'*) continue ;; esac
+    seen="$seen@$top/$REL"$'\n'
+    rc=0
+    pair "$top" "$base" "$head" "$mb" "$REL" || rc=$?
+    case "$rc" in
+      0) [ -z "$freed" ] || RECORDS="${RECORDS}break$TAB$helper$TAB$PAIR_TGT$TAB$freed"$'\n'
+         split_logged "$helper" "$PAIR_TGT" "$bad"
+         [ -z "$PRIOR" ] || RECORDS="${RECORDS}logged$TAB$helper$TAB$PAIR_TGT$TAB$PRIOR"$'\n'
+         [ -n "$KEPT" ] || continue
+         RECORDS="${RECORDS}unproven$TAB$helper$TAB$PAIR_TGT$TAB$KEPT"$'\n' ;;
+      1) continue ;;
+      *) RECORDS="${RECORDS}diverged$TAB$helper$TAB$PAIR_TGT$TAB$bad${bad:+${freed:+,}}$freed"$'\n' ;;
+    esac
+    HELD=1
+  done <<< "$watched"
+}
+
+# Print RECORDS aggregated per kind, helper and sha.
+emit_records() {
+  local out kind a b c
+  out=$(printf '%s' "$RECORDS" | sed "s/^logged$TAB/break$TAB/" | aggregate)
+  [ -n "$out" ] || return 0
+  while IFS="$TAB" read -r kind a b c; do
+    if [ "$kind" = malformed ]; then
+      printf 'malformed%s%s%s%s\n' "$TAB" "$a" "$TAB" "$b"
+    else
+      printf '%s%s%s%s%s%s%s\n' "$kind" "$TAB" "$a" "$TAB" "$b" "$TAB" "$c"
+    fi
+  done <<< "$out"
+}
+
 # ---------------------------------------------------------------- check-advance
 
 cmd_check_advance() {
-  local allow="" checkout target top file helper canon rel cur tgt records="" held=0 out
-  local bad="" stem watched="" seen bound_home=""
+  local allow="" checkout target top out bound_home=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --allow-break)
@@ -379,75 +627,14 @@ cmd_check_advance() {
   top=$(CDPATH='' cd -- "$top" && pwd -P) || die "cannot resolve $checkout"
   git -C "$top" rev-parse --verify --quiet "$target^{commit}" >/dev/null || die "unknown revision $target in $checkout"
 
-  while IFS= read -r file; do
-    if ! parse_decl "$file"; then
-      records="${records}malformed$TAB$file$TAB$DECL_ERROR$TAB-"$'\n'
-      stem=$(basename -- "$file" .conf)
-      case " $allow " in
-        *" $stem "*) ;;
-        *) bad="$bad${bad:+,}$stem" ;;
-      esac
-      watched="$watched$(salvage_helpers "$file")"$'\n'
-      continue
-    fi
-    watched="$watched$DECL_HELPERS"
-    while IFS= read -r helper; do
-      [ -n "$helper" ] || continue
-      canon=$(canonical_file "$helper") || continue
-      case "$canon" in
-        "$top"/*) rel=${canon#"$top"/} ;;
-        *) continue ;;
-      esac
-      cur=$(blob_sha "$top" HEAD "$rel") || die "cannot hash $rel at HEAD"
-      tgt=$(blob_sha "$top" "$target" "$rel") || die "cannot hash $rel at $target"
-      [ "$cur" != "$tgt" ] || continue
-      if accepts "$tgt"; then
-        continue
-      fi
-      case " $allow " in
-        *" $DECL_CONSUMER "*)
-          records="${records}break$TAB$helper$TAB$tgt$TAB$DECL_CONSUMER"$'\n'
-          continue
-          ;;
-      esac
-      if accepts "$cur"; then
-        records="${records}hold$TAB$helper$TAB$tgt$TAB$DECL_CONSUMER"$'\n'
-        held=1
-      else
-        records="${records}waiting$TAB$helper$TAB$tgt$TAB$DECL_CONSUMER"$'\n'
-      fi
-    done <<< "$DECL_HELPERS"
-  done < <(declarations)
-
-  # A declaration that cannot be parsed cannot prove what its consumer accepts,
-  # so while one is malformed or unreadable, every change to a helper any
-  # declaration names holds, unless --allow-break names that file's stem.
-  if [ -n "$bad" ]; then
-    seen=$'\n'
-    while IFS= read -r helper; do
-      [ -n "$helper" ] || continue
-      canon=$(canonical_file "$helper") || continue
-      case "$seen" in *$'\n'"$canon"$'\n'*) continue ;; esac
-      seen="$seen$canon"$'\n'
-      case "$canon" in
-        "$top"/*) rel=${canon#"$top"/} ;;
-        *) continue ;;
-      esac
-      cur=$(blob_sha "$top" HEAD "$rel") || die "cannot hash $rel at HEAD"
-      tgt=$(blob_sha "$top" "$target" "$rel") || die "cannot hash $rel at $target"
-      [ "$cur" != "$tgt" ] || continue
-      records="${records}unproven$TAB$helper$TAB$tgt$TAB$bad"$'\n'
-      held=1
-    done <<< "$watched"
-  fi
-
-  out=$(printf '%s' "$records" | aggregate | awk -F '\t' 'BEGIN { OFS = "\t" } $1 == "malformed" { print $1, $2, $3; next } { print }')
-  if [ "$held" = 1 ] && [ -n "$bound_home" ]; then
+  classify inside "$top" HEAD "$target" "" "$allow"
+  out=$(emit_records)
+  if [ "$HELD" = 1 ] && [ -n "$bound_home" ]; then
     hold_bound "$bound_home" "$out"
-    out=$BOUND_OUT held=$BOUND_HELD
+    out=$BOUND_OUT HELD=$BOUND_HELD
   fi
   [ -z "$out" ] || printf '%s\n' "$out"
-  [ "$held" = 0 ] || return 3
+  [ "$HELD" = 0 ] || return 3
   return 0
 }
 
@@ -505,6 +692,91 @@ hold_bound() {  # <home> <records>
       ;;
     *) BOUND_OUT="$2"$'\n'"unbounded${TAB}cannot apply the hold limit" ;;
   esac
+}
+
+# ---------------------------------------------------------------- check-land
+
+# Record each break the landing of <head> on <base> takes in the hold log,
+# before it lands; a break that cannot be recorded refuses the landing.
+log_breaks() {  # <top> <head> <base>
+  local out helper sha who home=${FM_HOME:-}
+  out=$(printf '%s' "$RECORDS" | awk -F '\t' '$1 == "break"' | aggregate)
+  [ -n "$out" ] || return 0
+  case "$home" in /*) ;; *) home=$1 ;; esac
+  while IFS="$TAB" read -r _ helper sha who; do
+    ( TAKEN_BY=$TAKEN_BY_LAND; cmd_log break "$home" "$2" "$helper" "$sha" "$who" \
+        "--allow-helper-break for $who allows ${helper##*/}@$sha to land (taken on $2 over $3)" ) \
+      || die "cannot record the break of $who for $helper in $VERSIONS_DIR/holds.log, so $2 may not land"
+  done <<< "$out"
+}
+
+# Read the operator breaks check-land logged itself into LOGGED, one
+# `<helper basename>@<sha256> <consumer>` per line; a break line `log` wrote
+# lacks the taken-by field and counts for nothing, and a missing or unreadable
+# log records none, so its holds stand.
+read_logged() {
+  local lines
+  lines=$( (cmd_holds) 2>/dev/null) || lines=""
+  LOGGED=$'\n'$(printf '%s\n' "$lines" | awk -F '\t' -v by="$TAKEN_BY_LAND" '
+    $2 == "break" && $9 == by && length($6) == 64 && $6 !~ /[^0-9a-f]/ {
+      b = $5; sub(/.*\//, "", b); n = split($7, c, ",")
+      for (i = 1; i <= n; i++) if (c[i] != "" && c[i] != "-") print b "@" $6 " " c[i] }')$'\n'
+}
+
+cmd_check_land() {
+  local repo=$FM_ROOT fetch=0 if_repo="" allow="" condition=0 base="" head top url
+  local base_c head_c mb
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) [ -n "${2:-}" ] || die "--repo needs a directory"; repo=$2; shift 2 ;;
+      --fetch) fetch=1; shift ;;
+      --if-repo) [ -n "${2:-}" ] || die "--if-repo needs <host>/<path>"; if_repo=$2; shift 2 ;;
+      --condition) condition=1; shift ;;
+      --allow-break)
+        [ -n "${2:-}" ] || die "--allow-break needs a consumer id"
+        allow="$allow $2"
+        shift 2
+        ;;
+      --) shift; break ;;
+      -*) die "unknown option $1" ;;
+      *) break ;;
+    esac
+  done
+  case $# in
+    1) head=$1 ;;
+    2) base=$1 head=$2 ;;
+    *) die "usage: check-land [--repo <dir>] [--fetch] [--if-repo <host>/<path>] [--condition] [--allow-break <consumer>]... [<base>] <head>" ;;
+  esac
+  [ "$condition" = 0 ] || [ -z "$allow" ] || die "--condition and --allow-break exclude each other: a parked wait never carries the operator's break"
+  [ -n "$(declarations)" ] || return 0
+
+  top=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) || die "not a git checkout: $repo"
+  top=$(CDPATH='' cd -- "$top" && pwd -P) || die "cannot resolve $repo"
+  if [ -n "$if_repo" ]; then
+    url=$(origin_url "$top") && [ -n "$url" ] \
+      || die "cannot read the origin URL of $top, so --if-repo cannot tell whether this landing is this project's"
+    [ "$(normalize_remote "$url")" = "$(normalize_remote "$if_repo")" ] || return 0
+  fi
+  if [ "$fetch" = 1 ]; then
+    git -C "$top" fetch --quiet origin 2>/dev/null || die "cannot fetch origin in $top"
+    git -C "$top" rev-parse --verify --quiet "$head^{commit}" >/dev/null \
+      || git -C "$top" fetch --quiet origin "$head" 2>/dev/null \
+      || die "cannot fetch $head from origin in $top"
+  fi
+  if [ -z "$base" ]; then
+    base=$(origin_default "$top") || die "no origin default branch in $top"
+  fi
+  base_c=$(git -C "$top" rev-parse --verify --quiet "$base^{commit}") || die "unknown revision $base in $top"
+  head_c=$(git -C "$top" rev-parse --verify --quiet "$head^{commit}") || die "unknown revision $head in $top"
+  mb=$(git -C "$top" merge-base "$base_c" "$head_c" 2>/dev/null) || die "$base and $head share no history in $top"
+
+  read_logged
+  classify project "$top" "$base_c" "$head_c" "$mb" "$allow"
+  emit_records
+  [ "$HELD" = 1 ] || { log_breaks "$top" "$head_c" "$base"; return 0; }
+  printf 'fm-helper-consumers: %s may not land on %s yet: the records above name each held helper (docs/helper-consumers.md "The landing gate")\n' "$head_c" "$base" >&2
+  [ "$condition" = 0 ] || return 1
+  return 3
 }
 
 # ---------------------------------------------------------------- pending
@@ -814,6 +1086,13 @@ record_version() {  # <repo> <commit> <rel> <sha> <consumer-lines> <landed|candi
 # ---------------------------------------------------------------- hold log
 
 HOLD_OUTCOMES="held cleared bypass break expired"
+# The ninth field of a break line check-land took itself, the only kind it
+# reads as releasing; set by log_breaks alone, never from the command line.
+TAKEN_BY_LAND="taken-by=check-land"
+TAKEN_BY=""
+# Under VERSIONS_DIR, one empty <helper basename>@<sha256> file per version a
+# bypass line names; the dot keeps it out of the record glob.
+BYPASS_DIR=".bypass"
 HOLD_MAX_FILE="helper-hold-max"
 HOLD_DEFAULT_MAX=3600
 
@@ -874,8 +1153,15 @@ cmd_log() {
   at=$(epoch_iso "$now") || { printf 'fm-helper-consumers: cannot format the time %s\n' "$now" >&2; exit 1; }
   log="$VERSIONS_DIR/holds.log"
   mkdir -p "$VERSIONS_DIR" 2>/dev/null || { printf 'fm-helper-consumers: cannot create %s\n' "$VERSIONS_DIR" >&2; exit 1; }
+  if [ "$outcome" = bypass ] && [ "${#sha}" -eq 64 ]; then
+    # The mark alarm reads, written first so a version is never logged
+    # bypassed without being raised at once.
+    { mkdir -p "$VERSIONS_DIR/$BYPASS_DIR" && : > "$VERSIONS_DIR/$BYPASS_DIR/${helper##*/}@$sha"; } 2>/dev/null \
+      || { printf 'fm-helper-consumers: cannot mark %s version %s bypassed in %s\n' "$helper" "$sha" "$VERSIONS_DIR/$BYPASS_DIR" >&2; exit 1; }
+  fi
   # One short line in one append, so concurrent writers never interleave.
-  { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$at" "$outcome" "$home" "$commit" "$helper" "$sha" "$consumers" "$note" >> "$log"; } 2>/dev/null \
+  { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s%s\n' "$at" "$outcome" "$home" "$commit" "$helper" "$sha" "$consumers" "$note" \
+      "${TAKEN_BY:+$TAB$TAKEN_BY}" >> "$log"; } 2>/dev/null \
     || { printf 'fm-helper-consumers: cannot append to %s\n' "$log" >&2; exit 1; }
 }
 
@@ -1231,7 +1517,7 @@ alarm_route() {  # <root> <dir> <key> <kind> <subject> <reason> <since-epoch> <o
 alarm_pass() {  # <home> <state> <repo>
   local home=$1 dir="$2/$ALARM_ID" repo=$3 now limit_file main_ref main="" project stamp
   local f old="" scan="" rows="" routes="" problems="" root="" line key reason
-  local b s12 rel t who owners rdir ref oh id store wanted prev tmp decl_new=0
+  local b s12 rel t who owners rdir ref by bypassed oh id store wanted prev tmp decl_new=0
   local log h live sha new deployed=" " cfg
   local -a targets=()
   now_to now
@@ -1325,9 +1611,14 @@ alarm_pass() {  # <home> <state> <repo>
         } || { alarm_report "$dir" "helper-unaccepted: cannot write $dir/main.tsv"; return 0; }
       fi
       # Each version on the branch some declaring consumer has not accepted
-      # within the limit: helper name, sha12, path, since, consumers, owners,
-      # record directory, branch.
-      { awk -F '\t' -v p="$project" -v now="$now" -v limit="$LIMIT" -v ref="$main_ref" '
+      # within the limit, or at all when a bypass line marked it: helper name,
+      # sha12, path, since, consumers, owners, record directory, branch, and
+      # `bypass` or `-`.
+      bypassed=" "
+      for f in "$VERSIONS_DIR/$BYPASS_DIR"/*@*; do
+        [ -e "$f" ] && bypassed="$bypassed${f##*/} "
+      done
+      { awk -F '\t' -v p="$project" -v now="$now" -v limit="$LIMIT" -v ref="$main_ref" -v bypassed="$bypassed" '
         FILENAME == ARGV[1] { if ($1 == "ok") { n++; dc[n] = $2; dw[n] = $3; dr[n] = $4; da[n] = " " $5 " " }; next }
         FILENAME == ARGV[2] { if (FNR > 1) { msha[$1] = $2; msince[$1] = $3 }; next }
         $2 != "ok" || $5 != p || msha[$3] != $4 || msince[$3] == "" { next }
@@ -1337,9 +1628,11 @@ alarm_pass() {  # <home> <state> <repo>
             who = who (who == "" ? "" : ",") dc[i]
             if (index("," own ",", "," dw[i] ",") == 0) own = own (own == "" ? "" : ",") dw[i]
           }
-          if (who == "" || now - msince[$3] < limit) next
-          b = $3; sub(/.*\//, "", b); d = $1; sub(/\/pending\.json$/, "", d)
-          print b "\t" substr($4, 1, 12) "\t" $3 "\t" msince[$3] "\t" who "\t" own "\t" d "\t" ref
+          b = $3; sub(/.*\//, "", b)
+          by = index(bypassed, " " b "@" $4 " ") ? "bypass" : "-"
+          if (who == "" || (by == "-" && now - msince[$3] < limit)) next
+          d = $1; sub(/\/pending\.json$/, "", d)
+          print b "\t" substr($4, 1, 12) "\t" $3 "\t" msince[$3] "\t" who "\t" own "\t" d "\t" ref "\t" by
         }' "$dir/decls.tsv" "$dir/main.tsv" "$dir/records.tsv" > "$dir/due.tsv.new" \
         && mv -f -- "$dir/due.tsv.new" "$dir/due.tsv"; } \
         || { alarm_report "$dir" "helper-unaccepted: cannot write $dir/due.tsv"; return 0; }
@@ -1373,12 +1666,15 @@ alarm_pass() {  # <home> <state> <repo>
         "$rel version $s12 was deployed by an update at $(epoch_iso "$t") after its hold passed the hold limit, and $who (owner ${owners:-unknown, its declaration is malformed}) has not accepted it, so it waits until its own review accepts that version; review artefact in $VERSIONS_DIR/$b/$sha" \
         "$t" "$owners"
     done < "$dir/deployed.tsv"
-    while IFS="$TAB" read -r b s12 rel t who owners rdir ref; do
+    while IFS="$TAB" read -r b s12 rel t who owners rdir ref by; do
       [ -n "$b" ] || continue
       case "$deployed" in *" $b-$s12 "*) continue ;; esac
-      alarm_route "$root" "$dir" "$(slug "$ALARM_ID-$b-$s12")" unaccepted "$rel" \
-        "$rel version $s12 on $ref since $(epoch_iso "$t") is not accepted by $who (owner $owners) within the limit; review artefact in $rdir" \
-        "$t" "$owners"
+      if [ "$by" = bypass ]; then
+        reason="$rel version $s12 on $ref since $(epoch_iso "$t") is not accepted by $who (owner $owners) and reached $ref around the landing gate; review artefact in $rdir"
+      else
+        reason="$rel version $s12 on $ref since $(epoch_iso "$t") is not accepted by $who (owner $owners) within the limit; review artefact in $rdir"
+      fi
+      alarm_route "$root" "$dir" "$(slug "$ALARM_ID-$b-$s12")" unaccepted "$rel" "$reason" "$t" "$owners"
     done < "$dir/due.tsv"
   fi
   [ -n "$routes" ] || [ -d "$dir/stores" ] || return 0
@@ -1531,6 +1827,7 @@ case "${1:-}" in
   -h|--help|help) usage; exit 0 ;;
   list) shift; cmd_list "$@" ;;
   check-advance) shift; cmd_check_advance "$@" ;;
+  check-land) shift; cmd_check_land "$@" ;;
   pending) shift; cmd_pending "$@" ;;
   log) shift; cmd_log "$@" ;;
   holds) shift; cmd_holds "$@" ;;

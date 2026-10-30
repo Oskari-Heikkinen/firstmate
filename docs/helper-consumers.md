@@ -10,8 +10,8 @@ This page is the owner of the rule that prevents that, the declaration format a 
 A Firstmate helper that another home runs under a pin is a reviewed helper with declared consumers.
 Firstmate deploys a new version of it to the path those consumers run only after every declared consumer accepts that exact version.
 A consumer accepts a version through an independent review of those exact bytes; an interface version or self-test the helper advertises is evidence for that review, never acceptance by itself.
-Landing does not wait for acceptance: a change to the helper lands on the default branch once its own gates pass, and [the update gate](#the-update-gate) then holds every update that would deploy it until its consumers accept it, or until [the hold limit](#the-hold-limit) passes.
-The wait is bounded so that one consumer's unfinished review never blocks every other update of the home: past the limit the update deploys the version, the consumer's owner is alarmed, and the consumer refuses the bytes it has not accepted until its own review accepts them.
+A change to the helper lands on the default branch only after every declared consumer accepts the exact bytes it lands, or the operator breaks a named consumer, as [the landing gate](#the-landing-gate) enforces; [the update gate](#the-update-gate) backs it by holding every update that would deploy a version that landed around it, until its consumers accept it or until [the hold limit](#the-hold-limit) passes.
+The update gate's wait is bounded so that one consumer's unfinished review never blocks every other update of the home: past the limit the update deploys the version, the consumer's owner is alarmed, and the consumer refuses the bytes it has not accepted until its own review accepts them.
 Never pin a Firstmate checkout without a declaration: an undeclared pin is invisible to Firstmate, and the next update that touches the helper stops it.
 
 ## The contract self-test gate
@@ -53,6 +53,29 @@ This hold departs from the original plan, which let a malformed file count only 
 An unreadable file whose own `helper=` lines cannot be read holds only the helpers other declarations name.
 `bin/fm-helper-consumers.sh list` shows every declaration, each helper's live version, and whether the consumer accepts it, is waiting, or is missing its helper.
 
+## The landing gate
+
+`bin/fm-helper-consumers.sh check-land` keeps an unaccepted helper version off the default branch, so the fleet update never has to hold for one.
+It compares the bytes each declared helper has on the default branch and after the head lands there, using the same classifier and outcomes as the update gate below.
+A head that leaves every declared helper's bytes as they are is never held, whatever else it changes.
+A head that changes them lands only when every declaring consumer accepts the new version; a consumer that accepts the current version but not the new one holds it, and so does any malformed or unreadable declaration.
+A head that is not yet on top of the default branch holds when both it and the default branch changed the same helper, because the bytes it would land are not known until it is rebased.
+
+Every landing path runs the gate and refuses on any outcome but a pass, before it pushes or merges anything: `bin/fm-ci-push.sh land` (including `--rebased-from`), `bin/fm-pr-merge.sh` for a Firstmate pull request, and step 4 of the direct-push Definition of done.
+`bin/fm-pr-merge.sh` tells a Firstmate pull request by the origin URL of its own Firstmate checkout, passes another project's pull request quietly, and refuses every merge while that origin URL is absent or unreadable, because it cannot then tell.
+Its gate fetches from origin while the task's control lock is held, so it is bounded at two minutes, and a gate stopped at that bound refuses the merge.
+A gate that cannot read its declarations or revisions refuses too.
+A declared helper the gate cannot locate, because its folder is gone or is not in a git checkout, is a stale declaration: the gate names it as `malformed` at every landing and holds as `unproven` only a head that changes a file with the helper's file name, wherever that file lives, because a moved helper keeps its name.
+Every other head lands, so one stale path cannot stop unrelated landings; the consumer's owner fixes the path, or the operator's break names the consumer.
+A refused worker does not poll: it parks on `check-land --condition` and resumes when the consumers accept, as the worker guide's direct-push landing reference says.
+Each consumer's owner reviews the candidate's bytes and adds `accept=` for them in its own declaration, which is what releases the head.
+The operator, and never an agent, may land anyway by breaking a named consumer with `--allow-helper-break <consumer>` on the landing command; that consumer then waits until it accepts the new version.
+The gate writes each break it takes to [the hold log](#the-hold-log) as a `break` line before the landing goes ahead, naming a malformed declaration by its file name without `.conf`, and refuses the landing when that line cannot be written; a parked `--condition` wait never carries a break.
+Once logged, that break line, which the gate marks as its own with a ninth field `taken-by=check-land`, releases the same consumer for the same helper file name and exact bytes (sha256) on every later run of the gate, without the flag, so a break taken on `bin/fm-ci-push.sh land` also passes step 4 of the direct-push Definition of done and a parked `--condition` wait.
+A head whose helper bytes differ from the broken version needs its own acceptance or break, and a missing or unreadable hold log counts as no break.
+A `break` line written through the `log` subcommand carries no such field and releases nothing, so the operator's `--allow-helper-break` on a landing command is the only supported way to release a hold.
+`bin/fm-merge-local.sh` is not gated, because it merges into a local default branch and never lands on a remote.
+
 ## The update gate
 
 The paths that move a Firstmate home's checkout - `/updatefirstmate`, the startup and launch secondmate sync, and remote secondmate sync - go through one fast-forward step, and the gate runs inside it.
@@ -64,7 +87,8 @@ For each declared helper inside the checkout being moved whose bytes would chang
 - if a consumer accepts neither, it is already waiting, so holding cannot help: the checkout advances and the update reports it.
 - if any declaration is malformed or unreadable, the checkout stays where it is, as described under Declarations.
 
-When the main checkout is held, `/updatefirstmate` holds its whole pass, so every home stays on one Firstmate version, prints a `held-for-helper:` line, and records the hold in the hold log below.
+The landing gate above keeps unaccepted versions off the default branch, so this gate is its backstop: it holds only for a version that landed around the landing gate, or on an operator's break.
+When the main checkout is held, `/updatefirstmate` holds its whole pass, so every home stays on one Firstmate version, prints a `held-for-helper:` line, and records the hold in the hold log below, as a bypass unless a landing break covers it.
 The captain may still say to update anyway for a named consumer or malformed declaration; that consumer then waits until it accepts the new version, and the update records the override.
 The hold of the main checkout is bounded by [the hold limit](#the-hold-limit).
 The override covers only the homes on the machine where the update runs: a remote second mate's home is checked against its own machine's declarations, reports its hold, and catches up by itself once its own consumer accepts.
@@ -72,7 +96,7 @@ With no declarations, nothing changes: every update and sync behaves exactly as 
 
 ## The hold limit
 
-A version that has held `/updatefirstmate` for the hold limit, counted from its first `held` line in [the hold log](#the-hold-log), no longer holds it: the next pass deploys it, writes one `expired` line for it, and the [alarm](#the-unaccepted-version-alarm) raises a level to the owner of every consumer that has not accepted it.
+A version that has held `/updatefirstmate` for the hold limit, counted from its first `held` or `bypass` line in [the hold log](#the-hold-log), no longer holds it: the next pass deploys it, writes one `expired` line for it, and the [alarm](#the-unaccepted-version-alarm) raises a level to the owner of every consumer that has not accepted it.
 That consumer then refuses those bytes visibly and waits until its own review accepts them, as [What a consumer does](#what-a-consumer-does) asks.
 Until the limit passes, the pass holds as before, and its `held-for-helper:` line says from when a pass may proceed.
 
@@ -83,7 +107,7 @@ A hold log that cannot be read counts every version as held from now, never as p
 A version no pass has logged as held yet has not started its wait, so it holds.
 A hold on a malformed or unreadable declaration, or on a failed gate check, has no limit, because no consumer's acceptance can be read to alarm on; the declaration level of the alarm already raises it.
 The limit bounds only the main checkout's hold: the secondmate and remote syncs, whose holds are not logged, still hold until acceptance.
-The operator's `--allow-helper-break` still moves past a hold at once, and the landing check is unchanged.
+The operator's `--allow-helper-break` still moves past a hold at once, and the limit never applies to [the landing gate](#the-landing-gate), which holds until acceptance or a break.
 
 ## Pending versions
 
@@ -97,7 +121,7 @@ A reviewer therefore reviews precisely what will deploy, before it deploys; cons
 Firstmate also files one note per pending version to the main firstmate, which routes it to the declared owner.
 
 The candidate-time notice prints one `helper-candidate:` line per unaccepted version, naming the consumers that have not accepted it and warning that its landing holds every home's update until they do.
-It never refuses or delays a landing, and its output never changes whether the head lands.
+It never refuses or delays a landing itself, and its output never changes whether the head lands: [the landing gate](#the-landing-gate) runs after it and decides that, so a head the gate holds is still noticed.
 A candidate record names its candidate commit and has no landing time yet.
 When that version lands, the post-landing run fills in the landing commit and time in the same directory and files no second note, so the review that started at the candidate carries on.
 A candidate record whose version has not reached the default branch 14 days after it was recorded is withdrawn: it moves to `retired/` beside the helper's other records, and the owner gets a "candidate withdrawn" note.
@@ -113,7 +137,8 @@ A note with no such file has no field, and any other entry is left out and repor
 ## The hold log
 
 Every held `/updatefirstmate` pass appends to one machine-wide, append-only log, `holds.log`, beside the pending versions in `${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/helper-versions/`.
-A held pass writes one `held` line for each helper version it waits on, and a rerun that is still held writes another with its own time.
+A held pass writes one line for each helper version it waits on, and a rerun that is still held writes another with its own time.
+The line is `bypass`, because the version reached the default branch around the landing gate, unless the log's `break` lines name every consumer it waits on for that version (matched by helper file name and version), which makes it `held`; a log that cannot be read counts as naming none.
 When the gate check itself fails, so no version is known, the pass writes one `held` line with `-` for the helper, version and consumers.
 A pass that deploys a version past [the hold limit](#the-hold-limit) first writes one `expired` line for it.
 The first later pass of that home that updates or finds itself already current writes one `cleared` line for each version it still had open, noting any `--allow-helper-break` it used or hold limit it passed.
@@ -128,13 +153,14 @@ fm-helper-consumers.sh log <outcome> <home> <target-commit> <helper> <sha256> <c
 Each call appends one tab-separated line in a single write:
 
 ```
-<utc time> <outcome> <home> <target-commit> <helper> <sha256> <consumers> <note>
+<utc time> <outcome> <home> <target-commit> <helper> <sha256> <consumers> <note> [<taken-by>]
 ```
 
 - `held` - a pass of `<home>` stopped at `<target-commit>` because `<consumers>` have not accepted `<helper>` version `<sha256>`.
 - `cleared` - a later pass of `<home>` advanced past that held version.
-- `bypass` - a held pass on a version that reached the default branch around a landing check that should have refused it; it opens and clears like `held`.
-- `break` - an operator-run `--allow-helper-break` moved past `<consumers>`' acceptance of that version; it is a record only and opens or clears nothing.
+- `bypass` - a held pass on a version that reached the default branch around the landing gate; it opens and clears like `held`, and also marks the version so [the alarm](#the-unaccepted-version-alarm) raises it at once.
+- `break` - an operator-run `--allow-helper-break` let a landing move past `<consumers>`' acceptance of that version, written by the landing gate with the head as `<target-commit>`; it opens or clears no hold.
+  The landing gate marks its own break lines with the ninth field `taken-by=check-land` and reads only those as releasing those consumers for that version, as [The landing gate](#the-landing-gate) says; the `log` subcommand takes no ninth field, so a `break` line it writes is a record only.
 - `expired` - a pass of `<home>` deployed that version unaccepted by `<consumers>` because it had been held for the hold limit; it is a record only, opens or clears nothing, and the alarm raises it to the consumers' owners.
 
 `<home>` is an absolute path, `<sha256>` may be `absent` for a deleted helper, and `-` stands for an unknown target commit, helper, version or consumer list; the script header owns the exact field rules and exit codes.
@@ -144,7 +170,7 @@ This interface is stable: new outcomes and new trailing fields may be added, but
 
 A version of a declared helper that sits on the origin default branch unaccepted for longer than a limit raises an alarm, so a hold that nobody is reviewing is never silent.
 The alarm runs in the main home as the custom watcher check `helper-unaccepted`, installed by `bin/fm-helper-consumers.sh alarm --arm` and removed by `alarm --disarm`.
-Each pass raises one level, `helper-unaccepted-<helper>-<sha12>`, per pending version that the branch carries and some declaring consumer has not accepted, once the commit that brought those bytes to the branch is older than the limit.
+Each pass raises one level, `helper-unaccepted-<helper>-<sha12>`, per pending version that the branch carries and some declaring consumer has not accepted, once the commit that brought those bytes to the branch is older than the limit, or at once when a `bypass` line in the hold log marked that version.
 The level clears when every declaring consumer accepts the version, or when the branch moves on to other bytes for that helper.
 It reaches the main home and the local home of the version's declared owner, as a level in each home's alert store (see [Alert store](alert-store.md)); an owner this machine cannot reach is named in main's level instead.
 

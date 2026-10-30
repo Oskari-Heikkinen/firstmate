@@ -82,9 +82,13 @@
 # `bin/fm-helper-consumers.sh pending` on the sync target, so a helper version
 # no consumer has accepted yet is recorded and noted even when nothing else
 # noticed its landing; its `helper-pending:` lines are reported as they come.
-# Each held pass also appends one `held` line per version that held it to the
-# hold log through `bin/fm-helper-consumers.sh log` (one line with `-` fields
-# when the check failed without naming a version), and a pass that leaves the
+# Each held pass also appends one line per version that held it to the hold log
+# through `bin/fm-helper-consumers.sh log` (one `held` line with `-` fields
+# when the check failed without naming a version). Because the landing gate
+# keeps unaccepted versions off the default branch, that line is `bypass`,
+# which also raises the unaccepted-version alarm at once, unless the log's
+# `break` lines name every awaited consumer for that version (then `held`); an
+# unreadable log counts as no break. A pass that leaves the
 # primary updated or already current appends `cleared` for each of this home's
 # holds still open. A line that cannot be written prints
 # `hold-log: not written: ...` and changes nothing else.
@@ -168,12 +172,30 @@ hold_log() {  # <outcome> <helper> <sha256> <consumers> <note>
   out=$("$SCRIPT_DIR/fm-helper-consumers.sh" log "$1" "$FM_HOME" "${FF_BASE_COMMIT:--}" "$2" "$3" "$4" "$5" 2>&1) \
     || echo "hold-log: not written: $1 $2: $(first_line "$out")"
 }
+# The landing gate keeps unaccepted versions off the default branch, so a held
+# version is a bypass unless a landing break line covers each of its consumers.
+hold_outcome() {  # <helper> <sha256> <consumers>; sets OUTCOME
+  local c
+  OUTCOME=held
+  for c in ${3//,/ }; do
+    case "$broken" in *$'\n'"${1##*/}@$2 $c"$'\n'*) ;; *) OUTCOME=bypass; return 0 ;; esac
+  done
+}
 if [ -n "$FF_HELD" ]; then
+  if broken=$("$SCRIPT_DIR/fm-helper-consumers.sh" holds 2>/dev/null); then
+    broken=$'\n'$(printf '%s\n' "$broken" | awk -F '\t' '$2 == "break" {
+      b = $5; sub(/.*\//, "", b); n = split($7, c, ",")
+      for (i = 1; i <= n; i++) print b "@" $6 " " c[i] }')$'\n'
+  else
+    broken=unreadable
+  fi
   logged=no
   while IFS=$'\t' read -r kind helper sha consumers; do
     case "$kind" in
-      hold) hold_log held "$helper" "$sha" "$consumers" "held-for-helper: awaiting $consumers"; logged=yes ;;
-      unproven) hold_log held "$helper" "$sha" "$consumers" "held-for-helper: awaiting malformed declaration $consumers"; logged=yes ;;
+      hold) hold_outcome "$helper" "$sha" "$consumers"
+        hold_log "$OUTCOME" "$helper" "$sha" "$consumers" "held-for-helper: awaiting $consumers"; logged=yes ;;
+      unproven) hold_outcome "$helper" "$sha" "$consumers"
+        hold_log "$OUTCOME" "$helper" "$sha" "$consumers" "held-for-helper: awaiting malformed declaration $consumers"; logged=yes ;;
     esac
   done <<< "$FF_HELPER_RECORDS"
   [ "$logged" = yes ] || hold_log held - - - "held-for-helper: $FF_HELD"

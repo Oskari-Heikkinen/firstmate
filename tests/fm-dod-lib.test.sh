@@ -525,6 +525,11 @@ test_firstmate_direct_push_dod_verifies_on_ci() {
     "the Firstmate block does not record a landed helper change for its declared consumers"
   assert_contains "$block" "FM_HOME='/fixture/home' bin/fm-helper-consumers.sh pending --candidate HEAD" \
     "the Firstmate block does not notice a landing candidate's helper change before its push"
+  assert_contains "$block" "4. Run \`bin/fm-helper-consumers.sh check-land origin/<default-branch> HEAD\`" \
+    "the Firstmate block does not run the helper landing gate before its landing push"
+  assert_contains "$block" "5. \`git push origin HEAD:<default-branch>\`" \
+    "the Firstmate block pushes before the helper landing gate"
+  assert_contains "$block" "\"Helper acceptance wait\"" "the Firstmate block does not park on the helper landing gate"
   # ci/full/ appears only in the rule that forbids it outside its one exception.
   while IFS= read -r line; do
     case "$line" in

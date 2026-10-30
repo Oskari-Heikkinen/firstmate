@@ -176,7 +176,17 @@
 # explicit captain instruction and never skips the live green check, the
 # away-record read, or a captain hold.
 #
-# Usage: fm-pr-merge.sh <task-id> <pr-url> [--attended-override] [--allow-red <check-name>] [--allow-missing <check-name>] [-- <extra forge merge args>]
+# A pull request on the Firstmate repository merges only through the helper
+# landing gate, `bin/fm-helper-consumers.sh check-land` on the origin default
+# branch and the live head (docs/helper-consumers.md "The landing gate"): it
+# refuses, merging nothing, while a declared consumer has not accepted the
+# helper bytes the head lands, and on any other gate failure, including a
+# Firstmate checkout whose origin URL cannot be read and a gate stopped at its
+# two-minute bound.
+# --allow-helper-break <consumer> (repeatable) is the operator-run break for
+# that consumer, passed to the gate as --allow-break; an agent never runs it.
+#
+# Usage: fm-pr-merge.sh <task-id> <pr-url> [--attended-override] [--allow-red <check-name>] [--allow-missing <check-name>] [--allow-helper-break <consumer>]... [-- <extra forge merge args>]
 #
 # On GitLab, this script confirms the MR is actually merged before reporting it;
 # an auto-merge-queued or unconfirmed request leaves the poll armed and records
@@ -245,6 +255,7 @@ shift 2
 ATTENDED_OVERRIDE=false
 ALLOW_RED=()
 ALLOW_MISSING=()
+ALLOW_HELPER_BREAK=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --attended-override)
@@ -273,6 +284,15 @@ while [ "$#" -gt 0 ]; do
       ;;
     --allow-missing=*)
       echo "error: --allow-missing requires a separate check name argument" >&2
+      exit 2
+      ;;
+    --allow-helper-break)
+      [ -n "${2:-}" ] || { echo "error: --allow-helper-break requires a consumer name" >&2; exit 2; }
+      ALLOW_HELPER_BREAK+=(--allow-break "$2")
+      shift 2
+      ;;
+    --allow-helper-break=*)
+      echo "error: --allow-helper-break requires a separate consumer name argument" >&2
       exit 2
       ;;
     --) shift; break ;;
@@ -1398,6 +1418,29 @@ hold_away_record_for_merge() {
   return 1
 }
 
+# The helper landing gate on the live head; the bin/fm-helper-consumers.sh
+# header owns its outcomes. It is quiet for any repository but this one. It
+# fetches from origin while the task's control lock is held, so it is bounded,
+# and a gate stopped at its bound refuses like any other failure;
+# FM_TEST_HELPER_GATE_TIMEOUT shortens the bound for tests only.
+HELPER_GATE_TIMEOUT=${FM_TEST_HELPER_GATE_TIMEOUT:-120}
+require_helper_acceptance() {
+  local status=0
+  fm_run_timed "$HELPER_GATE_TIMEOUT" env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-helper-consumers.sh" check-land \
+    --repo "$FM_ROOT" --if-repo "$PR_HOST/$PR_PATH" --fetch \
+    ${ALLOW_HELPER_BREAK[@]+"${ALLOW_HELPER_BREAK[@]}"} "$FM_PR_MERGE_HEAD" >&2 || status=$?
+  if fm_timed_out "$status"; then
+    echo "error: PR merge refused - the helper landing gate stopped after ${HELPER_GATE_TIMEOUT}s; nothing was merged" >&2
+    return 1
+  fi
+  case "$status" in
+    0) return 0 ;;
+    3) echo "error: PR merge refused - $URL lands declared helper bytes a consumer has not accepted; nothing was merged; it may merge once $SCRIPT_DIR/fm-helper-consumers.sh check-land --fetch $FM_PR_MERGE_HEAD exits 0" >&2 ;;
+    *) echo "error: PR merge refused - the helper landing gate failed (exit $status); nothing was merged" >&2 ;;
+  esac
+  return 1
+}
+
 require_current_away_authority() {
   FM_PR_AWAY_POSTURE=false
   if fm_afk_contract_away_present "$STATE"; then
@@ -1634,19 +1677,19 @@ require_released_captain_hold || exit 1
 # merge, a verified head that changes a Firstmate helper another home runs
 # under a pin gets its pending record and its owner's note. It is quiet for
 # any other repository and when nothing is declared, and whatever it reports,
-# the merge goes ahead exactly as it would without it. It fetches from origin
-# while the task's control lock is held, so it is bounded; FM_TEST_HELPER_NOTICE_TIMEOUT
-# shortens the bound for tests only.
+# the helper landing gate decides the merge exactly as it would without it. It
+# fetches from origin while the task's control lock is held, so it is bounded;
+# FM_TEST_HELPER_NOTICE_TIMEOUT shortens the bound for tests only.
 HELPER_NOTICE_TIMEOUT=${FM_TEST_HELPER_NOTICE_TIMEOUT:-60}
 helper_candidate_notice() {
   local rc=0
   fm_run_timed "$HELPER_NOTICE_TIMEOUT" env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-helper-consumers.sh" pending \
     --repo "$FM_ROOT" --if-repo "$PR_HOST/$PR_PATH" --fetch --candidate "$FM_PR_MERGE_HEAD" >&2 || rc=$?
   if fm_timed_out "$rc"; then
-    printf 'helper-candidate: notice stopped after %ss; the merge goes ahead, and the post-merge record still runs\n' \
+    printf 'helper-candidate: notice stopped after %ss; the helper landing gate decides the merge, and the post-merge record still runs\n' \
       "$HELPER_NOTICE_TIMEOUT" >&2
   elif [ "$rc" -ne 0 ]; then
-    printf 'helper-candidate: notice failed (exit %s); the merge goes ahead, and the post-merge record still runs\n' "$rc" >&2
+    printf 'helper-candidate: notice failed (exit %s); the helper landing gate decides the merge, and the post-merge record still runs\n' "$rc" >&2
   fi
   return 0
 }
@@ -1695,6 +1738,7 @@ case "$PROVIDER" in
     helper_candidate_notice
     # The away record is locked first, so this last presence and authority read
     # and the forge command below share one live-owner critical section.
+    require_helper_acceptance || exit 1
     hold_away_record_for_merge || exit 1
     away_status=0
     require_current_away_authority || away_status=$?
@@ -1755,6 +1799,7 @@ case "$PROVIDER" in
     # the conditions above are what authorize the merge.
     # The away record is locked first, so this last presence and authority read
     # and the forge command below share one live-owner critical section.
+    require_helper_acceptance || exit 1
     hold_away_record_for_merge || exit 1
     away_status=0
     require_current_away_authority || away_status=$?
@@ -1797,6 +1842,7 @@ case "$PROVIDER" in
     helper_candidate_notice
     # The away record is locked first, so this last presence and authority
     # read and the forge command below share one live-owner critical section.
+    require_helper_acceptance || exit 1
     hold_away_record_for_merge || exit 1
     away_status=0
     require_current_away_authority || away_status=$?
