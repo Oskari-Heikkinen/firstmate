@@ -73,6 +73,7 @@ These bounds are prototype limits, not a claim that every existing fleet input f
 
 The `snapshot-tasks` verb composes the local `tasks[]` rows through [`fm_view_snapshot.py`](../bin/fm_view_snapshot.py).
 Its arguments are `observed_at`, integer `epoch`, positive integer `concurrency` and `task_timeout`, plus the same bounded crew `options` vocabulary as current-state reads.
+After capture, one `snapshot-endpoint` adapter process observes the endpoint of every current local row, so the backend library graph starts once per snapshot rather than once per row; a row on a backend the adapter does not admit refuses the whole batch for legacy fallback, and a row with no batched observation refuses rather than inventing one.
 Its reply contains `tasks` and an equally ordered `captures` array, each capture containing exactly `task`, raw decoded `meta`, raw decoded `status` (null when absent or discarded), and integer `status_mtime_ns` (null with absent status).
 The shared regular-file reader captures mtime from the same verified descriptor as the bytes; raw capture strings use the protocol's lossless surrogateescape encoding.
 The compatibility client validates capture count, task binding, status presence and timestamp types before staging any file in its invoking owner's empty, same-UID, mode-0700 nonsymlink capture directory.

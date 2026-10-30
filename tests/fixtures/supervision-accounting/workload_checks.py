@@ -344,7 +344,8 @@ class WorkloadChecks(unittest.TestCase):
         for operation, args in (("exec", ["sh", "-c", "true"]), ("git", ["reset", "--hard"]),
                                 ("git", ["-c", "core.hooksPath=evil", "rev-parse", "HEAD"]),
                                 ("no-mistakes", ["daemon", "restart"]), ("backend", ["task-0", "kill"]),
-                                ("forge", ["task-other", "url"]), ("saved-custody", ["../other"])):
+                                ("forge", ["task-other", "url"]), ("saved-custody", ["../other"]),
+                                ("snapshot-endpoint", []), ("snapshot-endpoint", ["task-0", "task-0"])):
             self.rejected(lambda v: v["requests"][0]["observations"][0].update(operation=operation, arguments=args),
                           "unadmitted passive")
 

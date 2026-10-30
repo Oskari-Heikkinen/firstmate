@@ -17,6 +17,7 @@ from fm_view_runs import Run, ci_checks, head_matches, ledger_status, select_run
 from fm_view_status import Vocabulary, note, verb
 
 SEP = " · "
+ADAPTER = Path(__file__).resolve().parent / "fm-view-adapter.sh"
 _UNSET = object()
 
 
@@ -68,7 +69,7 @@ class Crew:
         self.started_ns = time.monotonic_ns()
         self.home = str(inputs.home)
         self.env.update(FM_HOME=self.home, FM_STATE_OVERRIDE=str(inputs.state))
-        self.script = Path(__file__).resolve().parent / "fm-view-adapter.sh"
+        self.script = ADAPTER
         self.vocabulary = Vocabulary(
             paused=self.env.get("FM_CLASSIFY_PAUSED_VERB") or "paused",
             resolved=self.env.get("FM_CLASSIFY_RESOLVE_VERB") or "resolved",

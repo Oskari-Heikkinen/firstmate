@@ -401,7 +401,10 @@ class Engine:
                 remaining = observation_deadline - time.monotonic()
                 require(remaining > 0, "snapshot observation deadline expired")
                 return remaining
-            captures = await self.ordinary.run(lambda: snapshot.capture(inventory), budget())
+            captured = await self.ordinary.run(lambda: snapshot.capture(inventory), budget())
+            captures = await self.ordinary.run(
+                lambda: snapshot.endpoints(captured, min(arguments["task_timeout"], budget())),
+                min(arguments["task_timeout"], budget()))
             rows = [None] * len(captures)
             pending = iter(enumerate(captures))
             async def worker():

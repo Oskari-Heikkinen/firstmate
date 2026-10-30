@@ -800,7 +800,9 @@ class BundlePreparation(unittest.TestCase):
             env = dict(self.environment, FM_HOME=str(self.home), FM_ROOT_OVERRIDE=str(base),
                        FM_STATE_OVERRIDE=str(self.home / "state"), FM_DATA_OVERRIDE=str(self.home / "data"),
                        PATH=str(fakebin) + os.pathsep + self.environment.get("PATH", ""))
-            return subprocess.run(["bash", str(base / "bin/fm-view-adapter.sh"), operation, "task", "done: report"],
+            # The batched endpoint operation reads every further argument as a task.
+            extra = [] if operation == "snapshot-endpoint" else ["done: report"]
+            return subprocess.run(["bash", str(base / "bin/fm-view-adapter.sh"), operation, "task", *extra],
                                   cwd=self.home, env=env, capture_output=True, timeout=20)
         expected = {name: adapter(self.repo, name) for name in ("backend", "snapshot-endpoint", "saved-custody", "done-proof", "forge")}
         for name, result in expected.items():

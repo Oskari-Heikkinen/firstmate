@@ -7,12 +7,15 @@ Only the existing passive endpoint adapter may observe an external backend.
 import os
 import re
 
-from fm_view_crew import Crew, result
+from fm_view_crew import ADAPTER, Crew, LegacyRequired, result
 from fm_view_engine import MAX_FILE, fields, read_file, require
+from fm_view_process import run
 from fm_view_status import at_epoch, note, verb
 
 MAX_TASKS = 256
 MAX_STATUS_BYTES = 64 * 1024 * 1024
+# The per-row endpoint bound before batching; a hung target still refuses here.
+ENDPOINT_TIMEOUT = 10
 
 
 class CapturedInputs:
@@ -75,6 +78,30 @@ class Snapshot:
         self.inputs.check()
         return captured
 
+    def endpoints(self, captures, timeout):
+        """Observe every current local row's endpoint in one adapter process."""
+        tasks = [row["task"] for row in captures
+                 if not fields(row["meta"]["bytes"]).get("remote_host", "") and self.current(row)]
+        if not tasks:
+            return captures
+        self.inputs.check()
+        environment = dict(self.environment, FM_HOME=str(self.inputs.home), FM_STATE_OVERRIDE=str(self.inputs.state))
+        observation = run(["bash", str(ADAPTER), "snapshot-endpoint", *tasks], str(self.inputs.home),
+                          min(timeout, ENDPOINT_TIMEOUT), environment)
+        if observation.status == 3:
+            raise LegacyRequired("passive snapshot-endpoint integration unsupported; use legacy")
+        values = observation.stdout[:-1].split(b"\0") if observation.stdout.endswith(b"\0") else []
+        require(not observation.problem and observation.status == 0 and len(values) == 3 * len(tasks),
+                "snapshot endpoint observation unavailable")
+        observed = {}
+        for index, task in enumerate(tasks):
+            name, exists, alive = (value.decode("utf-8", "surrogateescape") for value in values[3 * index:3 * index + 3])
+            require(name == task and exists in ("null", "true", "false")
+                    and alive in ("not_checked", "unknown", "alive", "dead"),
+                    "snapshot endpoint observation unavailable")
+            observed[task] = ({"null": None, "true": True, "false": False}[exists], alive)
+        return [dict(row, endpoint=observed[row["task"]]) if row["task"] in observed else row for row in captures]
+
     def current(self, row):
         current = self.inputs.metadata(row["task"])
         if current == row["meta"]:
@@ -102,13 +129,11 @@ class Snapshot:
             current = dict(result("unknown", "none", "remote endpoint liveness not collected by fleet snapshot"), raw="")
             agent_alive = "unknown"
         elif self.current(row):
+            # A row that became current only after the batched observation has
+            # no endpoint evidence of its own; refuse rather than invent one.
+            require("endpoint" in row, "snapshot endpoint observation unavailable")
             current = crew.read()
-            packet = crew.packet("snapshot-endpoint", timeout=10, cwd=str(self.inputs.home))
-            require(packet and len(packet) == 2 and packet[0] in ("null", "true", "false")
-                    and packet[1] in ("not_checked", "unknown", "alive", "dead"),
-                    "snapshot endpoint observation unavailable")
-            endpoint_exists = {"null": None, "true": True, "false": False}[packet[0]]
-            agent_alive = packet[1]
+            endpoint_exists, agent_alive = row["endpoint"]
         else:
             current = dict(result("unknown", "none", "task generation changed during snapshot"), raw="")
             agent_alive = "unknown"
