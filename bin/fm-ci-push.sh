@@ -10,7 +10,9 @@
 #     Pushes HEAD to ci/try/<task>, a run that is never a landing proof.
 #   fm-ci-push.sh land <task> [--repo <owner/repo>]
 #     Pushes HEAD to ci/<task>, the landing proof. HEAD must contain the
-#     current origin/main.
+#     current origin/main. Before the push it runs the candidate-time consumer
+#     notice, `fm-helper-consumers.sh pending --candidate HEAD`, and prints and
+#     logs its `helper-candidate:` lines; they never change the outcome.
 #   fm-ci-push.sh land <task> --full [--repo <owner/repo>]
 #     Pushes HEAD to ci/full/<task>, only when HEAD's own ci/<task> run's plan
 #     job chose the changed-area `ci` layout and that run has not gone red.
@@ -25,7 +27,8 @@
 #       tested-run    <tested-sha> has a green CI run on ci/<task>;
 #       main-run      origin/main's own CI run is green.
 #     It prints "fast-forward allowed without a new run" with the tested run's
-#     URL, or refuses naming every condition that failed.
+#     URL, after the same candidate-time notice as land, or refuses naming
+#     every condition that failed.
 #   fm-ci-push.sh rerun-infra <run-id> [--flaky-ok] [--repo <owner/repo>]
 #     Reruns a finished ci/** run's failed jobs once (`gh run rerun --failed`)
 #     when bin/fm-ci-errors.sh classes every failure infra (or flaky too, with
@@ -68,6 +71,8 @@
 #                           and the task's status file.
 #   FM_CI_PUSH_ERRORS_BIN   the classifier, default bin/fm-ci-errors.sh next
 #                           to this script (a test seam).
+#   FM_TEST_HELPER_NOTICE_TIMEOUT  shortens the candidate-time notice's 60 s
+#                           bound (a test seam).
 #
 # Exit status: 0 pushed, allowed, or nothing to do; 1 refused (the reason is
 # on stderr and in the log); 2 usage error.
@@ -76,6 +81,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 MAIN_BRANCH=main
 MAIN_REF=refs/remotes/origin/main
@@ -299,6 +306,30 @@ push_head() {  # <target>
   finish "pushed $HEAD_SHA to $target (an older head there was deleted first); wait for its run with gh run list -R $REPO --branch $target --commit $HEAD_SHA, at most every 2 minutes"
 }
 
+# The candidate-time consumer notice (docs/helper-consumers.md): a declared
+# Firstmate helper whose bytes HEAD changes and a consumer has not accepted gets
+# its pending record and its owner's note before the landing push. Its lines
+# are printed and logged; it never changes this script's outcome. It may fetch
+# from origin, so it is bounded, and a stop or failure is one more line.
+HELPER_NOTICE_TIMEOUT=${FM_TEST_HELPER_NOTICE_TIMEOUT:-60}
+candidate_notice() {
+  local top out line rc=0 nl=$'\n'
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || top=$PWD
+  out=$(fm_run_timed "$HELPER_NOTICE_TIMEOUT" env FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-helper-consumers.sh" pending \
+    --repo "$top" --candidate HEAD 2>&1) || rc=$?
+  if fm_timed_out "$rc"; then
+    out="${out:+$out$nl}helper-candidate: notice stopped after ${HELPER_NOTICE_TIMEOUT}s; the landing goes ahead, and the post-landing record still runs"
+  elif [ "$rc" -ne 0 ]; then
+    out="${out:+$out$nl}helper-candidate: notice failed (exit $rc); the landing goes ahead, and the post-landing record still runs"
+  fi
+  [ -n "$out" ] || return 0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf '%s\n' "$line"
+    log_event "$line" || printf 'fm-ci-push: warning: could not log to %s\n' "$LOG" >&2
+  done <<< "$out"
+}
+
 read_head() {
   HEAD_SHA=$(git rev-parse --verify -q 'HEAD^{commit}') || refuse "not inside a git worktree with a commit"
 }
@@ -308,6 +339,7 @@ prepare_push() {  # <scope> <target>
   require_clean
   fetch_main
   [ "$scope" = try ] || require_on_main
+  [ "$scope" != land ] || candidate_notice
   HEAD_TREE=$(git rev-parse 'HEAD^{tree}') || refuse "cannot read HEAD's tree"
   HEAD_KEY=$(commit_key HEAD) || refuse "cannot read HEAD's commits"
   collect_task_runs
@@ -471,6 +503,7 @@ mode_land_rebased() {
   fi
 
   [ -z "$failed" ] || refuse "HEAD $HEAD_SHA is not $tested rebased onto a green main unchanged; failed:$failed; push it with land for a new run"
+  candidate_notice
   finish "fast-forward allowed without a new run: $(printf '%s' "$run" | cut -f 7) proved $tested, and HEAD $HEAD_SHA replays its $n_h commits unchanged onto green origin/$MAIN_BRANCH $MAIN_SHA ($(printf '%s' "$main_run" | cut -f 7)); land with git push origin HEAD:$MAIN_BRANCH"
 }
 

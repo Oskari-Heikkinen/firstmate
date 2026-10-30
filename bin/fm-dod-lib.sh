@@ -677,9 +677,9 @@ EOF
 # CI runs on ci/** pushes (.github/workflows/ci.yml), and homes follow the
 # green pointer that main's passing CI advances (bin/fm-green-pointer.sh), so
 # a landed commit reaches no home until main's CI has passed on it.
-# Its helper-consumer line runs bin/fm-helper-consumers.sh pending right after a
-# landing, against the supervising home (the caller's FM_HOME) so the note
-# reaches that home's root.
+# Its helper-consumer line runs bin/fm-helper-consumers.sh pending --candidate
+# before a landing candidate's push and pending right after a landing, against
+# the supervising home (the caller's FM_HOME) so the note reaches that home's root.
 fm_dod_firstmate_direct_push_body() {  # <task-id> <branch> <landing-ref>
   local id=$1 branch=$2 landing_ref=$3 ci="ci/$1" ref pending_env=""
   [ -z "${FM_HOME:-}" ] || pending_env="FM_HOME='$FM_HOME' "
@@ -707,7 +707,7 @@ EOF
   fm_dod_direct_push_landing_steps 4 "$landing_ref"
   cat <<EOF
 Never push to the default branch a head whose exact-head \`$ci\` run did not pass on top of the current \`origin/<default-branch>\`.
-Right after a landing push succeeds, run \`${pending_env}bin/fm-helper-consumers.sh pending HEAD\` from this worktree; its output never changes whether the task landed.
+Before you push a landing candidate to \`$ci\` and before the landing push, run \`${pending_env}bin/fm-helper-consumers.sh pending --candidate HEAD\` from this worktree (\`bin/fm-ci-push.sh land\` runs it for you); right after a landing push succeeds, run \`${pending_env}bin/fm-helper-consumers.sh pending HEAD\` from this worktree. Neither output changes whether the task lands.
 EOF
   fm_dod_direct_push_landed_lines "$branch"
   cat <<EOF

@@ -242,6 +242,9 @@ case "${1:-} ${2:-}" in
     if [ -n "${FM_TEST_META_AT_MERGE:-}" ] && [ -f "${FM_STATE_OVERRIDE:-}/task-x1.meta" ]; then
       cat "$FM_STATE_OVERRIDE/task-x1.meta" > "$FM_TEST_META_AT_MERGE"
     fi
+    if [ -n "${FM_TEST_HELPER_VERSIONS_AT_MERGE:-}" ] && [ -d "${FM_HELPER_VERSIONS:-}" ]; then
+      find "$FM_HELPER_VERSIONS" -name pending.json > "$FM_TEST_HELPER_VERSIONS_AT_MERGE"
+    fi
     # The forge call runs inside the merge's critical section, so a real
     # away-record change attempted from here is the TOCTOU itself: whatever
     # happens to it happens between the authority read and the merge.
@@ -386,6 +389,9 @@ case "${1:-} ${2:-}" in
     exit 0
     ;;
   "mr merge")
+    if [ -n "${FM_TEST_HELPER_VERSIONS_AT_MERGE:-}" ] && [ -d "${FM_HELPER_VERSIONS:-}" ]; then
+      find "$FM_HELPER_VERSIONS" -name pending.json > "$FM_TEST_HELPER_VERSIONS_AT_MERGE"
+    fi
     [ ! -e "$case_dir/glab-merge-fails" ] || { echo "error: mr merge failed" >&2 ; exit 1 ; }
     : > "$case_dir/glab-merge-called"
     exit 0
@@ -506,6 +512,9 @@ case "$endpoint" in
     fi
     ;;
   */merge)
+    if [ -n "${FM_TEST_HELPER_VERSIONS_AT_MERGE:-}" ] && [ -d "${FM_HELPER_VERSIONS:-}" ]; then
+      find "$FM_HELPER_VERSIONS" -name pending.json > "$FM_TEST_HELPER_VERSIONS_AT_MERGE"
+    fi
     if [ -e "$log_dir/tea-merge-fails" ]; then
       printf '{"message":"merge failed"}\n'
     elif [ -e "$log_dir/tea-expected-head" ] \
@@ -706,6 +715,7 @@ run_pr_merge() {
   FM_TEST_GH_REQUIRED_RULES="$case_dir/github-required-rules.json" \
   FM_TEST_GH_REQUIRED_RULES_FAIL="$case_dir/github-required-rules-fail" \
   FM_TEST_META_AT_MERGE="$case_dir/meta-at-merge" \
+  FM_TEST_HELPER_VERSIONS_AT_MERGE="$case_dir/helper-versions-at-merge" \
   FM_TEST_AWAY_RECORD_AFTER_VIEW="$case_dir/away-record-after-view" \
   FM_TEST_ROOT="$ROOT" \
   FM_TEST_AWAY_MUTATE_AT_MERGE="${FM_TEST_AWAY_MUTATE_AT_MERGE:-}" \
@@ -810,6 +820,158 @@ test_merged_helper_change_is_recorded_for_its_consumers() {
     "helper-pending: the record is reported"
   assert_equals "$before" "$(git -C "$root" rev-parse HEAD)" "helper-pending: recording moved the code root's checkout"
   pass "a merged change to a declared helper is recorded for its consumers' review"
+}
+
+# The candidate-time consumer notice (docs/helper-consumers.md): a verified PR
+# head that changes a declared helper gets its pending record before the merge,
+# and the merge goes ahead unchanged. The head lives only on the PR's ref in the
+# bare origin, so the notice must fetch it by its sha.
+#
+# helper_candidate_world <case-dir> <origin-url>: a code root at helper v1 whose
+# origin is <origin-url> (served by a local bare repository), a declaration
+# accepting v1, and a PR head changing it to v2 on refs/pull/9/head only.
+# Echoes the head sha; the candidate version's sha256 is in <case-dir>/cand.
+helper_candidate_world() {
+  local case_dir=$1 url=$2 root bare accepted
+  root="$case_dir/code-root"
+  fm_git_init_commit "$root" >/dev/null
+  mkdir -p "$root/bin"
+  printf 'echo v1\n' > "$root/bin/helper.sh"
+  git -C "$root" add -A
+  git -C "$root" commit -qm helper-v1
+  bare="$case_dir/origin.git"
+  git clone -q --bare "$root" "$bare"
+  git -C "$bare" config uploadpack.allowAnySHA1InWant true
+  git -C "$root" remote add origin "$url"
+  git -C "$root" config "url.file://$bare.insteadOf" "$url"
+  git -C "$root" fetch -q origin
+  git clone -q "$bare" "$case_dir/pr"
+  printf 'echo v2\n' > "$case_dir/pr/bin/helper.sh"
+  git -C "$case_dir/pr" commit -qam helper-v2
+  git -C "$case_dir/pr" push -q origin HEAD:refs/pull/9/head
+  accepted=$(git -C "$root" cat-file blob HEAD:bin/helper.sh | { sha256sum 2>/dev/null || shasum -a 256; } | awk '{print $1}')
+  git -C "$case_dir/pr" cat-file blob HEAD:bin/helper.sh | { sha256sum 2>/dev/null || shasum -a 256; } \
+    | awk '{print $1}' > "$case_dir/cand"
+  mkdir -p "$case_dir/helper-consumers.d"
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=pinned' 'owner=other-mate' \
+    "helper=$root/bin/helper.sh" "accept=$accepted" > "$case_dir/helper-consumers.d/pinned.conf"
+  git -C "$case_dir/pr" rev-parse HEAD
+}
+
+# run_helper_candidate_merge <case-dir> <label> <pr-url> <head>: runs the merge
+# against the case's code root and asserts the notice ran before the forge
+# merge and recorded the candidate.
+run_helper_candidate_merge() {
+  local case_dir=$1 label=$2 url=$3 head=$4 rc cand record
+  set +e
+  FM_TEST_ROOT_OVERRIDE="$case_dir/code-root" FM_HELPER_CONSUMERS="$case_dir/helper-consumers.d" \
+    FM_HELPER_VERSIONS="$case_dir/helper-versions" \
+    run_pr_merge "$case_dir" task-x1 "$url" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "$label: fm-pr-merge should succeed"
+  cand=$(cat "$case_dir/cand")
+  record="$case_dir/helper-versions/helper.sh/$cand"
+  assert_grep "helper-candidate: bin/helper.sh@${cand:0:12} unaccepted by pinned; landing holds every home's update until they accept" \
+    "$case_dir/stderr" "$label: the notice is not printed"
+  assert_grep "$record/pending.json" "$case_dir/helper-versions-at-merge" \
+    "$label: the candidate record did not exist when the merge ran"
+  assert_equals "$head" "$(jq -r .candidate "$record/pending.json")" "$label: the record does not name the candidate head"
+  assert_equals "" "$(jq -r .landed_at "$record/pending.json")" "$label: the candidate record claims a landing time"
+}
+
+test_helper_candidate_is_noticed_before_the_merge() {
+  local case_dir head
+  case_dir=$(make_case helper-candidate)
+  head=$(helper_candidate_world "$case_dir" https://github.com/example/repo)
+  add_gh_mocks "$case_dir" "$head"
+  run_helper_candidate_merge "$case_dir" helper-candidate https://github.com/example/repo/pull/9 "$head"
+  assert_logged_gh_merge "$case_dir" 9 example/repo --squash
+  pass "a PR head changing a declared helper is noticed before the merge, which goes ahead unchanged"
+}
+
+test_gitlab_helper_candidate_is_noticed_before_the_merge() {
+  local case_dir head merge_line
+  case_dir=$(make_gitlab_case gitlab-helper-candidate)
+  head=$(helper_candidate_world "$case_dir" "$MR_PROJECT_URL")
+  write_mr_json "$case_dir/mr.json" head="$head" pipeline_sha="$head"
+  write_mr_json "$case_dir/mr-post.json" state=merged head="$head" pipeline_sha="$head"
+  run_helper_candidate_merge "$case_dir" gitlab-helper-candidate "$MR_URL" "$head"
+  merge_line=$(glab_merge_line "$case_dir/glab.log")
+  [ "$merge_line" = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $head --yes" ] \
+    || fail "gitlab-helper-candidate: unexpected merge invocation: '$merge_line'"
+  pass "a GitLab merge request head changing a declared helper is noticed before the merge, which goes ahead unchanged"
+}
+
+test_forgejo_helper_candidate_is_noticed_before_the_merge() {
+  local case_dir head merge_line
+  case_dir=$(make_forgejo_case forgejo-helper-candidate)
+  head=$(helper_candidate_world "$case_dir" "https://$FJ_HOST/$FJ_OWNER/$FJ_REPO")
+  write_forgejo_pr_json "$case_dir/pr.json" head="$head"
+  write_forgejo_pr_json "$case_dir/pr-post.json" state=closed mergeable=false merged=true head="$head"
+  printf '%s\n' "$head" > "$case_dir/tea-expected-head"
+  run_helper_candidate_merge "$case_dir" forgejo-helper-candidate "$FJ_URL" "$head"
+  merge_line=$(tea_merge_line "$case_dir/tea.log")
+  case "$merge_line" in
+    *"/repos/{owner}/{repo}/pulls/9/merge -f Do=merge -f head_commit_id=$head"*) : ;;
+    *) fail "forgejo-helper-candidate: unexpected merge invocation: '$merge_line'" ;;
+  esac
+  pass "a Forgejo pull request head changing a declared helper is noticed before the merge, which goes ahead unchanged"
+}
+
+# A notice that fails or hangs never holds the merge: it prints its one line and
+# the merge runs. A code root that is no checkout makes the notice exit 2; an
+# origin whose upload-pack hangs on its first call stalls the notice's fetch past
+# the shortened bound, and the later post-merge record fetches normally.
+test_failed_helper_candidate_notice_does_not_hold_the_merge() {
+  local case_dir rc
+  case_dir=$(make_case helper-candidate-failed)
+  add_gh_mocks "$case_dir" deadbeefcafefeed0000000000000000deadbeef
+  mkdir -p "$case_dir/not-a-checkout" "$case_dir/helper-consumers.d"
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=pinned' 'owner=other-mate' \
+    "helper=$case_dir/not-a-checkout/helper.sh" "accept=absent" > "$case_dir/helper-consumers.d/pinned.conf"
+  set +e
+  FM_TEST_ROOT_OVERRIDE="$case_dir/not-a-checkout" FM_HELPER_CONSUMERS="$case_dir/helper-consumers.d" \
+    FM_HELPER_VERSIONS="$case_dir/helper-versions" \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "helper-candidate-failed: fm-pr-merge should succeed"
+  assert_grep "helper-candidate: notice failed (exit 2); the merge goes ahead, and the post-merge record still runs" \
+    "$case_dir/stderr" "helper-candidate-failed: the failed notice is not reported"
+  assert_logged_gh_merge "$case_dir" 9 example/repo --squash
+  pass "a failed candidate-time notice is reported and the merge goes ahead"
+}
+
+test_hung_helper_candidate_notice_does_not_hold_the_merge() {
+  local case_dir head rc
+  case_dir=$(make_case helper-candidate-hung)
+  head=$(helper_candidate_world "$case_dir" https://github.com/example/repo)
+  add_gh_mocks "$case_dir" "$head"
+  cat > "$case_dir/upload-pack" <<'SH'
+#!/usr/bin/env bash
+# Hangs on the first call only; every later call serves normally.
+marker=${0%/*}/upload-pack-called
+if [ -e "$marker" ]; then exec git upload-pack "$@"; fi
+: > "$marker"
+exec sleep 60
+SH
+  chmod +x "$case_dir/upload-pack"
+  git -C "$case_dir/code-root" config remote.origin.uploadpack "$case_dir/upload-pack"
+  set +e
+  FM_TEST_ROOT_OVERRIDE="$case_dir/code-root" FM_HELPER_CONSUMERS="$case_dir/helper-consumers.d" \
+    FM_HELPER_VERSIONS="$case_dir/helper-versions" FM_TEST_HELPER_NOTICE_TIMEOUT=2 \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/9 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 0 "$rc" "helper-candidate-hung: fm-pr-merge should succeed"
+  [ -e "$case_dir/upload-pack-called" ] || fail "helper-candidate-hung: the notice never reached the hanging fetch"
+  assert_grep "helper-candidate: notice stopped after 2s; the merge goes ahead, and the post-merge record still runs" \
+    "$case_dir/stderr" "helper-candidate-hung: the stopped notice is not reported"
+  assert_no_grep "helper-candidate: bin/helper.sh@" "$case_dir/stderr" \
+    "helper-candidate-hung: the stopped notice still printed a notice line"
+  assert_logged_gh_merge "$case_dir" 9 example/repo --squash
+  pass "a hung candidate-time notice is stopped at its bound and the merge goes ahead"
 }
 
 # The forge call is the point of no return: once gh-axi has merged, nothing this
@@ -4495,6 +4657,11 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_gitlab_extra_args_forwarded \
   test_verified_merge_records_pr_and_head \
   test_merged_helper_change_is_recorded_for_its_consumers \
+  test_helper_candidate_is_noticed_before_the_merge \
+  test_gitlab_helper_candidate_is_noticed_before_the_merge \
+  test_forgejo_helper_candidate_is_noticed_before_the_merge \
+  test_failed_helper_candidate_notice_does_not_hold_the_merge \
+  test_hung_helper_candidate_notice_does_not_hold_the_merge \
   test_late_finishing_old_cancellation_is_superseded \
   test_required_checks_reported_and_green_merge \
   test_github_plan_gated_403_reads_as_no_queue \

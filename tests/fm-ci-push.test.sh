@@ -22,6 +22,8 @@
 #     all infra, refuses otherwise or without a classifier, refuses while the
 #     run is going, and raises a blocked line for a job that already reran.
 #   - Unreadable or failed gh output refuses; every gh call names the repo.
+#   - land prints and logs the candidate-time consumer notice before the push
+#     and is otherwise unchanged; the landed record is the notice's directory.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -93,7 +95,7 @@ new_case() {
   BARE="$C/origin.git"
   HOMEDIR="$C/home"
   GHD="$C/gh"
-  mkdir -p "$HOMEDIR/state" "$HOMEDIR/config" "$GHD"
+  mkdir -p "$HOMEDIR/state" "$HOMEDIR/config" "$GHD" "$C/decl"
   : >"$HOMEDIR/state/$T.status"
   printf '{"workflow_runs": []}\n' >"$GHD/runs.json"
   RUN_CLOCK=0
@@ -133,6 +135,7 @@ add_run() {
 run_push() {  # <args...>: sets RC, OUT, ERR
   local rc=0
   (cd "$WORK" && PATH="$FAKEBIN:$PATH" FAKE_GH_DIR="$GHD" FM_HOME="$HOMEDIR" \
+    FM_HELPER_CONSUMERS="$C/decl" FM_HELPER_VERSIONS="$C/versions" \
     "$PUSH" "$@" --repo "$REPO") >"$C/out" 2>"$C/err" || rc=$?
   RC=$rc
   OUT=$(cat "$C/out")
@@ -595,3 +598,150 @@ expect_code 1 "$RC" "unreadable run output refuses"
 assert_contains "$ERR" "unreadable gh output" "the unreadable run is named"
 assert_absent "$GHD/reruns.log" "nothing is rerun"
 pass "rerun-infra refuses an unreadable run"
+
+# --- candidate-time consumer notice ---------------------------------------------
+
+sha256_of() {  # <file>
+  { sha256sum 2>/dev/null || shasum -a 256; } <"$1" | awk '{print $1}'
+}
+
+# helper_case: main carries a fixture bin/fm-disk-room.sh, $C/other is a main
+# checkout of it, and the task head changes it; nothing is declared yet.
+helper_case() {
+  new_case
+  mkdir -p "$C/other/bin"
+  printf 'echo room v1\n' >"$C/other/bin/fm-disk-room.sh"
+  git -C "$C/other" add bin/fm-disk-room.sh
+  git -C "$C/other" commit -q -m "main: fixture helper"
+  git -C "$C/other" push -q origin HEAD:main
+  git -C "$WORK" fetch -q origin
+  git -C "$WORK" reset -q --hard origin/main
+  mkdir -p "$WORK/bin"
+  commit_file bin/fm-disk-room.sh 'echo room v2' "task: change the fixture helper"
+}
+
+declare_disk_room() {
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=pinned' 'owner=other-mate' \
+    "helper=$C/other/bin/fm-disk-room.sh" "accept=$(sha256_of "$C/other/bin/fm-disk-room.sh")" >"$C/decl/pinned.conf"
+}
+
+helper_case
+run_push land "$T"
+expect_code 0 "$RC" "land with no declarations"
+BASE_OUT=$OUT BASE_ERR=$ERR
+assert_not_contains "$OUT" "helper-candidate" "land with no declarations prints no notice"
+assert_absent "$C/versions" "land with no declarations writes no record"
+git -C "$WORK" push -q origin ":refs/heads/ci/$T"
+declare_disk_room
+run_push land "$T"
+expect_code 0 "$RC" "land with an unaccepted helper change still pushes"
+NEW_SHA=$(sha256_of "$WORK/bin/fm-disk-room.sh")
+NOTICE="helper-candidate: bin/fm-disk-room.sh@${NEW_SHA:0:12} unaccepted by pinned; landing holds every home's update until they accept"
+assert_equals "$NOTICE"$'\n'"$BASE_OUT" "$OUT" "land output is the notice followed by the unchanged output"
+assert_equals "$BASE_ERR" "$ERR" "land stderr is unchanged"
+assert_equals "$(head_sha)" "$(remote_sha "ci/$T")" "the head is pushed"
+pass "land output and exit are unchanged apart from the candidate notice"
+
+# Acceptance: the notice comes before the push, and the post-landing record is
+# the directory the notice wrote.
+helper_case
+declare_disk_room
+run_push land "$T"
+expect_code 0 "$RC" "the fixture ship lands on its ci branch"
+NEW_SHA=$(sha256_of "$WORK/bin/fm-disk-room.sh")
+RECORD="$C/versions/fm-disk-room.sh/$NEW_SHA"
+assert_equals "$(head_sha)" "$(jq -r .candidate "$RECORD/pending.json")" "the notice recorded the candidate head"
+assert_equals "" "$(jq -r .landed_at "$RECORD/pending.json")" "the candidate record has no landing time"
+NOTICE_AT=$(grep -n -F "land helper-candidate: bin/fm-disk-room.sh@${NEW_SHA:0:12} unaccepted by pinned" "$HOMEDIR/state/$T.ci-push.log" | cut -d: -f1)
+PUSH_AT=$(grep -n -F "land pushed $(head_sha) to ci/$T" "$HOMEDIR/state/$T.ci-push.log" | cut -d: -f1)
+[ -n "$NOTICE_AT" ] || fail "the notice is not logged"
+[ -n "$PUSH_AT" ] || fail "the push is not logged"
+[ "$NOTICE_AT" -lt "$PUSH_AT" ] || fail "the notice is logged after the push"
+git -C "$WORK" push -q origin HEAD:main
+POST=$(cd "$WORK" && FM_HOME="$HOMEDIR" FM_HELPER_CONSUMERS="$C/decl" FM_HELPER_VERSIONS="$C/versions" \
+  "$ROOT/bin/fm-helper-consumers.sh" pending --repo "$WORK" HEAD)
+assert_equals "helper-pending: bin/fm-disk-room.sh landed at $(head_sha | cut -c1-12); record $RECORD filled in" "$POST" \
+  "the post-landing run fills in the notice's record"
+assert_equals "1" "$(find "$C/versions" -name pending.json | wc -l | tr -d ' ')" "the post-landing record is the same directory"
+[ -f "$RECORD/note-filed" ] || fail "the post-landing record lost its note-filed marker"
+pass "a fixture ship touching bin/fm-disk-room.sh gets the notice before its push, and lands into the same record"
+
+# land --rebased-from runs the same notice right before its verdict, and its
+# output and exit are otherwise unchanged.
+helper_case
+TESTED=$(head_sha)
+add_run 211 "ci/$T" "$TESTED" completed success
+advance_main b.txt
+git -C "$WORK" rebase -q origin/main
+add_run 212 main "$(git -C "$WORK" rev-parse origin/main)" completed success
+run_push land "$T" --rebased-from "$TESTED"
+expect_code 0 "$RC" "--rebased-from with no declarations"
+BASE_OUT=$OUT BASE_ERR=$ERR
+declare_disk_room
+run_push land "$T" --rebased-from "$TESTED"
+expect_code 0 "$RC" "--rebased-from with an unaccepted helper change is still allowed"
+NEW_SHA=$(sha256_of "$WORK/bin/fm-disk-room.sh")
+NOTICE="helper-candidate: bin/fm-disk-room.sh@${NEW_SHA:0:12} unaccepted by pinned; landing holds every home's update until they accept"
+assert_equals "$(printf '%s\n' "$BASE_OUT" | sed '$d')"$'\n'"$NOTICE"$'\n'"$(printf '%s\n' "$BASE_OUT" | tail -n 1)" "$OUT" \
+  "--rebased-from output is the unchanged output with the notice before its verdict"
+assert_equals "$BASE_ERR" "$ERR" "--rebased-from stderr is unchanged"
+assert_grep "land $NOTICE" "$HOMEDIR/state/$T.ci-push.log" "--rebased-from logs the notice"
+assert_equals "" "$(remote_sha "ci/$T")" "--rebased-from still pushes nothing"
+pass "land --rebased-from prints and logs the candidate notice and is otherwise unchanged"
+
+# A notice run that fails or hangs still changes neither land's nor land
+# --rebased-from's exit: a copy of this script beside a consumers stub.
+FAILED_LINE="helper-candidate: notice failed (exit 2); the landing goes ahead, and the post-landing record still runs"
+STUBBIN="$TMP_ROOT/stubbin"
+mkdir -p "$STUBBIN"
+cp "$ROOT/bin/fm-ci-push.sh" "$ROOT/bin/fm-pr-lib.sh" "$ROOT/bin/fm-timeout-lib.sh" "$STUBBIN/"
+printf '%s\n' '#!/usr/bin/env bash' "echo 'fm-helper-consumers: stub failure' >&2" 'exit 2' \
+  >"$STUBBIN/fm-helper-consumers.sh"
+chmod +x "$STUBBIN/fm-helper-consumers.sh"
+REAL_PUSH=$PUSH
+helper_case
+run_push land "$T"
+expect_code 0 "$RC" "land with no declarations"
+BASE_OUT=$OUT BASE_ERR=$ERR
+git -C "$WORK" push -q origin ":refs/heads/ci/$T"
+PUSH="$STUBBIN/fm-ci-push.sh"
+run_push land "$T"
+PUSH=$REAL_PUSH
+expect_code 0 "$RC" "land with a failing notice run still pushes"
+assert_equals "fm-helper-consumers: stub failure"$'\n'"$FAILED_LINE"$'\n'"$BASE_OUT" "$OUT" \
+  "land output is the failure lines followed by the unchanged output"
+assert_equals "$BASE_ERR" "$ERR" "land stderr is unchanged by a failing notice run"
+assert_equals "$(head_sha)" "$(remote_sha "ci/$T")" "the head is pushed despite the failing notice run"
+helper_case
+TESTED=$(head_sha)
+add_run 221 "ci/$T" "$TESTED" completed success
+advance_main b.txt
+git -C "$WORK" rebase -q origin/main
+add_run 222 main "$(git -C "$WORK" rev-parse origin/main)" completed success
+run_push land "$T" --rebased-from "$TESTED"
+expect_code 0 "$RC" "--rebased-from with no declarations"
+BASE_OUT=$OUT BASE_ERR=$ERR
+PUSH="$STUBBIN/fm-ci-push.sh"
+run_push land "$T" --rebased-from "$TESTED"
+PUSH=$REAL_PUSH
+expect_code 0 "$RC" "--rebased-from with a failing notice run is still allowed"
+assert_equals "$(printf '%s\n' "$BASE_OUT" | sed '$d')"$'\n'"fm-helper-consumers: stub failure"$'\n'"$FAILED_LINE"$'\n'"$(printf '%s\n' "$BASE_OUT" | tail -n 1)" "$OUT" \
+  "--rebased-from output is the unchanged output with the failure lines before its verdict"
+assert_equals "$BASE_ERR" "$ERR" "--rebased-from stderr is unchanged by a failing notice run"
+printf '%s\n' '#!/usr/bin/env bash' 'sleep 30' >"$STUBBIN/fm-helper-consumers.sh"
+helper_case
+run_push land "$T"
+expect_code 0 "$RC" "land with no declarations"
+BASE_OUT=$OUT BASE_ERR=$ERR
+git -C "$WORK" push -q origin ":refs/heads/ci/$T"
+PUSH="$STUBBIN/fm-ci-push.sh"
+export FM_TEST_HELPER_NOTICE_TIMEOUT=1
+run_push land "$T"
+unset FM_TEST_HELPER_NOTICE_TIMEOUT
+PUSH=$REAL_PUSH
+expect_code 0 "$RC" "land with a hung notice run still pushes"
+assert_equals "helper-candidate: notice stopped after 1s; the landing goes ahead, and the post-landing record still runs"$'\n'"$BASE_OUT" "$OUT" \
+  "land output is the stop line followed by the unchanged output"
+assert_equals "$BASE_ERR" "$ERR" "land stderr is unchanged by a hung notice run"
+assert_equals "$(head_sha)" "$(remote_sha "ci/$T")" "the head is pushed despite the hung notice run"
+pass "a failing or hung notice run changes neither land's nor land --rebased-from's exit"

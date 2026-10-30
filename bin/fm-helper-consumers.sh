@@ -10,6 +10,7 @@
 #   fm-helper-consumers.sh list
 #   fm-helper-consumers.sh check-advance [--allow-break <consumer>]... <checkout> <target-rev>
 #   fm-helper-consumers.sh pending [--repo <dir>] [--fetch] [--if-repo <host>/<path>] [<rev> | <from>..<to>]
+#   fm-helper-consumers.sh pending [--repo <dir>] [--fetch] [--if-repo <host>/<path>] --candidate <rev>
 #
 # Declarations are read from FM_HELPER_CONSUMERS, default
 # ${XDG_CONFIG_HOME:-$HOME/.config}/firstmate/helper-consumers.d, one
@@ -52,16 +53,39 @@
 #   <helper basename>/<sha256>/<basename>     read-only copy of those exact bytes,
 #                                             the review artefact; consumers never run it
 #   <helper basename>/<sha256>/note-filed     written once the note below is filed
+#   <helper basename>/<sha256>/evidence/      optional files listed in the note,
+#                                             read when the note is filed
+#   <helper basename>/retired/<sha256>[.<epoch>]/  a withdrawn candidate record,
+#                                             with withdrawn-note-filed once noted
 # and files one fm-inbox.sh note per version to the root home of FM_HOME
-# (request id helper-pending-<basename>-<sha12>, so a retry never duplicates it).
+# (request id helper-pending-<basename>-<sha12>, with -r<n> after n withdrawals
+# of that version, so a retry never duplicates it).
 # A declared helper counts when its checkout is the same project as --repo
 # (default: this script's own checkout): the same git common directory or the
 # same origin URL. With <from>..<to>, only helpers whose bytes differ between
 # the two revisions are considered. --if-repo exits quietly unless --repo's
 # origin is that forge host and path (fm-pr-merge.sh passes the merged PR's);
-# --fetch fetches --repo's origin first and continues on a failed fetch. Every
-# failure after the declarations are read is reported and exits 0, because the
-# landing that called it has already happened; a usage error exits 2.
+# --fetch fetches --repo's origin first and continues on a failed fetch.
+#
+# --candidate <rev> is the same pass for a landing candidate before it lands
+# (fm-ci-push.sh land and fm-pr-merge.sh run it): it considers helpers whose
+# bytes differ between <rev> and its merge base with the origin default branch,
+# writes a new record with "candidate" set to <rev>'s commit and landed_at
+# empty, files the note once, and prints one line per unaccepted version:
+#   helper-candidate: <helper>@<sha12> unaccepted by <consumers>; landing holds every home's update until they accept
+# With --fetch, a <rev> missing locally is fetched from origin first. A landed
+# run (no --candidate) that meets a record with landed_at empty fills in commit
+# and landed_at in place, keeping the directory and its note-filed marker.
+#
+# Every pending run also retires candidate records of --repo's origin still
+# unlanded 14 days after recorded_at: after a fresh fetch, one whose version is
+# on the default branch is filled in instead; any other moves to retired/ and
+# files a "candidate withdrawn" note (request id
+# helper-candidate-withdrawn-<basename>-<sha12>[-<epoch>]), retried until filed.
+# FM_HELPER_CONSUMERS_NOW (epoch seconds) replaces the clock for that age.
+#
+# Every failure after the declarations are read is reported and exits 0,
+# because the landing that called it is never held by it; a usage error exits 2.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -69,9 +93,10 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 DECL_DIR="${FM_HELPER_CONSUMERS:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/firstmate/helper-consumers.d}"
 VERSIONS_DIR="${FM_HELPER_VERSIONS:-${XDG_STATE_HOME:-${HOME:-}/.local/state}/firstmate/helper-versions}"
 TAB=$(printf '\t')
+RETIRE_DAYS=14
 
 usage() {
-  sed -n '2,64p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,88p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() { printf 'fm-helper-consumers: %s\n' "$*" >&2; exit 2; }
@@ -382,41 +407,59 @@ commit_for_sha() {  # <repo> <rev> <rel> <sha>
   return 0
 }
 
-# File the one note per pending version to the root home of FM_HOME.
-file_note() {  # <record-dir> <request-id> <text>
-  local dir=$1 request=$2 text=$3 home root
+# File one note to the root home of FM_HOME and write <marker> once it is
+# filed; <quiet> 1 prints only a failure.
+file_note() {  # <label> <marker> <request-id> <text> <quiet>
+  local label=$1 marker=$2 request=$3 text=$4 quiet=$5 home root
   home=${FM_HOME:-}
-  [ -n "$home" ] || { printf 'helper-pending: note not filed: FM_HOME is not set\n'; return 1; }
+  [ -n "$home" ] || { printf '%s: note not filed: FM_HOME is not set\n' "$label"; return 1; }
   # A separate shell keeps the wake library's globals out of this script.
   # shellcheck disable=SC2016 # The inner shell expands its own arguments.
   root=$(env -u FM_STATE_OVERRIDE -u STATE FM_ROOT_OVERRIDE="$FM_ROOT" FM_HOME="$home" \
     bash -c '. "$1/fm-wake-lib.sh" >/dev/null 2>&1 || exit 1; fm_firstmate_root_home "$2"' \
-    fm-helper-consumers "$SCRIPT_DIR" "$home") || { printf 'helper-pending: note not filed: cannot resolve the root home of %s\n' "$home"; return 1; }
+    fm-helper-consumers "$SCRIPT_DIR" "$home") || { printf '%s: note not filed: cannot resolve the root home of %s\n' "$label" "$home"; return 1; }
   if env -u FM_STATE_OVERRIDE -u FM_DATA_OVERRIDE -u FM_CONFIG_OVERRIDE FM_HOME="$root" \
       "$SCRIPT_DIR/fm-inbox.sh" note --request-id "$request" -- "$text" >/dev/null 2>&1; then
-    : > "$dir/note-filed"
-    printf 'helper-pending: note filed to %s\n' "$root"
+    : > "$marker"
+    [ "$quiet" = 1 ] || printf '%s: note filed to %s\n' "$label" "$root"
     return 0
   fi
-  printf 'helper-pending: note not filed to %s; the next pending run retries it\n' "$root"
+  printf '%s: note not filed to %s; the next pending run retries it\n' "$label" "$root"
   return 1
 }
 
+# The origin default branch of <repo> (origin/HEAD, else origin/main or
+# origin/master), or nothing when it has none.
+default_branch() {  # <repo>
+  local d
+  d=$(git -C "$1" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || d=""
+  if [ -n "$d" ]; then
+    printf '%s\n' "$d"
+    return 0
+  fi
+  for d in origin/main origin/master; do
+    git -C "$1" rev-parse --verify --quiet "$d^{commit}" >/dev/null && { printf '%s\n' "$d"; return 0; }
+  done
+  return 0
+}
+
 cmd_pending() {
-  local repo=$FM_ROOT fetch=0 if_repo="" spec="" from="" to default url
+  local repo=$FM_ROOT fetch=0 if_repo="" spec="" from="" to default url candidate="" mode=landed
   local file helper canon htop rel tgt from_sha lines="" line key seen=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --repo) [ -n "${2:-}" ] || die "--repo needs a directory"; repo=$2; shift 2 ;;
       --fetch) fetch=1; shift ;;
       --if-repo) [ -n "${2:-}" ] || die "--if-repo needs <host>/<path>"; if_repo=$2; shift 2 ;;
+      --candidate) [ -n "${2:-}" ] || die "--candidate needs a revision"; candidate=$2; mode=candidate; shift 2 ;;
       --) shift; break ;;
       -*) die "unknown option $1" ;;
       *) break ;;
     esac
   done
-  [ $# -le 1 ] || die "usage: pending [--repo <dir>] [--fetch] [--if-repo <host>/<path>] [<rev> | <from>..<to>]"
+  [ $# -le 1 ] || die "usage: pending [--repo <dir>] [--fetch] [--if-repo <host>/<path>] [--candidate <rev> | <rev> | <from>..<to>]"
   spec=${1:-}
+  [ -z "$candidate" ] || [ -z "$spec" ] || die "--candidate takes no <rev> or range"
   [ -n "$(declarations)" ] || return 0
   git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || die "not a git checkout: $repo"
 
@@ -425,28 +468,35 @@ cmd_pending() {
     [ "$(normalize_remote "$url")" = "$(normalize_remote "$if_repo")" ] || return 0
   fi
   if [ "$fetch" = 1 ] && ! git -C "$repo" fetch origin --quiet 2>/dev/null; then
-    printf 'helper-pending: fetch from origin failed; checking the last fetched state\n'
+    printf 'helper-%s: fetch from origin failed; checking the last fetched state\n' "$mode"
   fi
-  if [ -z "$spec" ]; then
-    default=$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || default=""
-    if [ -z "$default" ]; then
-      for default in origin/main origin/master ''; do
-        [ -n "$default" ] || break
-        git -C "$repo" rev-parse --verify --quiet "$default^{commit}" >/dev/null && break
-      done
+  default=$(default_branch "$repo")
+  if [ -n "$candidate" ]; then
+    [ -n "$default" ] || { printf 'helper-candidate: skipped: no origin default branch in %s\n' "$repo"; return 0; }
+    if [ "$fetch" = 1 ] && ! git -C "$repo" rev-parse --verify --quiet "$candidate^{commit}" >/dev/null; then
+      git -C "$repo" fetch origin --quiet "$candidate" 2>/dev/null || true
     fi
-    [ -n "$default" ] || { printf 'helper-pending: skipped: no origin default branch in %s\n' "$repo"; return 0; }
-    spec=$default
-  fi
-  case "$spec" in
-    *..*) from=${spec%%..*}; to=${spec#*..} ;;
-    *) to=$spec ;;
-  esac
-  to=$(git -C "$repo" rev-parse --verify --quiet "$to^{commit}") \
-    || { printf 'helper-pending: skipped: unknown revision %s\n' "$spec"; return 0; }
-  if [ -n "$from" ]; then
-    from=$(git -C "$repo" rev-parse --verify --quiet "$from^{commit}") \
+    to=$(git -C "$repo" rev-parse --verify --quiet "$candidate^{commit}") \
+      || { printf 'helper-candidate: skipped: unknown revision %s\n' "$candidate"; return 0; }
+    # Against the merge base, so a candidate behind the default branch is not
+    # taken to change a helper the default branch changed after it.
+    from=$(git -C "$repo" merge-base "$default" "$to" 2>/dev/null) \
+      || { printf 'helper-candidate: skipped: %s shares no history with %s\n' "$candidate" "$default"; return 0; }
+  else
+    if [ -z "$spec" ]; then
+      [ -n "$default" ] || { printf 'helper-pending: skipped: no origin default branch in %s\n' "$repo"; return 0; }
+      spec=$default
+    fi
+    case "$spec" in
+      *..*) from=${spec%%..*}; to=${spec#*..} ;;
+      *) to=$spec ;;
+    esac
+    to=$(git -C "$repo" rev-parse --verify --quiet "$to^{commit}") \
       || { printf 'helper-pending: skipped: unknown revision %s\n' "$spec"; return 0; }
+    if [ -n "$from" ]; then
+      from=$(git -C "$repo" rev-parse --verify --quiet "$from^{commit}") \
+        || { printf 'helper-pending: skipped: unknown revision %s\n' "$spec"; return 0; }
+    fi
   fi
 
   # One line per helper version some consumer does not accept:
@@ -477,19 +527,57 @@ cmd_pending() {
     case "$seen" in *"|$key|"*) continue ;; esac
     seen="$seen|$key|"
     record_version "$repo" "$to" "$(printf '%s' "$key" | cut -f1)" "$(printf '%s' "$key" | cut -f2)" \
-      "$(printf '%s' "$lines" | awk -F '\t' -v k="$key" '($1 FS $2) == k')"
+      "$(printf '%s' "$lines" | awk -F '\t' -v k="$key" '($1 FS $2) == k')" "$mode"
   done <<< "$lines"
+  sweep_candidates "$repo" "$default" "$seen"
   return 0
 }
 
+# How many retired records <parent>/retired/ holds for <sha>; a version that
+# comes back after a withdrawal files its note under a new request id.
+retired_count() {  # <parent> <sha>
+  local n=0 d
+  for d in "$1/retired/$2" "$1/retired/$2".*; do
+    [ -d "$d" ] && n=$((n + 1))
+  done
+  printf '%s\n' "$n"
+}
+
+# The note's optional evidence field, set in EVIDENCE: every regular file
+# directly in <record-dir>/evidence/ when the note is filed, as
+# " Evidence: <path>[; <path>]..."; docs/helper-consumers.md owns the format.
+evidence_field() {  # <record-dir>
+  local f name LC_ALL=C  # name order is byte order whatever the caller's locale
+  EVIDENCE=""
+  if [ -e "$1/evidence" ] && [ ! -d "$1/evidence" ]; then
+    printf 'helper-pending: %s is not a directory; the note carries no evidence\n' "$1/evidence"
+    return 0
+  fi
+  for f in "$1"/evidence/*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    name=${f##*/}
+    case "$name" in
+      *[!A-Za-z0-9._-]*) printf 'helper-pending: evidence %s left out of the note: its name is not [A-Za-z0-9._-]\n' "$f"; continue ;;
+    esac
+    if [ -L "$f" ] || [ ! -f "$f" ]; then
+      printf 'helper-pending: evidence %s left out of the note: not a regular file\n' "$f"
+      continue
+    fi
+    EVIDENCE="$EVIDENCE${EVIDENCE:+; }$f"
+  done
+  [ -z "$EVIDENCE" ] || EVIDENCE=" Evidence: $EVIDENCE"
+}
+
 # Write one version's record and artefact if absent, then file its note if not
-# yet filed. <consumer-lines> are this version's rows from cmd_pending.
-record_version() {  # <repo> <commit> <rel> <sha> <consumer-lines>
-  local repo=$1 commit=$2 rel=$3 sha=$4 rows=$5 base dir parent tmp landed origin
-  local consumers="" owners="" c o path acc acc_json a since stat first=1 text
+# yet filed. <consumer-lines> are this version's rows from cmd_pending. A
+# candidate record has landed_at empty until a landed run fills it in place.
+record_version() {  # <repo> <commit> <rel> <sha> <consumer-lines> <landed|candidate>
+  local repo=$1 commit=$2 rel=$3 sha=$4 rows=$5 mode=$6 base dir parent tmp landed="" cand="" origin
+  local consumers="" owners="" c o path acc acc_json a since stat first=1 text sha12 n request quiet=0
   base=$(basename -- "$rel")
   parent="$VERSIONS_DIR/$base"
   dir="$parent/$sha"
+  sha12=$(printf '%s' "$sha" | cut -c1-12)
   while IFS="$TAB" read -r _ _ c o path acc; do
     consumers="$consumers${consumers:+,}$c"
     case ",$owners," in *",$o,"*) ;; *) owners="$owners${owners:+,}$o" ;; esac
@@ -498,7 +586,11 @@ record_version() {  # <repo> <commit> <rel> <sha> <consumer-lines>
   if [ ! -f "$dir/pending.json" ]; then
     mkdir -p "$parent" || { printf 'helper-pending: cannot create %s\n' "$parent"; return 0; }
     tmp=$(mktemp -d "$parent/.pending.XXXXXX") || { printf 'helper-pending: cannot stage a record in %s\n' "$parent"; return 0; }
-    landed=$(git -C "$repo" log -1 --format=%cI "$commit" -- "$rel" 2>/dev/null)
+    if [ "$mode" = candidate ]; then
+      cand=$commit
+    else
+      landed=$(git -C "$repo" log -1 --format=%cI "$commit" -- "$rel" 2>/dev/null)
+    fi
     origin=$(origin_url "$repo") || origin=$repo
     if ! {
       printf '{\n'
@@ -506,6 +598,7 @@ record_version() {  # <repo> <commit> <rel> <sha> <consumer-lines>
       printf '  "helper": %s,\n' "$(json_str "$rel")"
       printf '  "sha256": "%s",\n' "$sha"
       printf '  "commit": "%s",\n' "$commit"
+      printf '  "candidate": "%s",\n' "$cand"
       printf '  "repo": %s,\n' "$(json_str "$origin")"
       printf '  "landed_at": %s,\n' "$(json_str "$landed")"
       printf '  "recorded_at": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -531,19 +624,130 @@ record_version() {  # <repo> <commit> <rel> <sha> <consumer-lines>
       || ! chmod 444 "$tmp/$base" "$tmp/pending.json"; then
       rm -rf -- "$tmp"
       printf 'helper-pending: cannot write the record for %s %s\n' "$rel" "$sha"
-      return 0
-    fi
-    if [ ! -e "$dir" ] && mv -- "$tmp" "$dir"; then
-      printf 'helper-pending: %s version %s recorded at %s, awaiting %s\n' "$rel" "$(printf '%s' "$sha" | cut -c1-12)" "$dir" "$consumers"
+    elif { [ ! -e "$dir" ] && mv -- "$tmp" "$dir"; } \
+      || { [ -d "$dir" ] && [ ! -L "$dir" ] && [ ! -e "$dir/pending.json" ] \
+        && mv -f -- "$tmp/$base" "$dir/$base" && mv -- "$tmp/pending.json" "$dir/pending.json" && rmdir -- "$tmp"; }; then
+      # The second form fills a directory a producer made early for evidence/.
+      [ "$mode" = candidate ] \
+        || printf 'helper-pending: %s version %s recorded at %s, awaiting %s\n' "$rel" "$sha12" "$dir" "$consumers"
     else
       rm -rf -- "$tmp"
     fi
+  elif [ "$mode" = landed ]; then
+    fill_landed "$repo" "$dir" "$commit" "$rel"
   fi
-  [ -f "$dir/pending.json" ] || return 0
-  [ ! -e "$dir/note-filed" ] || return 0
-  text="Firstmate helper $rel has a new version $(printf '%s' "$sha" | cut -c1-12) at commit $(printf '%s' "$commit" | cut -c1-12) that $consumers (owner $owners) has not accepted yet; /updatefirstmate holds it until they accept it. Review artefact: $dir/$base. Route this to $owners for review."
-  file_note "$dir" "helper-pending-$base-$(printf '%s' "$sha" | cut -c1-12)" "$text" || true
+  if [ -f "$dir/pending.json" ] && [ ! -e "$dir/note-filed" ]; then
+    n=$(retired_count "$parent" "$sha")
+    request="helper-pending-$base-$sha12"
+    [ "$n" = 0 ] || request="$request-r$n"
+    evidence_field "$dir"
+    if [ "$mode" = candidate ]; then
+      text="Firstmate helper $rel has a landing candidate $sha12 at commit $(printf '%s' "$commit" | cut -c1-12) that $consumers (owner $owners) has not accepted yet; once it lands, /updatefirstmate holds every home's update until they accept it. Review artefact: $dir/$base. Route this to $owners for review.$EVIDENCE"
+    else
+      text="Firstmate helper $rel has a new version $sha12 at commit $(printf '%s' "$commit" | cut -c1-12) that $consumers (owner $owners) has not accepted yet; /updatefirstmate holds it until they accept it. Review artefact: $dir/$base. Route this to $owners for review.$EVIDENCE"
+    fi
+    [ "$mode" = landed ] || quiet=1
+    file_note helper-pending "$dir/note-filed" "$request" "$text" "$quiet" || true
+  fi
+  if [ "$mode" = candidate ]; then
+    printf "helper-candidate: %s@%s unaccepted by %s; landing holds every home's update until they accept\n" "$rel" "$sha12" "$consumers"
+  fi
   return 0
+}
+
+# Fill a record's empty landed_at once its version is on the default branch,
+# in place: the same directory, candidate field and note-filed marker.
+fill_landed() {  # <repo> <record-dir> <commit> <rel>
+  local repo=$1 dir=$2 commit=$3 rel=$4 was landed tmp
+  was=$(jq -r 'if (.landed_at | type) == "string" then .landed_at else error("no landed_at") end' \
+    "$dir/pending.json" 2>/dev/null) \
+    || { printf 'helper-pending: cannot read %s; left as it is\n' "$dir/pending.json"; return 0; }
+  [ -z "$was" ] || return 0
+  landed=$(git -C "$repo" log -1 --format=%cI "$commit" -- "$rel" 2>/dev/null)
+  [ -n "$landed" ] || { printf 'helper-pending: cannot date %s at %s; %s left as it is\n' "$rel" "$commit" "$dir/pending.json"; return 0; }
+  tmp=$(mktemp "$dir/.pending.json.XXXXXX") || { printf 'helper-pending: cannot stage a fill-in in %s\n' "$dir"; return 0; }
+  if jq --arg c "$commit" --arg l "$landed" '.commit = $c | .landed_at = $l' "$dir/pending.json" > "$tmp" 2>/dev/null \
+      && chmod 444 "$tmp" && mv -f -- "$tmp" "$dir/pending.json"; then
+    printf 'helper-pending: %s landed at %s; record %s filled in\n' "$rel" "$(printf '%s' "$commit" | cut -c1-12)" "$dir"
+  else
+    rm -f -- "$tmp"
+    printf 'helper-pending: cannot fill in %s; left as it is\n' "$dir/pending.json"
+  fi
+}
+
+# Retire every candidate record of this repository still unlanded
+# RETIRE_DAYS after it was recorded, unless its version is on the default
+# branch after a fresh fetch (then fill it in instead), and file or retry the
+# withdrawn note of every retired record. <skip> holds this run's |rel\tsha| keys.
+sweep_candidates() {  # <repo> <default> <skip>
+  local repo=$1 default=$2 skip=$3 here now f dir parent rec cand landed epoch rrepo rel sha fetched=0 found dest
+  here=$(origin_url "$repo") || here=""
+  [ -n "$here" ] || here=$repo
+  here=$(normalize_remote "$here")
+  now=${FM_HELPER_CONSUMERS_NOW:-$(date +%s)}
+  case "$now" in
+    ''|*[!0-9]*) printf 'helper-candidate: retirement skipped: FM_HELPER_CONSUMERS_NOW is not epoch seconds\n'; return 0 ;;
+  esac
+  for f in "$VERSIONS_DIR"/*/*/pending.json; do
+    [ -f "$f" ] || continue
+    rec=$(jq -r '[(.candidate // ""), .landed_at, (.recorded_at | try fromdateiso8601 catch ""), .repo, .helper, .sha256]
+      | map(tostring) | join("\u001f")' "$f" 2>/dev/null) \
+      || { printf 'helper-candidate: cannot read %s\n' "$f"; continue; }
+    IFS=$'\037' read -r cand landed epoch rrepo rel sha <<< "$rec"
+    [ -n "$cand" ] && [ -z "$landed" ] || continue
+    [ "$(normalize_remote "$rrepo")" = "$here" ] || continue
+    case "$skip" in *"|$rel$TAB$sha|"*) continue ;; esac
+    case "$epoch" in
+      ''|*[!0-9]*) printf 'helper-candidate: cannot read recorded_at in %s\n' "$f"; continue ;;
+    esac
+    [ $((now - epoch)) -ge $((RETIRE_DAYS * 86400)) ] || continue
+    if [ -z "$default" ]; then
+      printf 'helper-candidate: retirement of %s@%s skipped: no origin default branch in %s\n' "$rel" "${sha:0:12}" "$repo"
+      continue
+    fi
+    if [ "$fetched" = 0 ]; then
+      fetched=2
+      git -C "$repo" fetch origin --quiet 2>/dev/null && fetched=1
+    fi
+    if [ "$fetched" != 1 ]; then
+      printf 'helper-candidate: retirement of %s@%s skipped: fetch from origin failed\n' "$rel" "${sha:0:12}"
+      continue
+    fi
+    dir=${f%/pending.json}
+    found=$(commit_for_sha "$repo" "$default" "$rel" "$sha")
+    if [ -n "$found" ]; then
+      fill_landed "$repo" "$dir" "$found" "$rel"
+      continue
+    fi
+    parent=${dir%/*}
+    dest="$parent/retired/$sha"
+    [ ! -e "$dest" ] || dest="$dest.$now"
+    if mkdir -p "$parent/retired" && [ ! -e "$dest" ] && mv -- "$dir" "$dest"; then
+      printf 'helper-candidate: %s@%s withdrawn: not on %s %s days after its notice; record moved to %s\n' \
+        "$rel" "${sha:0:12}" "$default" "$RETIRE_DAYS" "$dest"
+    else
+      printf 'helper-candidate: cannot move %s to %s; the next pending run retries it\n' "$dir" "$dest"
+    fi
+  done
+  for dir in "$VERSIONS_DIR"/*/retired/*/; do
+    dir=${dir%/}
+    [ -f "$dir/pending.json" ] && [ ! -e "$dir/withdrawn-note-filed" ] || continue
+    withdrawn_note "$dir"
+  done
+}
+
+# File the "candidate withdrawn" note of one retired record.
+withdrawn_note() {  # <retired-dir>
+  local dir=$1 rec rel sha cand owners base name suffix=""
+  rec=$(jq -r '[.helper, .sha256, (.candidate // ""), ([.consumers[]?.owner] | unique | join(","))]
+    | map(tostring) | join("\u001f")' "$dir/pending.json" 2>/dev/null) \
+    || { printf 'helper-candidate: cannot read %s; its withdrawn note is not filed\n' "$dir/pending.json"; return 0; }
+  IFS=$'\037' read -r rel sha cand owners <<< "$rec"
+  base=$(basename -- "$rel")
+  name=${dir##*/}
+  case "$name" in *.*) suffix="-${name#*.}" ;; esac
+  file_note helper-candidate "$dir/withdrawn-note-filed" "helper-candidate-withdrawn-$base-${sha:0:12}$suffix" \
+    "Firstmate helper $rel landing candidate ${sha:0:12} (commit ${cand:0:12}) did not reach the default branch within $RETIRE_DAYS days of its notice, so it is withdrawn and needs no review now; a later candidate with these bytes files a new note. Record: $dir. Tell $owners." 0 || true
 }
 
 case "${1:-}" in

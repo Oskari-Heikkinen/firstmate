@@ -523,6 +523,8 @@ test_firstmate_direct_push_dod_verifies_on_ci() {
   assert_contains "$block" "Lean-Review:" "the Firstmate block does not name the lean-review receipt"
   assert_contains "$block" "FM_HOME='/fixture/home' bin/fm-helper-consumers.sh pending HEAD" \
     "the Firstmate block does not record a landed helper change for its declared consumers"
+  assert_contains "$block" "FM_HOME='/fixture/home' bin/fm-helper-consumers.sh pending --candidate HEAD" \
+    "the Firstmate block does not notice a landing candidate's helper change before its push"
   # ci/full/ appears only in the rule that forbids it outside its one exception.
   while IFS= read -r line; do
     case "$line" in
