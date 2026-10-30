@@ -772,6 +772,30 @@ test_step_blocked_on_one_live_child_is_stopped_by_watchdog() {
   pass "a step blocked on one child that never exits is stopped by the watcher's watchdog"
 }
 
+# The live failure (2026-10-29): the watchdog stopped a watcher wedged under
+# load, and its arm closed with "watcher cycle exited 143 without an
+# actionable reason", naming neither the signal nor its sender. The arm names
+# the stop from the note the watchdog leaves for that watcher.
+test_arm_names_a_watchdog_stop_of_its_watcher() {
+  local dir state armout status
+  dir=$(make_case arm-names-watchdog-stop)
+  state="$dir/state"
+  armout="$dir/arm.out"
+  register_slow_check "$dir" wedge 120
+  PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_HEARTBEAT=999999 \
+    FM_GUARD_GRACE="$LONG_CYCLE_GRACE" FM_WATCHER_WATCHDOG_INTERVAL=1 FM_CHECK_INTERVAL=1 FM_CHECK_TIMEOUT=600 \
+    "$WATCH_ARM" > "$armout" 2> "$dir/arm.err" &
+  status=0
+  wait_for_exit "$!" 600 || status=$?
+  kill -TERM "$(cat "$dir/check-wedge.pid" 2>/dev/null)" 2>/dev/null || true
+  [ "$status" -ne 0 ] || fail "the watchdog-stopped cycle closed clean: $(cat "$armout")"
+  assert_grep 'watcher: FAILED - the wedge watchdog stopped watcher pid ' "$armout"
+  assert_no_grep 'without an actionable reason' "$armout"
+  assert_grep 'reason=watchdog-wedged' "$state/.watch-cycle-exits.log"
+  [ ! -e "$state/.watch-watchdog-stop" ] || fail "the arm left the watchdog's stop note behind: $(cat "$state/.watch-watchdog-stop")"
+  pass "an arm whose watcher the wedge watchdog stopped names that stop"
+}
+
 test_watchdog_records_last_beat_and_blocking_descendants() {
   local dir state i=0 check_pid check_path check_group stop_line
   dir=$(make_case watchdog-step-evidence)
@@ -2625,6 +2649,7 @@ WATCHER_LOCK_CASES=(
   test_long_pending_reply_scan_keeps_beacon_fresh
   test_nonprogressing_status_parser_still_goes_stale
   test_step_blocked_on_one_live_child_is_stopped_by_watchdog
+  test_arm_names_a_watchdog_stop_of_its_watcher
   test_watchdog_records_last_beat_and_blocking_descendants
   test_watchdog_snapshot_is_bounded_and_cannot_delay_stop
   test_orphaned_pipe_read_is_stopped_by_watchdog

@@ -3395,6 +3395,20 @@ watcher_watchdog_record_stop() {  # <still> <cycle> <last-beat> <observer-pid>
   fi
   triage_log "watchdog: stopping wedged watcher pid $WATCHER_PID (beacon unchanged for ${still}s >= ${WATCHER_STALE_GRACE}s); cycle=${cycle:-unknown} last-beat=${step:-unavailable}; descendants-at-stop=[$descendants]"
 }
+# The arm that owns this watcher names the stop from this note
+# (bin/fm-watch-arm.sh watchdog_stop_note), so its close says what was
+# signalled and why rather than only an exit status. It is written just before
+# the TERM, so the arm finds it once the watcher has exited, as one builtin
+# write that skips anything but a regular file in its place and so cannot hold
+# up the stop.
+WATCHDOG_NOTE="$STATE/.watch-watchdog-stop"
+watcher_watchdog_note() {  # <still> <cycle> <last-beat>
+  local cycle=${2:-unknown} step=${3:-unavailable}
+  [ ! -L "$WATCHDOG_NOTE" ] && { [ ! -e "$WATCHDOG_NOTE" ] || [ -f "$WATCHDOG_NOTE" ]; } || return 0
+  printf 'pid=%s\tidentity=%s\tstill=%s\tgrace=%s\tcycle=%s\tlast-beat=%s\n' \
+    "$WATCHER_PID" "$FM_WATCHER_MATCHED_IDENTITY" "$1" "$WATCHER_STALE_GRACE" \
+    "${cycle//[$'\t\n']/ }" "${step//[$'\t\n']/ }" > "$WATCHDOG_NOTE" 2>/dev/null || true
+}
 watcher_watchdog_start() {
   (
     # BASHPID is absent in stock macOS bash 3.2. Exec in the substitution makes
@@ -3430,6 +3444,7 @@ watcher_watchdog_start() {
       [ "$still" -ge "$WATCHER_STALE_GRACE" ] || continue
       cycle='' step=''
       { IFS= read -r cycle; IFS= read -r step; } < "$STATE/.last-watcher-beat" 2>/dev/null || true
+      watcher_watchdog_note "$still" "$cycle" "$step"
       watcher_watchdog_record_stop "$still" "$cycle" "$step" "$observer_pid" &
       kill -TERM "$WATCHER_PID" 2>/dev/null || exit 0
       i=0

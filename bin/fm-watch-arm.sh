@@ -768,6 +768,21 @@ case "$launch_signal" in
   INT) handle_arm_signal INT 130 ;;
 esac
 
+# The wedge watchdog's note for this cycle's watcher (bin/fm-watch.sh
+# watcher_watchdog_note), consumed once it names that watcher by pid and
+# identity: sets WATCHDOG_STOP to an account of the stop.
+WATCHDOG_STOP=
+watchdog_stop_note() {
+  local note="$STATE/.watch-watchdog-stop" line pid identity still grace cycle step
+  WATCHDOG_STOP=
+  [ -f "$note" ] && [ ! -L "$note" ] && [ "$cycle_watcher_identity" != none ] || return 1
+  fm_file_text_to line "$note" || return 1
+  IFS=$'\t' read -r pid identity still grace cycle step <<< "$line"
+  [ "$pid" = "pid=$cycle_watcher_pid" ] && [ "$identity" = "identity=$cycle_watcher_identity" ] || return 1
+  rm -f "$note" 2>/dev/null || true
+  WATCHDOG_STOP="the wedge watchdog stopped watcher pid $cycle_watcher_pid (beacon unchanged for ${still#still=}s >= ${grace#grace=}s; ${cycle} ${step}); state/.watch-triage.log has its blocking descendants"
+}
+
 owned_child_finished() {
   local rc=$1 signal reason_type status
   signal=$(cycle_signal_name "$rc")
@@ -808,10 +823,15 @@ owned_child_finished() {
 
   reason_type="nonzero-exit"
   [ "$signal" = none ] || reason_type="signal-exit"
+  ! watchdog_stop_note || reason_type=watchdog-wedged
   cycle_log_append "$rc" "$signal" "$reason_type" none
   print_watch_output "$child_out"
   if ! grep -q '^watcher: FAILED' "$child_out" 2>/dev/null; then
-    echo "watcher: FAILED - watcher cycle exited $rc without an actionable reason"
+    if [ -n "$WATCHDOG_STOP" ]; then
+      echo "watcher: FAILED - $WATCHDOG_STOP"
+    else
+      echo "watcher: FAILED - watcher cycle exited $rc without an actionable reason"
+    fi
   fi
   rm -f "$child_out" 2>/dev/null || true
   child=

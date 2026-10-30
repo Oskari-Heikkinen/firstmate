@@ -1361,6 +1361,130 @@ test_claude_stop_hook_delivers_a_main_only_pass_through() {
   pass "host+hook: an attended main-only pass-through rewakes main and keeps its successor watcher"
 }
 
+# The live failure (2026-10-30): the successor closed on a main-only status
+# during an engine turn, and an acknowledgement in that turn retired the
+# downtime its exit published. The host then passed the close through with the
+# marker acknowledged, so the Stop hook's rewake refused and main stayed
+# asleep. The acknowledgement is modelled directly on the marker.
+test_claude_stop_hook_rewakes_a_main_only_close_whose_downtime_a_turn_acknowledged() {
+  local home successor
+  home=$(make_primary_home hook-main-only-acked)
+  ln -s "$ROOT/.agents" "$home/.agents"
+  echo held > "$home/stub-mode"
+  mkfifo "$home/stub-release"
+  start_hook_session "$home"
+  turn_end "$home"
+  wait_until 150 watcher_live "$home" || fail "acked main-only: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  append_status "$home" 'first actionable wake'
+  wait_until 250 test -s "$home/stub-ready" || fail "acked main-only: the engine did not reach its hold: $(cat "$home/state/.supervision-host.log" 2>/dev/null)"
+  successor=$(cat "$home/state/.watch.lock/pid")
+  append_status "$home" 'which export format?' needs-decision
+  wait_until 250 bash -c '! kill -0 "$1" 2>/dev/null' _ "$successor" \
+    || fail "acked main-only: the successor did not close during the engine turn"
+  assert_re '^(pending|announced):downtime:' "$home/state/.watcher-down" \
+    "fixture: the closed successor must publish downtime"
+  FM_HOME="$home" bash -c '. "$1"; fm_recovery_marker_read "$2" && fm_recovery_marker_ack "$2" "${FM_RECOVERY_MARKER_TOKEN##*:}"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$home/state/.watcher-down" \
+    || fail "fixture: could not model the turn's acknowledgement of that downtime"
+  assert_re '^acked:downtime:' "$home/state/.watcher-down" "fixture: the downtime must read acknowledged before the turn ends"
+  printf 'continue\n' > "$home/stub-release"
+  wait_until 250 hook_exited "$home" || fail "acked main-only: the Stop hook never closed: $(cat "$home/state/.supervision-host.log")"
+  assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "fixture: the close was not a main-only pass-through"
+  assert_rewoke_main "$home" "acked main-only"
+  assert_re '^signal: .*demo.status' "$home/hook.err" "the rewake must carry the close"
+  assert_re '^(pending|announced):downtime:' "$home/state/.watcher-down" \
+    "the pass-through must leave a deliverable downtime episode"
+  pass "host+hook: a main-only close whose downtime a turn acknowledged still rewakes main"
+}
+
+# The same acknowledged close, but the downtime cannot be written back: the
+# host must not hand main a close its owner will refuse to deliver as if it
+# were whole. It logs why, adds a failure line to the close, and exits 1.
+test_main_only_pass_through_that_cannot_restore_downtime_fails_loudly() {
+  local home real_mktemp successor
+  home=$(make_home main-only-unrestored attended)
+  echo held > "$home/stub-mode"
+  mkfifo "$home/stub-release"
+  real_mktemp=$(command -v mktemp)
+  cat > "$home/fakebin/mktemp" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *'/.watcher-down.tmp.'*) [ ! -e "\$FM_HOME/fail-downtime-write" ] || exit 1 ;;
+esac
+exec "$real_mktemp" "\$@"
+SH
+  chmod +x "$home/fakebin/mktemp"
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "unrestored: the host never started a watcher cycle: $(cat "$home/host.out")"
+  append_status "$home" 'first actionable wake'
+  wait_until 250 test -s "$home/stub-ready" || fail "unrestored: the engine did not reach its hold: $(cat "$home/state/.supervision-host.log" 2>/dev/null)"
+  successor=$(cat "$home/state/.watch.lock/pid")
+  append_status "$home" 'which export format?' needs-decision
+  wait_until 250 bash -c '! kill -0 "$1" 2>/dev/null' _ "$successor" \
+    || fail "unrestored: the successor did not close during the engine turn"
+  FM_HOME="$home" bash -c '. "$1"; fm_recovery_marker_read "$2" && fm_recovery_marker_ack "$2" "${FM_RECOVERY_MARKER_TOKEN##*:}"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$home/state/.watcher-down" \
+    || fail "fixture: could not model the turn's acknowledgement of that downtime"
+  assert_re '^acked:downtime:' "$home/state/.watcher-down" "fixture: the downtime must read acknowledged before the turn ends"
+  : > "$home/fail-downtime-write"
+  printf 'continue\n' > "$home/stub-release"
+  wait_until 450 host_exited "$home" || fail "unrestored: the host never handed the close back: $(cat "$home/state/.supervision-host.log")"
+  assert_re '	pass-through	attended	main-only	signal:' "$home/state/.supervision-host.log" "fixture: the close was not a main-only pass-through"
+  assert_re '	pass-through	downtime-unrestored	signal:' "$home/state/.supervision-host.log" "the ledger must name the downtime it could not restore"
+  expect_code 1 "$(cat "$home/host.rc")" "a hand-back whose downtime could not be restored must exit 1: $(cat "$home/host.out")"
+  assert_re '^signal: .*demo.status' "$home/host.out" "the close must still reach main"
+  assert_grep 'supervision-host: watcher downtime could not be restored for the main hand-back' "$home/host.out" \
+    "the close must carry the failure line"
+  rm -f "$home/fail-downtime-write"
+  stop_home_processes "$home"
+  pass "host: a main-only hand-back that cannot restore its downtime says so and exits 1"
+}
+
+# The same hand-back through the real Stop hook: the rewake commit refuses on
+# the acknowledged marker the host could not rewrite, so the hook turns the
+# host's nonzero exit into the episode's failure notice instead of exiting 0.
+test_claude_stop_hook_notifies_when_a_main_only_pass_through_cannot_restore_downtime() {
+  local home real_mktemp successor
+  home=$(make_primary_home hook-main-only-unrestored)
+  ln -s "$ROOT/.agents" "$home/.agents"
+  echo held > "$home/stub-mode"
+  mkfifo "$home/stub-release"
+  real_mktemp=$(command -v mktemp)
+  cat > "$home/fakebin/mktemp" <<SH
+#!/usr/bin/env bash
+case "\$*" in
+  *'/.watcher-down.tmp.'*) [ ! -e "\$FM_HOME/fail-downtime-write" ] || exit 1 ;;
+esac
+exec "$real_mktemp" "\$@"
+SH
+  chmod +x "$home/fakebin/mktemp"
+  start_hook_session "$home"
+  turn_end "$home"
+  wait_until 150 watcher_live "$home" || fail "hook unrestored: the Stop hook never started a watcher cycle: $(cat "$home/hook.err" 2>/dev/null)"
+  append_status "$home" 'first actionable wake'
+  wait_until 250 test -s "$home/stub-ready" || fail "hook unrestored: the engine did not reach its hold: $(cat "$home/state/.supervision-host.log" 2>/dev/null)"
+  successor=$(cat "$home/state/.watch.lock/pid")
+  append_status "$home" 'which export format?' needs-decision
+  wait_until 250 bash -c '! kill -0 "$1" 2>/dev/null' _ "$successor" \
+    || fail "hook unrestored: the successor did not close during the engine turn"
+  FM_HOME="$home" bash -c '. "$1"; fm_recovery_marker_read "$2" && fm_recovery_marker_ack "$2" "${FM_RECOVERY_MARKER_TOKEN##*:}"' _ \
+    "$ROOT/bin/fm-wake-lib.sh" "$home/state/.watcher-down" \
+    || fail "fixture: could not model the turn's acknowledgement of that downtime"
+  assert_re '^acked:downtime:' "$home/state/.watcher-down" "fixture: the downtime must read acknowledged before the turn ends"
+  : > "$home/fail-downtime-write"
+  printf 'continue\n' > "$home/stub-release"
+  wait_until 250 hook_exited "$home" || fail "hook unrestored: the Stop hook never closed: $(cat "$home/state/.supervision-host.log")"
+  assert_re '	pass-through	downtime-unrestored	signal:' "$home/state/.supervision-host.log" "fixture: the host did not fail to restore the downtime"
+  assert_re '^acked:downtime:' "$home/state/.watcher-down" "fixture: the marker must still refuse the rewake commit"
+  expect_code 2 "$(cat "$home/hook.rc")" "the Stop hook must notify main when the host could not restore its hand-back's downtime: $(cat "$home/hook.err")"
+  assert_grep 'firstmate watcher auto-arm FAILED' "$home/hook.err" "the refused rewake must turn into a delivered failure notice"
+  assert_re '^signal: .*demo.status' "$home/hook.err" "the notice must carry the close"
+  assert_re '^epoch=[0-9]+ owner_pid=[0-9]+ outcome=failed ' "$home/state/.claude-autoarm-epoch" \
+    "the failed hand-back must be committed"
+  rm -f "$home/fail-downtime-write"
+  pass "host+hook: a main-only hand-back that cannot restore its downtime becomes a delivered failure notice"
+}
+
 # Close the confirmed handling watcher after the engine has acknowledged its
 # wake but before its captain outcome returns to the host.
 test_claude_stop_hook_restores_handoff_when_successor_closed_before_exit_to_main() {
@@ -3452,7 +3576,45 @@ test_park_hup_unwinds_the_builtin_before_cleanup() {
   expect_code 129 "$(cat "$home/host.rc")" "park-hup: disposition changed: $(cat "$home/host.out" "$home/claude.err")"
   watcher_live "$home" && fail "park-hup: HUP left the watcher running"
   assert_absent "$home/state/.supervision-host" "park-hup: HUP left its host record"
-  pass "host: HUP during a parked builtin wait unwinds before cleanup and exits 129"
+  # A HUP that lands between probes takes Bash's own handling, which no trap
+  # sees, so either account of the stop is a named one.
+  assert_re '	stopped	(signal HUP|no close was printed [^	]*)	after [0-9]+s wall=[0-9]+s boot=[^	]+	owner=[^	]+$' \
+    "$home/state/.supervision-host.log" "park-hup: the host log must say what stopped the host"
+  pass "host: HUP during a parked builtin wait unwinds before cleanup, logs the stop, and exits 129"
+}
+
+# The trapped branch of the stopped line: a TERM that lands inside the park's
+# half-second wait names its signal, and the line says the owner is alive. A
+# TERM between two waits takes Bash's own handling and logs "no close was
+# printed" instead, so that attempt retries on a fresh host; a host that lost
+# its signal bookkeeping logs that on every attempt and fails.
+test_park_term_in_the_wait_names_the_signal_and_the_owner() {
+  local home pid owner attempt=0 named=0
+  sleep 600 &
+  owner=$!
+  while [ "$attempt" -lt 8 ] && [ "$named" -eq 0 ]; do
+    attempt=$((attempt + 1))
+    home=$(make_home "park-term-$attempt" attended)
+    FM_SUPERVISION_HOST_OWNER_PID=$owner start_host "$home"
+    wait_until 150 watcher_live "$home" || fail "park-term: no watcher started: $(cat "$home/host.out")"
+    wait_until 150 test -s "$home/state/.supervision-host" || fail "park-term: the host never recorded itself"
+    pid=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
+    sleep 1
+    kill -TERM "$pid"
+    wait_until 100 host_exited "$home" || fail "park-term: parked host ignored TERM"
+    watcher_live "$home" && fail "park-term: TERM left the watcher running"
+    assert_re '	stopped	(signal TERM|no close was printed [^	]*)	after [0-9]+s wall=[0-9]+s boot=[^	]+	owner=[^	]+$' \
+      "$home/state/.supervision-host.log" "park-term: the host log must say what stopped the host"
+    grep -q '	stopped	signal TERM	' "$home/state/.supervision-host.log" || continue
+    named=1
+    expect_code 143 "$(cat "$home/host.rc")" "park-term: a TERM in the wait must exit 143: $(cat "$home/host.out" "$home/claude.err")"
+    assert_re "	stopped	signal TERM	after [0-9]+s wall=[0-9]+s boot=[^	]+	owner=$owner alive\$" \
+      "$home/state/.supervision-host.log" "park-term: the stopped line must name the live owner"
+  done
+  kill "$owner" 2>/dev/null || true
+  wait "$owner" 2>/dev/null || true
+  [ "$named" -eq 1 ] || fail "park-term: no TERM inside the park wait was named in $attempt attempts: $(cat "$home/state/.supervision-host.log")"
+  pass "host: a TERM in the park wait logs its signal and the owner's state"
 }
 
 test_park_timer_failures_wake_instead_of_spinning() {
@@ -3531,6 +3693,36 @@ test_park_boundary_ends_the_park_before_the_hook_timeout() {
     *) fail "the park boundary must publish downtime for the owner's rewake, got: $token" ;;
   esac
   pass "host: the park ends itself with a boundary wake and a stopped watcher"
+}
+
+# The live failure (2026-10-30): the harness timed its Stop hook on a boot
+# clock running about 10% ahead of the wall clock, so it killed a host whose
+# wall-clock park was still short of the boundary, and no wake reached main.
+# The test boot clock (FM_TEST_SUPERVISION_HOST_UPTIME) jumps past the bound
+# while the wall clock stays far short of it, so only a host that reads the
+# boot clock ends its park within the wait.
+test_park_boundary_follows_a_boot_clock_ahead_of_the_wall_clock() {
+  local home up _ line boot
+  [ -r /proc/uptime ] || { printf 'skip: the park boot clock needs /proc/uptime\n'; return 0; }
+  home=$(make_home boundary-boot-clock attended)
+  cp /proc/uptime "$home/uptime"
+  FM_SUPERVISION_HOST_PARK_SECONDS=600 FM_TEST_SUPERVISION_HOST_UPTIME="$home/uptime" start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "boot clock: the host never started a watcher cycle"
+  IFS=' .' read -r up _ < /proc/uptime
+  printf '%s.00 0.00\n' "$((up + 700))" > "$home/uptime.next"
+  mv -f "$home/uptime.next" "$home/uptime"
+  wait_until 300 host_exited "$home" \
+    || fail "boot clock: the host kept parking past its bound on the boot clock: $(cat "$home/state/.supervision-host.log")"
+  assert_re '^supervision-host: cycle boundary - ' "$home/host.out" "the boot-clock boundary must reach main as a host line"
+  line=$(grep -E '	boundary	after [0-9]+s	wall=[0-9]+s boot=[0-9]+s$' "$home/state/.supervision-host.log" | tail -n 1)
+  [ -n "$line" ] || fail "boot clock: the boundary line must name both clocks: $(cat "$home/state/.supervision-host.log")"
+  boot=${line##*boot=}
+  boot=${boot%s}
+  [ "$boot" -ge 600 ] || fail "boot clock: the boundary fired before the boot clock reached the bound: $line"
+  watcher_live "$home" && fail "the boot-clock boundary left the watcher running"
+  [ "$(marker_kind "$home")" = downtime ] \
+    || fail "the boot-clock boundary must publish downtime for the owner's rewake, got: $(cat "$home/state/.watcher-down")"
+  pass "host: the park boundary follows a boot clock running ahead of the wall clock"
 }
 
 # A close that lands while a turn is running can only wait: the host ends its
@@ -4166,6 +4358,7 @@ HOST_CASES=(
   test_term_stops_the_watcher_when_its_arm_cannot_relay_term
   test_predecessor_cleanup_preserves_a_cycle_its_arm_does_not_own
   test_park_boundary_ends_the_park_before_the_hook_timeout
+  test_park_boundary_follows_a_boot_clock_ahead_of_the_wall_clock
   test_park_boundary_rechecked_just_before_the_engine_turn
   test_park_test_clock_requires_the_marker
   test_unverified_engine_hands_every_away_wake_to_main
@@ -4178,6 +4371,7 @@ HOST_CASES=(
   test_park_exit_probe_avoids_child_sleeps_where_supported
   test_park_exit_probe_does_not_wait_for_the_outer_cadence
   test_park_hup_unwinds_the_builtin_before_cleanup
+  test_park_term_in_the_wait_names_the_signal_and_the_owner
   test_park_timer_failures_wake_instead_of_spinning
   test_parked_host_rerecords_its_arm_only_when_the_identity_differs
   test_branch_outcomes_only_on_a_host_home_off_pi
@@ -4185,6 +4379,9 @@ HOST_CASES=(
   test_attended_main_only_close_passes_straight_to_main
   test_off_written_while_parked_passes_the_next_attended_close_to_main
   test_claude_stop_hook_delivers_a_main_only_pass_through
+  test_claude_stop_hook_rewakes_a_main_only_close_whose_downtime_a_turn_acknowledged
+  test_main_only_pass_through_that_cannot_restore_downtime_fails_loudly
+  test_claude_stop_hook_notifies_when_a_main_only_pass_through_cannot_restore_downtime
   test_claude_stop_hook_rewakes_a_present_captain_beside_a_quiet_record
   test_claude_stop_hook_runs_the_host_with_opt_in_and_off_opts_out
   test_successor_left_at_the_turn_survives_the_hook_process_group_teardown
