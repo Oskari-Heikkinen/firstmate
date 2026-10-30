@@ -1074,7 +1074,8 @@ if mode.startswith('links-'):
 elif mode == 'also':
     old, new = 'out=$(links "$src" "${names[@]}")', 'out=$(links "$src" "${names[@]}"; :)'
 elif mode in ('tree-source', 'tree-aside', 'tree-sort'):
-    old, new = 'if tree_list "$1" >"$tmp"; then', 'if tree_list "$1" >"$tmp"; true; then'
+    old = 'if run_stoppable tree_list "$1" >"$tmp"; then'
+    new = old.replace('; then', '; true; then')
 elif mode.startswith('mount-') and mode != 'mount-count':
     old, new = 'out=$(mounts_in "$p")', 'out=$(mounts_in "$p"; :)'
 elif mode.startswith('process-'):
