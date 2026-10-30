@@ -82,6 +82,12 @@
 # `bin/fm-helper-consumers.sh pending` on the sync target, so a helper version
 # no consumer has accepted yet is recorded and noted even when nothing else
 # noticed its landing; its `helper-pending:` lines are reported as they come.
+# Each held pass also appends one `held` line per version that held it to the
+# hold log through `bin/fm-helper-consumers.sh log` (one line with `-` fields
+# when the check failed without naming a version), and a pass that leaves the
+# primary updated or already current appends `cleared` for each of this home's
+# holds still open. A line that cannot be written prints
+# `hold-log: not written: ...` and changes nothing else.
 # With no declarations none of this prints anything.
 #
 # Usage: fm-update.sh [--allow-helper-break <consumer>]... [--help]
@@ -142,6 +148,38 @@ fi
 # accepted yet; the header owns why this runs here, after the fetch.
 if [ -n "$FF_BASE_COMMIT" ]; then
   FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-helper-consumers.sh" pending --repo "$FM_ROOT" "$FF_BASE_COMMIT" || true
+fi
+
+# Hold log: a held pass logs each version that held it, and a pass that leaves
+# the primary on its target clears this home's open holds (see the header).
+hold_log() {  # <outcome> <helper> <sha256> <consumers> <note>
+  local out
+  out=$("$SCRIPT_DIR/fm-helper-consumers.sh" log "$1" "$FM_HOME" "${FF_BASE_COMMIT:--}" "$2" "$3" "$4" "$5" 2>&1) \
+    || echo "hold-log: not written: $1 $2: $(first_line "$out")"
+}
+if [ -n "$FF_HELD" ]; then
+  logged=no
+  while IFS=$'\t' read -r kind helper sha consumers; do
+    case "$kind" in
+      hold) hold_log held "$helper" "$sha" "$consumers" "held-for-helper: awaiting $consumers"; logged=yes ;;
+      unproven) hold_log held "$helper" "$sha" "$consumers" "held-for-helper: awaiting malformed declaration $consumers"; logged=yes ;;
+    esac
+  done <<< "$FF_HELPER_RECORDS"
+  [ "$logged" = yes ] || hold_log held - - - "held-for-helper: $FF_HELD"
+elif [ "$FF_STATUS" = "updated" ] || [ "$FF_STATUS" = "current" ]; then
+  breaks=$(printf '%s' "$FF_HELPER_RECORDS" | awk -F '\t' '$1 == "break" { s = s (s == "" ? "" : ", ") $4 }  END { print s }')
+  if open_holds=$("$SCRIPT_DIR/fm-helper-consumers.sh" holds --open --home "$FM_HOME" 2>/dev/null); then
+    while IFS=$'\t' read -r _ helper sha consumers _; do
+      [ -n "$helper" ] || continue
+      if [ -n "$breaks" ]; then
+        hold_log cleared "$helper" "$sha" "$consumers" "pass $FF_STATUS at the target with --allow-helper-break for $breaks"
+      else
+        hold_log cleared "$helper" "$sha" "$consumers" "pass $FF_STATUS at the target"
+      fi
+    done <<< "$open_holds"
+  else
+    echo "hold-log: not written: cannot read this home's open holds, so none is cleared"
+  fi
 fi
 
 # A held primary holds the whole pass (see the header).

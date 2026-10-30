@@ -407,15 +407,19 @@ FF_HELD=""
 FF_BASE_COMMIT=""
 FF_HELPER_ALLOW_BREAK=""
 FF_HELPER_NOTES=""
+FF_HELPER_RECORDS=""
 # Run the helper-consumer gate for one target about to move to <base-rev>.
 # Returns 1 after printing the target's held status line; otherwise 0, leaving
 # in FF_HELPER_NOTES the lines to print once the target has advanced. Any check
 # failure holds, because a gate that cannot read its declarations cannot prove
-# the advance is safe. Reads ff_target's locals through ff_report.
+# the advance is safe. FF_HELPER_RECORDS keeps check-advance's hold, unproven
+# and break records as printed, for bin/fm-update.sh's hold log. Reads
+# ff_target's locals through ff_report.
 ff_helper_gate() {  # <dir> <base-rev>
   local out rc=0 kind a b c held="" c12
   local -a args=()
   FF_HELPER_NOTES=""
+  FF_HELPER_RECORDS=""
   [ -x "$FF_HELPER_CONSUMERS_BIN" ] || return 0
   for c in $FF_HELPER_ALLOW_BREAK; do args+=(--allow-break "$c"); done
   out=$("$FF_HELPER_CONSUMERS_BIN" check-advance ${args[@]+"${args[@]}"} "$1" "$2" 2>&1) || rc=$?
@@ -429,6 +433,9 @@ ff_helper_gate() {  # <dir> <base-rev>
   esac
   while IFS=$'\t' read -r kind a b c; do
     c12=$(printf '%s' "$b" | cut -c1-12)
+    case "$kind" in
+      hold|unproven|break) FF_HELPER_RECORDS="$FF_HELPER_RECORDS$kind"$'\t'"$a"$'\t'"$b"$'\t'"$c"$'\n' ;;
+    esac
     case "$kind" in
       hold)
         held="$held${held:+; }helper $a version $c12 not yet accepted by $c"
@@ -463,6 +470,7 @@ ff_target() {
   FF_HELD=""
   FF_BASE_COMMIT=""
   FF_HELPER_NOTES=""
+  FF_HELPER_RECORDS=""
 
   if [ ! -d "$dir" ]; then
     echo "$label: skipped: not a directory"

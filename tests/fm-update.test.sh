@@ -28,6 +28,9 @@
 #   - Secondmate homes resolve from both state/<id>.meta and the
 #     data/secondmates.md registry, deduped, and the firstmate repo is never
 #     re-processed as one of its own secondmates.
+#   - Each held pass appends one held line per held helper version to the hold
+#     log, and the pass that advances appends cleared for it, noting a break; a
+#     failed check or a malformed declaration's hold is logged too.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -765,6 +768,89 @@ test_helper_gate_holds_redundant_divergence_reconcile() {
   pass "the helper gate also holds the redundant-divergence reconcile"
 }
 
+# The hold log: each held pass appends one held line per held version, with
+# its own time, and the pass that advances clears it.
+test_helper_hold_log_records_held_and_cleared() {
+  local w out log home target b
+  w=$(new_world helper-hold-log)
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')"
+  bump_origin "$w" instr
+  log="$w/helper-versions/holds.log"
+  home=$(cd "$w/home" && pwd -P)
+  target=$(git -C "$w/origin.git" rev-parse main)
+  b=$(sha_of $'echo b\n')
+
+  out=$(FM_HELPER_CONSUMERS_NOW=1793350000 run_update_helpers "$w")
+  assert_contains "$out" "held-for-helper:" "the first pass holds"
+  assert_not_contains "$out" "hold-log:" "the held line is written"
+  assert_equals 1 "$(wc -l < "$log" | tr -d ' ')" "a held pass writes exactly one held line"
+  assert_equals "$(printf '%s\t' 2026-10-30T08:46:40Z held "$home" "$target" "$w/main/bin/tool.sh" "$b")pinned" "$(cut -f 1-7 "$log")" \
+    "the held line names the time, home, target, helper version and consumer"
+
+  out=$(FM_HELPER_CONSUMERS_NOW=1793353600 run_update_helpers "$w")
+  assert_contains "$out" "held-for-helper:" "the rerun holds again"
+  assert_equals 2 "$(wc -l < "$log" | tr -d ' ')" "a rerun writes a second held line"
+  assert_equals "$(printf '%s\t' 2026-10-30T09:46:40Z)held" "$(tail -n 1 "$log" | cut -f 1-2)" "the rerun's line carries its own time"
+
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')" "$b"
+  out=$(FM_HELPER_CONSUMERS_NOW=1793357200 run_update_helpers "$w")
+  assert_contains "$out" "firstmate: updated " "the accepted version advances"
+  assert_not_contains "$out" "hold-log:" "the cleared line is written"
+  assert_equals 3 "$(wc -l < "$log" | tr -d ' ')" "the advance writes one cleared line"
+  assert_equals "$(printf '%s\t' 2026-10-30T10:46:40Z cleared "$home" "$target" "$w/main/bin/tool.sh" "$b")pinned" "$(tail -n 1 "$log" | cut -f 1-7)" \
+    "the cleared line closes the held version"
+
+  out=$(run_update_helpers "$w")
+  assert_contains "$out" "firstmate: already current" "the next pass is current"
+  assert_equals 3 "$(wc -l < "$log" | tr -d ' ')" "a pass with no open hold writes nothing"
+  pass "each held pass logs one held line and the advance logs cleared"
+}
+
+# The hold log's other paths: a failed gate check logs one held line with `-`
+# for what it could not name, a malformed declaration's hold names its file
+# stem, and a pass moved by --allow-helper-break says so when it clears.
+test_helper_hold_log_failed_check_unproven_and_break() {
+  local w out log b
+  b=$(sha_of $'echo b\n')
+
+  w=$(new_world helper-hold-log-failed)
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')"
+  bump_origin "$w" instr
+  log="$w/helper-versions/holds.log"
+  printf '#!/bin/sh\ncat >/dev/null\n' > "$w/fakebin/sha256sum"
+  chmod +x "$w/fakebin/sha256sum"
+  out=$(run_update_helpers "$w")
+  rm -f "$w/fakebin/sha256sum"
+  assert_contains "$out" "held-for-helper: helper consumer check failed" "a failed check holds the pass"
+  assert_equals 1 "$(wc -l < "$log" | tr -d ' ')" "a failed check writes one held line"
+  assert_equals "$(printf '%s\t' held "$(git -C "$w/origin.git" rev-parse main)" - - -)held-for-helper: helper consumer check failed" \
+    "$(cut -f 2,4-8 "$log")" "the line marks what the failed check could not name"
+
+  w=$(new_world helper-hold-log-unproven)
+  mkdir -p "$w/helper-consumers.d"
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=broken' 'owner=other-mate' "helper=$w/main/bin/tool.sh" 'colour=blue' \
+    > "$w/helper-consumers.d/broken.conf"
+  bump_origin "$w" instr
+  log="$w/helper-versions/holds.log"
+  out=$(run_update_helpers "$w")
+  assert_contains "$out" "awaiting malformed declaration broken" "a malformed declaration holds the pass"
+  assert_equals 1 "$(wc -l < "$log" | tr -d ' ')" "the unproven hold writes one held line"
+  assert_equals "$(printf '%s\t' held "$w/main/bin/tool.sh" "$b" broken)held-for-helper: awaiting malformed declaration broken" \
+    "$(cut -f 2,5-8 "$log")" "the held line names the malformed declaration"
+
+  w=$(new_world helper-hold-log-break)
+  declare_consumer "$w" pinned "$w/main/bin/tool.sh" "$(sha_of $'echo a\n')"
+  bump_origin "$w" instr
+  log="$w/helper-versions/holds.log"
+  run_update_helpers "$w" >/dev/null
+  out=$(run_update_helpers "$w" --allow-helper-break pinned)
+  assert_contains "$out" "firstmate: updated " "the break advances the primary"
+  assert_equals 2 "$(wc -l < "$log" | tr -d ' ')" "the break pass writes one cleared line"
+  assert_equals "$(printf '%s\t' cleared "$w/main/bin/tool.sh" "$b" pinned)pass updated at the target with --allow-helper-break for pinned" \
+    "$(tail -n 1 "$log" | cut -f 2,5-8)" "the cleared line records the break"
+  pass "a failed check, a malformed declaration and a break each leave their hold-log line"
+}
+
 test_updates_main_and_secondmate
 test_reread_gate_is_instruction_only
 test_follows_green_pointer_not_main
@@ -790,5 +876,7 @@ test_helper_unaccepted_target_holds_the_whole_pass
 test_helper_allow_break_advances_and_records
 test_helper_consumer_already_waiting_advances_and_reports
 test_helper_gate_holds_redundant_divergence_reconcile
+test_helper_hold_log_records_held_and_cleared
+test_helper_hold_log_failed_check_unproven_and_break
 
 echo "# all fm-update tests passed"

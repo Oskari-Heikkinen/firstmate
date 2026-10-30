@@ -54,7 +54,7 @@ For each declared helper inside the checkout being moved whose bytes would chang
 - if a consumer accepts neither, it is already waiting, so holding cannot help: the checkout advances and the update reports it.
 - if any declaration is malformed or unreadable, the checkout stays where it is, as described under Declarations.
 
-When the main checkout is held, `/updatefirstmate` holds its whole pass, so every home stays on one Firstmate version, and prints a `held-for-helper:` line.
+When the main checkout is held, `/updatefirstmate` holds its whole pass, so every home stays on one Firstmate version, prints a `held-for-helper:` line, and records the hold in the hold log below.
 The captain may still say to update anyway for a named consumer or malformed declaration; that consumer then waits until it accepts the new version, and the update records the override.
 The override covers only the homes on the machine where the update runs: a remote second mate's home is checked against its own machine's declarations, reports its hold, and catches up by itself once its own consumer accepts.
 With no declarations, nothing changes: every update and sync behaves exactly as it did before declarations existed.
@@ -65,6 +65,48 @@ As soon as a change to a declared helper lands - when a Firstmate pull request m
 The record lives in `${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/helper-versions/<helper name>/<sha256>/` and carries the commit, the consumers' currently accepted versions, the change since them, and a read-only copy of the exact bytes as the review artefact.
 A reviewer therefore reviews precisely what will deploy, before it deploys; consumers never run that copy.
 Firstmate also files one note per pending version to the main firstmate, which routes it to the declared owner.
+
+## The hold log
+
+Every held `/updatefirstmate` pass appends to one machine-wide, append-only log, `holds.log`, beside the pending versions in `${XDG_STATE_HOME:-$HOME/.local/state}/firstmate/helper-versions/`.
+A held pass writes one `held` line for each helper version it waits on, and a rerun that is still held writes another with its own time.
+When the gate check itself fails, so no version is known, the pass writes one `held` line with `-` for the helper, version and consumers.
+The first later pass of that home that updates or finds itself already current writes one `cleared` line for each version it still had open, noting any `--allow-helper-break` it used.
+The log is the record of how long each hold lasted: `bin/fm-helper-consumers.sh holds --windows` reads it back as one line per hold window, with its start, end or `open`, length, held passes, versions and closing note, and `holds --open` lists the holds not yet cleared.
+
+`bin/fm-helper-consumers.sh log` is the log's only writer, and any tool that records a hold, a bypass or a break calls it rather than writing the file:
+
+```
+fm-helper-consumers.sh log <outcome> <home> <target-commit> <helper> <sha256> <consumers> [<note>]
+```
+
+Each call appends one tab-separated line in a single write:
+
+```
+<utc time> <outcome> <home> <target-commit> <helper> <sha256> <consumers> <note>
+```
+
+- `held` - a pass of `<home>` stopped at `<target-commit>` because `<consumers>` have not accepted `<helper>` version `<sha256>`.
+- `cleared` - a later pass of `<home>` advanced past that held version.
+- `bypass` - a held pass on a version that reached the default branch around a landing check that should have refused it; it opens and clears like `held`.
+- `break` - an operator-run `--allow-helper-break` moved past `<consumers>`' acceptance of that version; it is a record only and opens or clears nothing.
+
+`<home>` is an absolute path, `<sha256>` may be `absent` for a deleted helper, and `-` stands for an unknown target commit, helper, version or consumer list; the script header owns the exact field rules and exit codes.
+This interface is stable: new outcomes and new trailing fields may be added, but no field or outcome is renamed, removed or reordered, and readers ignore what they do not know.
+
+## The unaccepted-version alarm
+
+A version of a declared helper that sits on the origin default branch unaccepted for longer than a limit raises an alarm, so a hold that nobody is reviewing is never silent.
+The alarm runs in the main home as the custom watcher check `helper-unaccepted`, installed by `bin/fm-helper-consumers.sh alarm --arm` and removed by `alarm --disarm`.
+Each pass raises one level, `helper-unaccepted-<helper>-<sha12>`, per pending version that the branch carries and some declaring consumer has not accepted, once the commit that brought those bytes to the branch is older than the limit.
+The level clears when every declaring consumer accepts the version, or when the branch moves on to other bytes for that helper.
+It reaches the main home and the local home of the version's declared owner, as a level in each home's alert store (see [Alert store](alert-store.md)); an owner this machine cannot reach is named in main's level instead.
+
+The limit is the operator's override in `config/helper-unaccepted-max`, read on every pass: one whole number of seconds, or of minutes or hours with an `m` or `h` suffix.
+Without the file the limit is 2 hours.
+An empty, unreadable or malformed limit file, declaration or pending record, or an unreadable branch, raises its own level naming the file, and an unreadable limit file still counts the 2-hour default for the versions.
+With no declarations the alarm prints and writes nothing.
+Each pass costs one `stat` per pending record and re-reads only records that changed since the last pass.
 
 ## What a consumer does
 
