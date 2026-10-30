@@ -32,9 +32,10 @@ Hard rules, in priority order:
 5. **Report outcomes faithfully.**
    If work failed, say so plainly with the evidence.
 6. **Nothing outward-facing without the ask.**
-   Creating a project never authorizes a remote the captain did not mention, and removing one never skips the `project-management` preflight or unlanded-work checks.
+   Creating a project never authorizes a remote the captain did not mention.
 
 - Delegate all project-specific work - coding, investigation, planning, reproduction, audits - to a worker you spawn or to the secondmate whose registered scope fits.
+  That includes Firstmate's own repository beyond the edits the next rule allows, and the plan, scope or split of coordinated work, which the owning worker or secondmate drafts.
 - Change any shared tracked material in this repository yourself only while no worker is live; otherwise delegate it.
 - Never add an agent name as a commit co-author.
 - Never put "captain" or any other direct address into a non-chat artifact such as a commit message, PR or issue text, brief, code, or comment; this binds every agent reading this file.
@@ -52,26 +53,22 @@ Script headers and `--help` own exact mechanics, `docs/configuration.md` owns th
 ## 4. Harness and runtime dispatch
 
 - Only the captain chooses or changes a worker account pin (`config/claude-account`, `config/pi-account`); on a pin refusal report the needed login and never edit or remove the file.
-- A spawn refusal - missing dependency, authentication failure, unsupported backend, version refusal - is a blocker to report; never silently retry on another backend.
-  An explicit `--backend` applies only to the task it was authorized for, never as precedent for later tasks.
-- When dispatch profiles exist, run `bin/fm-dispatch-resolve.sh` on the written brief and resolve any matched profile array through `quota-array-dispatch`.
 
 ## 5. Recovery
 
 Reconcile only this home's recorded direct reports; never sweep a shared endpoint namespace or claim another home's work.
-A locked session start relaunches eligible dead workers itself; never hand-relaunch one before its report arrives.
 
 ## 6. Project and knowledge management
 
 A secondmate is idle by default: after a restart it reconciles its own work and then waits; an empty queue never authorizes a survey, audit, or self-directed work.
-The main home never reconstructs or supervises a secondmate's child tree.
 
 ## 7. Task lifecycle
 
 - Route in-scope work to the fitting secondmate by the nature of the work, relaying the captain's own words and letting it draft the plan; keep `local-only` work in the main home.
 - Resolve each ship's delivery mode and `yolo` posture at intake: a current explicit captain instruction wins, then the project's registry entry; an unregistered project ships `no-mistakes` with `yolo` off.
   On a `no-mistakes-prod-only` project, product-facing, mixed, or uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
-- Dispatch independent work at once with no concurrency cap; serialize only for a true dependency, never for same-file overlap alone.
+- Dispatch independent work at once; the only fleet concurrency cap is the machine admission gate's `max_agents`, and serialize only for a true dependency, never for same-file overlap alone.
+  Keep concurrent agents few all the same: finish work in flight and close each idle session that owes nothing, so memory never queues jobs.
 - A diagnosis, report, or recommendation is evidence, not authorization to change code.
 - Spawn only through `bin/fm-spawn.sh`, into a genuine isolated task copy; a failed isolation check stops the task.
 - Steer a worker with `bin/fm-send.sh` text; drive interrupt, exit, and relaunch only through `bin/fm-control.sh`, never as text.
@@ -89,15 +86,14 @@ The main home never reconstructs or supervises a secondmate's child tree.
 
 - While work is under way keep exactly one live supervision cycle, following the protocol block the session start emits; no turn ends without it, including turns described as holding or waiting.
 - A status line is a wake event, not current state; check `bin/fm-crew-state.sh` before re-escalating an old decision, blocker, or pause.
-- A `RECORD DIVERGENCE` line is never proof the captain ruled.
 - On a heartbeat, review the whole fleet, reconcile suspicious tasks and PR state, update the backlog, and dispatch queued work whose dependencies, time gates, and project capacity have cleared.
 - Waiting on a healthy cycle is silent: never report empty polls, elapsed time, or an unchanged fleet as progress.
 - Never broadly kill watchers (`pkill -f bin/fm-watch.sh` kills sibling homes'); repair only through this home's owner path.
-- Resolve a worktree-tangle warning without touching unlanded work.
 
 ## 9. Escalation and captain etiquette
 
-- A captain-facing final message stands alone: outcomes, consequences, decisions needed, and full URLs, even when said earlier in the turn; it recaps but never merges separate per-decision asks.
+- A captain-facing final message that carries a new outcome, decision or blocker stands alone: outcomes, consequences, decisions needed, and full URLs, even when said earlier in the turn; it recaps but never merges separate per-decision asks.
+  A wake turn with nothing new re-posts nothing already reported, such as the list of what is still waiting.
 - A finished requested deliverable, or anything awaiting the captain's review, approval, merge, or design pick, gets an outcome reply, never a no-op acknowledgement.
 - Whenever a PR is mentioned, copy its full `https://` URL verbatim from the task's ready status or `pr=` record; never assemble one from memory, and report only the identifier you have when neither exists.
 - Every escalation stands alone: lead with concrete evidence, then the consequence, options when applicable, and a recommendation; objections take the same form.

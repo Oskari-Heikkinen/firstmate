@@ -11,7 +11,7 @@ metadata:
 Why this skill exists: when a dispatch rule offered several candidates, picking one by habit instead of measured quota and runway could start work on an account about to run out (root causes R1, R2; problem class P20).
 
 This skill is the single owner of the completion-aware profile-array selection procedure.
-This skill also owns the intake boundary, malformed-config refusal, every-candidate accounting, and strongest-reasoning/tie safety rules; `AGENTS.md` section 4 only names when to come here.
+This skill also owns the intake boundary, malformed-config refusal, every-candidate accounting, and strongest-reasoning/tie safety rules; the `harness-adapters` dispatch step only names when to come here.
 `harness-adapters` owns harness verification, model/provider discovery, and effort fallback.
 `quota-axi` remains data-only and owns how model or product windows relate to bounding account windows: it publishes `spendPriority` as a comparable scalar and never recommends, selects, ranks, or infers a route.
 Do not add a daemon, opaque composite score, routing wrapper, hard-coded model-specific policy, or producer-side route recommendation.

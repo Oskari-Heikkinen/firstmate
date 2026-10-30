@@ -39,6 +39,7 @@ Muse, Gemini, AGY, and Devin are verified only for crewmate and scout work, neve
 A spawn refusal - a missing dependency, an authentication failure, an unsupported backend, a version refusal - is a blocker to report; never retry silently on another backend or harness, because the refusal is the evidence of what is missing.
 An explicit `--backend` applies only to the task it was authorized for, never as precedent for later tasks.
 Only the operator chooses or changes a worker account pin (`config/claude-account`, `config/pi-account`); on a pin refusal, report the login it needs and never edit or remove the file.
+When dispatch profiles exist, every crewmate or scout intake runs `../../../bin/fm-dispatch-resolve.sh` on the written brief and resolves a matched profile array through `quota-array-dispatch`; `references/common/dispatch.md` "Resolution" owns that step.
 
 ## Detection
 
