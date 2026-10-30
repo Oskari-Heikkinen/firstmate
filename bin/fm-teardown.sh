@@ -607,8 +607,7 @@ if [ -f "$META" ] && [ ! -L "$META" ]; then
         "$TEARDOWN_SLOT_REASSIGNED_RC"|"$TEARDOWN_SLOT_RELEASED_RC") TEARDOWN_EVIDENCE_OWNED=0 ;;
       esac
     fi
-    fm_task_evidence_stage "$ID" "$DATA" "$TEARDOWN_LOCK_WT" "$TEARDOWN_EVIDENCE_OWNED" \
-      "$TEARDOWN_EVIDENCE_TMP" "$TEARDOWN_EVIDENCE_SCAN" || exit 1
+    :
   fi
   if [ "$TEARDOWN_LOCK_KIND" != secondmate ] \
      && [ "$TEARDOWN_LOCK_BACKEND" != orca ] \
@@ -3890,6 +3889,8 @@ if [ "$KIND" != secondmate ]; then
     exit 1
   fi
   fm_task_evidence_scan verify "$DATA/$ID" "$TEARDOWN_EVIDENCE_SCAN" || exit 1
+  fm_task_evidence_stage "$ID" "$DATA" "$WT" "$TEARDOWN_EVIDENCE_COPY_OWNED" "$TASK_TMP" \
+    "$TEARDOWN_EVIDENCE_SCAN" || exit 1
   fm_task_evidence_finish "$ID" "$DATA" "$WT" "$TEARDOWN_EVIDENCE_COPY_OWNED" "$TASK_TMP" \
     "$TEARDOWN_EVIDENCE_SCAN" || exit 1
   fm_task_evidence_scan verify "$DATA/$ID" "$TEARDOWN_EVIDENCE_SCAN" || exit 1
