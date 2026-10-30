@@ -445,7 +445,7 @@ SH
   done
   out=$(FM_PACK_SLOT_LOCK="$H.slot" bash "$ROOT/bin/fm-pack.sh" stop --wait 120 2>&1) || rc=$?
   expect_code 0 "$rc" "fm-pack.sh stop stops a repack that holds the slot: $out"
-  assert_contains "$out" "command=fm-repack run --home $H" "stop names the repack it signalled"
+  assert_contains "$out" "holder pid $pid (fm-repack run --home $H)" "stop names the repack it signalled"
   rc=0
   wait "$pid" || rc=$?
   expect_code 1 "$rc" "a stopped batch ends the run with 1"

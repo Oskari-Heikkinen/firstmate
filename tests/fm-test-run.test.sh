@@ -1823,7 +1823,7 @@ SH
     wait "$pid" || rc=$?
     out=$(cat "$tmp/$mode.out")
     err=$(cat "$tmp/$mode.err")
-    expect_code 143 "$rc" "$mode: a run stopped by TERM"
+    expect_code 143 "$rc" "$mode: a run stopped by TERM"$'\n'"$out"$'\n'"$err"
     for sleeper in "${stopped[@]}"; do
       assert_contains "$out" "not ok - $sleeper stopped by SIGTERM before it finished" \
         "$mode: the stopped script was not reported as stopped"

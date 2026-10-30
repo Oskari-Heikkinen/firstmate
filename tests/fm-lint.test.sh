@@ -2011,7 +2011,8 @@ test_local_run_keeps_the_root_deadline() {
 
 test_busy_roots_exit_75_only_when_nothing_else_failed() {
   local tmp fakebin roots_log out rc ok busy findings
-  tmp=$(fm_test_tmproot fm-lint-busy)
+  # The stub reads "busy" anywhere in a root's path, so the root folder must not carry it.
+  tmp=$(fm_test_tmproot fm-lint-guard)
   fakebin=$(fm_fakebin "$tmp")
   fm_lint_stub_reactive_shellcheck "$fakebin"
   roots_log="$tmp/lint.roots.tsv"
