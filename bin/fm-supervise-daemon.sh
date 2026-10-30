@@ -1758,10 +1758,7 @@ fm_super_main() {
   # fm-afk-launch.sh stop budget; `wait` returns at once on TERM, and cleanup
   # reaps the interrupted sleep so no child outlives the daemon.
   daemon_nap() {  # <seconds>
-    sleep "$1" &
-    NAP_PID=$!
-    wait "$NAP_PID" 2>/dev/null || true
-    NAP_PID=""
+    sleep "$1"
   }
 
   # --- crash-loop guard -----------------------------------------------------
