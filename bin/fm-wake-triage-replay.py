@@ -622,6 +622,10 @@ def turn_kind(tools, cmds, text):
     return "N"
 
 
+# Main's handling that shows the operator needed nothing from the row.
+UNNEEDED = ("M", "N", "S")
+
+
 def match_rows(rows, turns, window=3600, skew=5):
     for row in rows:
         row["main"] = "unmatched"
@@ -668,6 +672,13 @@ def cmd_score(args):
     days = sorted(set().union(*(r["days"] for r in runs))) if runs else []
     rows = [dict(r) for d in days for r in log.day_rows(d)]
     match_rows(rows, read_turns(args.transcript))
+    # A stuck message handled by the relay deadline cleared on its own, and a
+    # note that it cleared is not something the operator needs, whatever main's
+    # turn did: such a row is typed S.
+    for row in rows:
+        if row_class(row["headline"]) == "stale:stuck-busy-inbox" and \
+                probe_stuck_busy(args.home, row, row["epoch"] + args.probe_lag)[0] == "pass":
+            row["main_was"], row["main"] = row["main"], "S"
     main = {r["seq"]: r for r in rows}
 
     def verdict(recs, day_list):
@@ -682,7 +693,7 @@ def cmd_score(args):
         bad_route = [d["seq"] for d in recs if d.get("route") == "code" and d.get("action") != "fast-relay"]
         if bad_route:
             problems.append("code-routed rows not fast-relayed: " + " ".join(bad_route))
-        bad_settle = [d["seq"] for d in recs if d.get("action") == "settle" and main[d["seq"]]["main"] not in ("M", "N")]
+        bad_settle = [d["seq"] for d in recs if d.get("action") == "settle" and main[d["seq"]]["main"] not in UNNEEDED]
         if bad_settle:
             problems.append("would-settle where main's handling was %s: %s" % (
                 "/".join(sorted({main[s]["main"] for s in bad_settle})), " ".join(bad_settle)))
@@ -699,7 +710,7 @@ def cmd_score(args):
     out.append("")
     out.append("## Answer: S1a exit test per model")
     out.append("")
-    out.append("The exit test (plan section 4.7): every fast-relay class routes to relay, and would-settle happens only on passing recorded evidence and only where main's recorded handling was M or N, on every replayed day; a row main's transcripts do not show is not M or N.")
+    out.append("The exit test (plan section 4.7): every fast-relay class routes to relay, and would-settle happens only on passing recorded evidence and only where main's recorded handling was M or N, or the row is a stuck message handled within %d s of the row, which cleared on its own (S), on every replayed day; a row main's transcripts do not show is not M or N." % args.probe_lag)
     out.append("")
     for model, rs in sorted(by_model.items()):
         recs = [d for r in rs for d in r["recs"]]
@@ -712,12 +723,12 @@ def cmd_score(args):
     out.append("")
     out.append("## Per run")
     out.append("")
-    out.append("| Run | Model | Rows | Fast-relay | Relay | Settle | Settle where main M/N | Settle where main V/R/unmatched | Relay where main M/N | Settle without passing evidence | Engine errors | Cost USD |")
+    out.append("| Run | Model | Rows | Fast-relay | Relay | Settle | Settle where main M/N/S | Settle where main V/R/unmatched | Relay where main M/N/S | Settle without passing evidence | Engine errors | Cost USD |")
     out.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in runs:
         recs = r["recs"]
         act = lambda a: [d for d in recs if d.get("action") == a]
-        mn = lambda ds: sum(1 for d in ds if main[d["seq"]]["main"] in ("M", "N"))
+        mn = lambda ds: sum(1 for d in ds if main[d["seq"]]["main"] in UNNEEDED)
         settle, relay = act("settle"), act("relay")
         out.append("| %s | %s | %d | %d | %d | %d | %d | %d | %d | %d | %d | %.2f |" % (
             os.path.basename(r["path"]), r["model"], len(recs), len(act("fast-relay")), len(relay), len(settle),
@@ -731,10 +742,10 @@ def cmd_score(args):
     for row in rows:
         k = (row_class(row["headline"]), row["main"])
         kinds[k] = kinds.get(k, 0) + 1
-    out.append("| Class | V | R | M | N | unmatched |")
-    out.append("|---|---|---|---|---|---|")
+    out.append("| Class | V | R | M | N | S | unmatched |")
+    out.append("|---|---|---|---|---|---|---|")
     for cls in sorted({k[0] for k in kinds}):
-        out.append("| %s | %s |" % (cls, " | ".join(str(kinds.get((cls, m), 0)) for m in ("V", "R", "M", "N", "unmatched"))))
+        out.append("| %s | %s |" % (cls, " | ".join(str(kinds.get((cls, m), 0)) for m in ("V", "R", "M", "N", "S", "unmatched"))))
     out.append("")
     out.append("## Engine-routed rows")
     out.append("")
@@ -757,7 +768,8 @@ def cmd_score(args):
                 cells.append(clean("%s %s%s" % (d.get("action"), d.get("probe", ""),
                                                 (" error" if d.get("error") else "")), 80))
         out.append("| %s | %s | %s | %s | %s | %s |" % (seq, utc(row["epoch"])[11:19], row_class(row["headline"]),
-                                                       row["main"], ev, " | ".join(cells)))
+                                                       row["main"] + (" (was %s)" % row["main_was"] if "main_was" in row else ""),
+                                                       ev, " | ".join(cells)))
     audits = [(r, d) for r in runs for d in r["recs"] if d.get("audit")]
     if audits:
         out.append("")
@@ -790,13 +802,13 @@ def main(argv):
     p.add_argument("--home", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--host-log", default="")
+    p.add_argument("--probe-lag", type=int, default=180)
     if cmd == "replay":
         p.add_argument("--day", required=True)
         p.add_argument("--engine", required=True, choices=["claude", "pi"])
         p.add_argument("--model", required=True)
         p.add_argument("--effort", default="")
         p.add_argument("--settle-list", required=True)
-        p.add_argument("--probe-lag", type=int, default=180)
         p.add_argument("--jobs", type=int, default=4)
         p.add_argument("--turn-timeout", type=int, default=600)
         p.add_argument("--audit-fast-relay", action="store_true")

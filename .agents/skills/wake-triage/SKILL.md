@@ -62,7 +62,8 @@ These never pass through the assistant at all, because the thing that may be bro
 - A probe that fails, cannot be read or gives an unknown answer is a relay, with the probe result as the note.
 - When in doubt, relay.
 - A finished result of requested work, or anything the operator should see, is a relay or a captain outcome, never a settle.
-- A stuck message that carries the operator's own words - an answer, ruling, question, ask or go, quoted or relayed in their words - is a relay even when its probe passes, because the operator is waiting on it to land; the note says it is the operator's and whether it was handled.
+- A stuck message handled by the relay deadline has cleared on its own: settle it, whoever's words it carries, because a note that it cleared is not for the operator.
+- A stuck message still not handled at the deadline is a relay; when it carries the operator's own words (an answer, ruling, question, ask or go, quoted or relayed in their words), the note says so, because the operator is waiting on it to land.
 - In a replay the turn has no tools: the replay tool reads each probe from recorded state as of the row time plus a lag, which stands for the re-probe at the relay deadline, and puts the result in the message, with the stuck message's first line for a stuck-busy row; judge on what it gives, and never assume a reading it does not show.
 
 ## Relay note

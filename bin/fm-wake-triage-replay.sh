@@ -10,7 +10,7 @@
 #                                   [--probe-lag <seconds>] [--jobs <n>]
 #                                   [--turn-timeout <seconds>] [--audit-fast-relay]
 #                                   [--skill <file>]
-#   fm-wake-triage-replay.sh score --home <main home> [--host-log <file>]
+#   fm-wake-triage-replay.sh score --home <main home> [--host-log <file>] [--probe-lag <seconds>]
 #                                  --replay <file> [--replay <file>]...
 #                                  --transcript <jsonl> [--transcript <jsonl>]... --out <md>
 #   fm-wake-triage-replay.sh --help
@@ -73,10 +73,14 @@
 # once. A turn is typed V (final text over 60 characters and not a "nothing
 # new" reply), R (fm-send, fm-control, fm-spawn, fm-tasks add, fm-pack or
 # fm-update), M (more than 2 tool calls or a mark-processed) or N, in that
-# order; a row with no turn is unmatched. It writes --out, answer first: the
-# S1a exit test per model (met when every code-routed row was fast-relayed,
-# every would-settle row had passing recorded evidence and main handling M or
-# N, and every row has exactly one line), then per-run counts, main's handling
+# order; a row with no turn is unmatched. A stale:stuck-busy-inbox row whose
+# message was handled by the row time plus --probe-lag (default 180 s) is
+# typed S instead, whatever main's turn was: it cleared on its own, and a note
+# that it cleared is not for the operator. M, N and S are rows the operator
+# needed nothing from. It writes --out, answer first: the S1a exit test per
+# model (met when every code-routed row was fast-relayed, every would-settle
+# row had passing recorded evidence and main handling M, N or S, and every
+# row has exactly one line), then per-run counts, main's handling
 # per class, the engine-routed rows side by side and the audit counts.
 #
 # Both commands run at nice 19 and ionice -c3, and change nothing in --home.
