@@ -331,6 +331,7 @@ test_out_of_date_reminders_are_dropped() {
     reap "$GROUP_PID"; fail "$why: a reminder not yet due woke the supervisor: $(cat "$dir/watch.out")"
   fi
   reap "$GROUP_PID"
+  ack_stopped_cycle "$state" || fail "$why: could not acknowledge the quiet run"
   for t in a b g d; do
     [ -f "$state/.recheck-upcoming-test_fm-$t" ] || fail "$why: lane $t recorded no upcoming reminder, so the case checks nothing"
   done
@@ -376,6 +377,7 @@ test_no_grouping_while_away() {
     reap "$GROUP_PID"; fail "$why: a reminder not yet due woke the supervisor: $(cat "$dir/watch.out")"
   fi
   reap "$GROUP_PID"
+  ack_stopped_cycle "$state" || fail "$why: could not acknowledge the quiet run"
   [ -f "$state/.recheck-upcoming-test_fm-a" ] || fail "$why: lane a recorded no upcoming reminder, so the case checks nothing"
   date '+%s' > "$state/.afk"
   printf 'window=test:fm-c\nkind=ship\n' > "$state/c.meta"
