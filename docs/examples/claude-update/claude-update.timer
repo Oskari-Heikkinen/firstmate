@@ -1,0 +1,11 @@
+# Example systemd user timer running claude-update.service daily at 05:30.
+# Enable it once: systemctl --user enable --now claude-update.timer
+[Unit]
+Description=Daily Claude Code update
+
+[Timer]
+OnCalendar=*-*-* 05:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
