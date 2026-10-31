@@ -88,6 +88,7 @@ rc=0
 if bash -s -- "$ROOT" <<'SH'
 set -u
 . "$1/bin/fm-classify-lib.sh"
+. "$1/bin/fm-wake-drain-lib.sh"
 home=$(mktemp -d) || exit 1
 trap 'rm -rf -- "$home"' EXIT
 mkdir "$home/state" || exit 1
@@ -112,6 +113,7 @@ fi
 if bash -s -- "$ROOT" <<'SH'
 set -u
 . "$1/bin/fm-classify-lib.sh"
+. "$1/bin/fm-wake-drain-lib.sh"
 home=$(mktemp -d) || exit 1
 trap 'rm -rf -- "$home"' EXIT
 mkdir "$home/state" || exit 1
@@ -141,6 +143,7 @@ if bash -s -- "$ROOT" <<'SH'
 set -u
 . "$1/bin/fm-wake-lib.sh"
 _fm_wake_require_classify || exit 1
+. "$1/bin/fm-wake-drain-lib.sh"
 home=$(mktemp -d) || exit 1
 trap 'rm -rf -- "$home"' EXIT
 STATE="$home/state"
@@ -168,6 +171,7 @@ if bash -s -- "$ROOT" <<'SH'
 set -u
 . "$1/bin/fm-wake-lib.sh"
 _fm_wake_require_classify || exit 1
+. "$1/bin/fm-wake-drain-lib.sh"
 home=$(mktemp -d) || exit 1
 trap 'rm -rf -- "$home"' EXIT
 STATE="$home/state"

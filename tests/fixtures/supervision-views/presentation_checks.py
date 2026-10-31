@@ -74,13 +74,14 @@ sys.exit(reply.returncode)
         self.temporary.cleanup()
 
     def invoke(self, operation, **environment):
-        return subprocess.run(["bash", "-c", '. "$1/bin/fm-classify-lib.sh"; "$3" "$2"',
+        return subprocess.run(["bash", "-c", '. "$1/bin/fm-classify-lib.sh"; . "$1/bin/fm-wake-drain-lib.sh"; "$3" "$2"',
                                "capture", str(ROOT), str(self.state), operation],
                               env=dict(self.env, **environment), stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, timeout=20)
 
     def commit(self, snapshot, batch=True, acknowledgements="", **environment):
         script = '''. "$1/bin/fm-classify-lib.sh"
+. "$1/bin/fm-wake-drain-lib.sh"
 STATUS_OUTCOME_BACKSTOP_ACKNOWLEDGED=$4
 if [ "${FM_FIXTURE_FORBID_ROW_READS:-0}" = 1 ]; then
   _fm_open_decisions_file_ident() { echo unexpected-identity-read >&2; return 81; }
@@ -113,6 +114,7 @@ status_commit_presentation_snapshot "$2" "$3" "$5"
 
     def signatures(self, paths, batch=True, **environment):
         script = '''. "$1/bin/fm-classify-lib.sh"
+. "$1/bin/fm-wake-drain-lib.sh"
 shift
 if [ "$1" = batch ]; then
   shift; status_observed_signatures_batch "$@"
@@ -138,6 +140,7 @@ fi
         initial = f"{task}\t{old}\t{int(end)-1}\t2\n".encode()
         manifest.write_bytes(initial)
         script = '''. "$1/bin/fm-classify-lib.sh"
+. "$1/bin/fm-wake-drain-lib.sh"
 status_presentation_suggestions_valid "$2" "$3" "$4"
 '''
         def suggestions(endpoint):
@@ -155,6 +158,7 @@ status_presentation_suggestions_valid "$2" "$3" "$4"
             self.assertNotEqual(old_reply.returncode, 0, "old transaction captures must refuse, not zero the independent floor")
         facts = f"{task}\t{end}\t{strong}\t2\t{path.stat().st_mtime_ns // 10**9}\t{end}\tl:note: owner identity:l"
         script = '''. "$1/bin/fm-classify-lib.sh"
+. "$1/bin/fm-wake-drain-lib.sh"
 status_backstop_facts_current "$2" "$3" "$4"
 '''
         def backstop(selected):
@@ -179,6 +183,7 @@ status_backstop_facts_current "$2" "$3" "$4"
         manifest = self.state / ".status-presentation-cursor"
         suggestion = f"{task}\t{end}\t{strong}"
         script = '''. "$1/bin/fm-classify-lib.sh"
+. "$1/bin/fm-wake-drain-lib.sh"
 status_presentation_suggestions_valid "$2" "$3" "$4"
 '''
         def guard():
@@ -230,6 +235,7 @@ status_presentation_suggestions_valid "$2" "$3" "$4"
         cursor = self.state / ".status-presentation-cursor"
         cursor.write_text("".join(f"{row.split(chr(9))[0]}\t{row.split(chr(9))[2]}\t0\t4\n" for row in captured))
         script = '''. "$1/bin/fm-classify-lib.sh"
+. "$1/bin/fm-wake-drain-lib.sh"
 _fm_status_file_size() { echo per-row-size >&2; return 85; }
 _fm_open_decisions_file_ident() { echo per-row-identity >&2; return 85; }
 _fm_status_file_mtime() { echo per-row-mtime >&2; return 85; }

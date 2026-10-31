@@ -578,7 +578,8 @@ if fm_wake_annotation_paths_current "$1" "$2"; then printf admitted; else printf
                 env = dict(self.env, FM_FIXTURE_REAL_STAT=shutil.which("stat"), FM_FIXTURE_PATH_LOG=str(log),
                            FM_FIXTURE_PATH_FAULT=action)
                 process = await asyncio.create_subprocess_exec("bash", "-c",
-                    '. "$1/bin/fm-wake-lib.sh"; shift; ' + script, "fixture", str(ROOT), str(self.state), snapshot,
+                    '. "$1/bin/fm-wake-lib.sh"; . "$1/bin/fm-wake-drain-lib.sh"; shift; ' + script, "fixture",
+                    str(ROOT), str(self.state), snapshot,
                     env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 output, error = await asyncio.wait_for(process.communicate(), 15)
                 self.assertEqual(process.returncode, 0, error)
@@ -901,6 +902,7 @@ sys.exit(run.returncode)
         snapshot = await self.owner('_fm_wake_require_classify; status_presentation_snapshot "$1"')
         captured = b"task\tworking: captured\n"
         script = '''. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-wake-drain-lib.sh"
 fm_wake_status_cursor_offset() { echo 'unexpected cursor read' >&2; return 1; }
 fm_wake_unread_events() { echo 'unexpected span read' >&2; return 1; }
 if [ "$4" = no-classifier ]; then
@@ -1277,6 +1279,7 @@ sys.exit(run.returncode)
             self.status(task=task)
         snapshot = await self.owner('_fm_wake_require_classify; status_presentation_snapshot "$1"')
         script = '''. "$1/bin/fm-wake-lib.sh"
+. "$1/bin/fm-wake-drain-lib.sh"
 fm_wake_status_cursor_offset() { echo 'unexpected cursor read' >&2; return 1; }
 fm_wake_unread_events() { echo 'unexpected span read' >&2; return 1; }
 fm_wake_print_annotations "$2" "$4" "$3"

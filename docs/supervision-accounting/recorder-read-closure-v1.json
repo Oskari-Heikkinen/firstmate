@@ -1280,7 +1280,7 @@
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-wake-drain.sh:917",
+     "site": "bin/fm-wake-drain.sh:919",
      "source": "if [ -f \"$instruction\" ] && [ ! -L \"$instruction\" ]; then",
      "template": "<instruction path named by marker first line>"
     },
@@ -2200,14 +2200,14 @@
     {
      "mode": "R",
      "root": "P",
-     "site": "bin/fm-wake-drain.sh:147",
+     "site": "bin/fm-wake-drain.sh:149",
      "source": "held=$(fm_wake_actor_pending_count branch \"$ELIGIBLE_ROWS_FILE\" \"$ELIGIBLE_OWNER_FILE\") || return 0",
      "template": "P/<owner pid>/stat"
     },
     {
      "mode": "R",
      "root": "P",
-     "site": "bin/fm-wake-drain.sh:99",
+     "site": "bin/fm-wake-drain.sh:101",
      "source": "if ! fm_wake_branch_grant_live \"$ELIGIBLE_ROWS_FILE\" \"$ELIGIBLE_OWNER_FILE\"; then",
      "template": "P/<owner pid>/stat"
     },
@@ -2520,35 +2520,35 @@
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2463",
+     "site": "bin/fm-classify-lib.sh:2391",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2492",
+     "site": "bin/fm-classify-lib.sh:2420",
      "source": "status_open_decisions_cursor_offset \"$f\"",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2496",
+     "site": "bin/fm-classify-lib.sh:2424",
      "source": "ident=$(_fm_open_decisions_file_ident \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2498",
+     "site": "bin/fm-classify-lib.sh:2426",
      "source": "cur_ident=$(_fm_open_decisions_file_ident \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2499",
+     "site": "bin/fm-classify-lib.sh:2427",
      "source": "size=$(_fm_status_file_size \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
@@ -2562,154 +2562,154 @@
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2701",
+     "site": "bin/fm-classify-lib.sh:2436",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2715",
+     "site": "bin/fm-classify-lib.sh:2450",
      "source": "current=$(_fm_open_decisions_file_ident \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2716",
+     "site": "bin/fm-classify-lib.sh:2451",
      "source": "size=$(_fm_status_file_size \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2788",
+     "site": "bin/fm-classify-lib.sh:2523",
      "source": "LC_ALL=C /usr/bin/stat -f '%HT:%p' \"$1\" 2>/dev/null",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2790",
+     "site": "bin/fm-classify-lib.sh:2525",
      "source": "LC_ALL=C stat -c '%F:%f' \"$1\" 2>/dev/null",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2811",
+     "site": "bin/fm-classify-lib.sh:2546",
      "source": "{ _sos_stat=$(LC_ALL=C exec stat -c $'%F:%f\\n%s\\n%d:%i\\n%W\\n%w' \"$_sos_f\"); } 2>/dev/null || _sos_stat=''",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2822",
+     "site": "bin/fm-classify-lib.sh:2557",
      "source": "_sos_path_state=$(_status_observed_path_state \"$_sos_f\") || _sos_path_state=stat-error",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2824",
+     "site": "bin/fm-classify-lib.sh:2559",
      "source": "if [ -L \"$_sos_f\" ]; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2825",
+     "site": "bin/fm-classify-lib.sh:2560",
      "source": "{ _sos_link_target=$(exec readlink \"$_sos_f\"); } 2>/dev/null || _sos_link_target=readlink-error",
      "template": "<arg2: status file>"
     },
     {
      "mode": "E",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2827",
+     "site": "bin/fm-classify-lib.sh:2562",
      "source": "elif [ ! -e \"$_sos_f\" ]; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2829",
+     "site": "bin/fm-classify-lib.sh:2564",
      "source": "elif [ ! -f \"$_sos_f\" ]; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2831",
+     "site": "bin/fm-classify-lib.sh:2566",
      "source": "elif [ -r \"$_sos_f\" ]; then",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2840",
+     "site": "bin/fm-classify-lib.sh:2575",
      "source": "_sos_size=$(_fm_status_file_size \"$_sos_f\") || _sos_size='size-error'",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2849",
+     "site": "bin/fm-classify-lib.sh:2584",
      "source": "_sos_ident=$(_fm_open_decisions_file_ident \"$_sos_f\") || _sos_ident=identity-error",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2853",
+     "site": "bin/fm-classify-lib.sh:2588",
      "source": "if [ -r \"$_sos_f\" ]; then _sos_access=readable; else _sos_access=unreadable; fi",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3032",
+     "site": "bin/fm-classify-lib.sh:2732",
      "source": "current=$(_fm_open_decisions_file_ident \"$2\") || { printf '0'; return 0; }",
      "template": "<arg2: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3350",
+     "site": "bin/fm-classify-lib.sh:2946",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3392",
+     "site": "bin/fm-classify-lib.sh:2988",
      "source": "cur_ident=$(_fm_open_decisions_file_ident \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3394",
+     "site": "bin/fm-classify-lib.sh:2990",
      "source": "size=$(_fm_status_file_size \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3429",
+     "site": "bin/fm-classify-lib.sh:3025",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 0",
      "template": "<arg1: status file>"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3435",
+     "site": "bin/fm-classify-lib.sh:3031",
      "source": "actual_size=$(_fm_status_file_size \"$f\") || return 1",
      "template": "<arg1: status file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3446",
+     "site": "bin/fm-classify-lib.sh:3042",
      "source": "_fm_status_read_span \"$f\" \"$offset\" \"$((size - offset))\" > \"$chunk_file\" 2>/dev/null \\",
      "template": "<arg1: status file>"
     },
@@ -3143,21 +3143,21 @@
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:310",
+     "site": "bin/fm-wake-drain.sh:312",
      "source": "[ -f \"$1\" ] && [ -r \"$1\" ] && [ ! -L \"$1\" ] || return 1",
      "template": "<arg1: outcome index ready file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:311",
+     "site": "bin/fm-wake-drain.sh:313",
      "source": "seq=$(LC_ALL=C command cat \"$1\" 2>/dev/null) || return 1",
      "template": "<arg1: outcome index ready file>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:85",
+     "site": "bin/fm-wake-drain.sh:87",
      "source": "rows_file_valid() { fm_wake_grant_rows_valid \"$1\"; }",
      "template": "<arg1: rows file>"
     },
@@ -4056,28 +4056,28 @@
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-wake-drain.sh:1254",
+     "site": "bin/fm-wake-drain.sh:1256",
      "source": "RAW_ROWS=$(fm_wake_print_deduped \"$DRAIN_VIEW_TMP\") || exit \"$?\"",
      "template": "S/.wake-queue.actor-view.XXXXXX (DRAIN_VIEW_TMP)"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-wake-drain.sh:125",
+     "site": "bin/fm-wake-drain.sh:127",
      "source": "kept=$(awk 'END { print NR }' \"$DRAIN_TMP\")",
      "template": "S/.wake-queue.retire.XXXXXX (DRAIN_TMP)"
     },
     {
      "mode": "S",
      "root": "T",
-     "site": "bin/fm-wake-drain.sh:181",
+     "site": "bin/fm-wake-drain.sh:183",
      "source": "if [ ! -s \"$source\" ]; then",
      "template": "S/.main-eligible-rows.tmp.XXXXXX (DRAIN_TMP)"
     },
     {
      "mode": "R",
      "root": "T",
-     "site": "bin/fm-wake-drain.sh:888",
+     "site": "bin/fm-wake-drain.sh:890",
      "source": "if ! command cat \"$prepared\"; then",
      "template": "S/.status-presentation.prepared.XXXXXX"
     },
@@ -4153,77 +4153,77 @@
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2439",
+     "site": "bin/fm-classify-lib.sh:2367",
      "source": "' \"$scratch\" \"$start\" \"$skip_first\"); then :; else rm -f \"$scratch\"; return 1; fi",
      "template": "S/.<t>.open-decisions-cursor.span.<pid>.latest"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3469",
+     "site": "bin/fm-classify-lib.sh:3065",
      "source": "' \"$chunk_file\" \"$@\" || rc=$?",
      "template": "S/.<t>.open-decisions-cursor.unread.<pid>"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3476",
+     "site": "bin/fm-classify-lib.sh:3072",
      "source": "done < \"$chunk_file\"",
      "template": "S/.<t>.open-decisions-cursor.unread.<pid>"
     },
     {
      "mode": "L",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:994",
+     "site": "bin/fm-wake-drain.sh:996",
      "source": "for tmp in \"$RECOVERY_MARKER\".tmp.*; do",
      "template": "S/.watcher-down.tmp.*"
     },
     {
      "mode": "E",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:995",
+     "site": "bin/fm-wake-drain.sh:997",
      "source": "[ -e \"$tmp\" ] || [ -L \"$tmp\" ] || continue",
      "template": "S/.watcher-down.tmp.<suffix>"
     },
     {
      "mode": "L",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:90",
+     "site": "bin/fm-wake-drain.sh:92",
      "source": "for scratch in \"$STATE\"/.main-eligible-rows.tmp.* \"$STATE\"/.wake-rows.consume.* \\",
      "template": "S/.main-eligible-rows.tmp.*"
     },
     {
      "mode": "L",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:90",
+     "site": "bin/fm-wake-drain.sh:92",
      "source": "for scratch in \"$STATE\"/.main-eligible-rows.tmp.* \"$STATE\"/.wake-rows.consume.* \\",
      "template": "S/.wake-rows.consume.*"
     },
     {
      "mode": "L",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:91",
+     "site": "bin/fm-wake-drain.sh:93",
      "source": "\"$STATE\"/.wake-queue.retire.* \"$STATE\"/.wake-queue.ack.* \"$STATE\"/.wake-queue.actor-view.*; do",
      "template": "S/.wake-queue.ack.*"
     },
     {
      "mode": "L",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:91",
+     "site": "bin/fm-wake-drain.sh:93",
      "source": "\"$STATE\"/.wake-queue.retire.* \"$STATE\"/.wake-queue.ack.* \"$STATE\"/.wake-queue.actor-view.*; do",
      "template": "S/.wake-queue.actor-view.*"
     },
     {
      "mode": "L",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:91",
+     "site": "bin/fm-wake-drain.sh:93",
      "source": "\"$STATE\"/.wake-queue.retire.* \"$STATE\"/.wake-queue.ack.* \"$STATE\"/.wake-queue.actor-view.*; do",
      "template": "S/.wake-queue.retire.*"
     },
     {
      "mode": "E",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:92",
+     "site": "bin/fm-wake-drain.sh:94",
      "source": "[ -e \"$scratch\" ] || [ -L \"$scratch\" ] || continue",
      "template": "S/<scratch glob match>"
     }
@@ -4769,112 +4769,112 @@
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2316",
+     "site": "bin/fm-wake-drain-lib.sh:32",
      "source": "[ -e \"$f\" ] || continue",
      "template": "S/<t>.status (native stat batch inventory)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2318",
+     "site": "bin/fm-wake-drain-lib.sh:34",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || continue",
      "template": "S/<t>.status (native stat batch inventory)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2331",
+     "site": "bin/fm-wake-drain-lib.sh:47",
      "source": "{ packet=$(LC_ALL=C exec stat -c \"$format\" -- \"${snapshot_batch_files[@]}\"); } 2>/dev/null || return 1",
      "template": "S/<t>.status (native stat batch)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2359",
+     "site": "bin/fm-wake-drain-lib.sh:75",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
      "template": "S/<t>.status (native stat batch recheck)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2518",
+     "site": "bin/fm-wake-drain-lib.sh:99",
      "source": "if [ ! -e \"$1\" ] && [ ! -L \"$1\" ]; then return 0; fi",
      "template": "S/.status-presentation-cursor (native manifest guard)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2519",
+     "site": "bin/fm-wake-drain-lib.sh:100",
      "source": "[ -f \"$1\" ] && [ -r \"$1\" ] && [ ! -L \"$1\" ] || return 1",
      "template": "S/.status-presentation-cursor (native manifest guard)"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2523",
+     "site": "bin/fm-wake-drain-lib.sh:104",
      "source": "_pmc_raw=$(LC_ALL=C perl -e '",
      "template": "S/.status-presentation-cursor (native manifest guard)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2562",
+     "site": "bin/fm-wake-drain-lib.sh:143",
      "source": "if [ -e \"$manifest\" ] || [ -L \"$manifest\" ]; then",
      "template": "S/.status-presentation-cursor (native suggestion guard)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2563",
+     "site": "bin/fm-wake-drain-lib.sh:144",
      "source": "[ -f \"$manifest\" ] && [ -r \"$manifest\" ] && [ ! -L \"$manifest\" ] || return 1",
      "template": "S/.status-presentation-cursor (native suggestion guard)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2570",
+     "site": "bin/fm-wake-drain-lib.sh:151",
      "source": "[ ! -e \"$state/.$task.open-decisions-cursor\" ] && [ ! -L \"$state/.$task.open-decisions-cursor\" ] || return 1",
      "template": "S/.<t>.open-decisions-cursor (native suggestion guard)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2616",
+     "site": "bin/fm-wake-drain-lib.sh:197",
      "source": "current=$(status_presentation_snapshot_batch \"$1\" mtime) || return 1",
      "template": "S/<t>.status (native backstop input guard)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2648",
+     "site": "bin/fm-wake-drain-lib.sh:229",
      "source": "fresh=$(status_presentation_snapshot_batch \"$state\" mtime) || return 1",
      "template": "S/<t>.status (native backstop fact guard)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2915",
+     "site": "bin/fm-wake-drain-lib.sh:291",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
      "template": "S/<t>.status (native signature batch)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2917",
+     "site": "bin/fm-wake-drain-lib.sh:293",
      "source": "{ packet=$(LC_ALL=C exec stat -c $'%F:%f\\n%s\\n%d:%i\\n%W\\n%w' -- \"$@\"); } 2>/dev/null || return 1",
      "template": "S/<t>.status (native signature batch)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:2928",
+     "site": "bin/fm-wake-drain-lib.sh:304",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || return 1",
      "template": "S/<t>.status (native signature batch recheck)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-classify-lib.sh:3207",
+     "site": "bin/fm-wake-drain-lib.sh:322",
      "source": "current=$(status_presentation_snapshot_batch \"$state\") || return 1",
      "template": "S/<t>.status (native batch commit capture)"
     },
@@ -4909,70 +4909,70 @@
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-wake-drain.sh:392",
+     "site": "bin/fm-wake-drain.sh:394",
      "source": "&& facts=$(FM_HOME=\"$FM_HOME\" python3 \"$SCRIPT_DIR/fm-view-client.py\" status-backstop <<< \"$request\") \\",
      "template": "ext:fm-view-client.py status-backstop"
     },
     {
      "mode": "S",
      "root": "X",
-     "site": "bin/fm-wake-drain.sh:819",
+     "site": "bin/fm-wake-drain.sh:821",
      "source": "command -v python3 >/dev/null 2>&1 || return 1",
      "template": "X:$PATH python3 (native client route)"
     },
     {
      "mode": "R",
      "root": "X",
-     "site": "bin/fm-wake-drain.sh:830",
+     "site": "bin/fm-wake-drain.sh:832",
      "source": "facts=$(FM_HOME=\"$FM_HOME\" python3 \"$SCRIPT_DIR/fm-view-client.py\" drain-presentation <<< \"$input\") || return 1",
      "template": "ext:fm-view-client.py drain-presentation"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-wake-drain.sh:946",
+     "site": "bin/fm-wake-drain.sh:948",
      "source": "if [ -n \"${FM_VIEW_SOCKET:-}\" ] && snapshot=$(status_presentation_snapshot_batch \"$STATE\"); then",
      "template": "S/<t>.status (native stat batch)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:3379",
+     "site": "bin/fm-wake-drain-lib.sh:472",
      "source": "[ ! -e \"$marker\" ] && [ ! -L \"$marker\" ] || return 1",
      "template": "S/<t>.status signal-seen marker (native classification guard)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:3381",
+     "site": "bin/fm-wake-drain-lib.sh:474",
      "source": "[ -f \"$marker\" ] && [ -r \"$marker\" ] && [ ! -L \"$marker\" ] || return 1",
      "template": "S/<t>.status signal-seen marker (native classification guard)"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:3382",
+     "site": "bin/fm-wake-drain-lib.sh:475",
      "source": "fm_file_text_to raw \"$marker\" || return 1",
      "template": "S/<t>.status signal-seen marker (native classification guard)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:3401",
+     "site": "bin/fm-wake-drain-lib.sh:494",
      "source": "current=$(status_presentation_snapshot_batch \"$state\") || return 1",
      "template": "S/<t>.status (native annotation path guard)"
     },
     {
      "mode": "S",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:3441",
+     "site": "bin/fm-wake-drain-lib.sh:535",
      "source": "signatures=$(status_observed_signatures_batch \"${annotation_batch_paths[@]}\") || return 1",
      "template": "S/<t>.status (native annotation signature batch)"
     },
     {
      "mode": "R",
      "root": "S",
-     "site": "bin/fm-wake-lib.sh:3449",
+     "site": "bin/fm-wake-drain-lib.sh:543",
      "source": "fm_wake_signal_reported_current \"$STATE\" \"$STATE/$key\" \"$sig\" && continue",
      "template": "S/<t>.status signal-seen marker (native annotation replay filter)"
     }
@@ -5432,11 +5432,11 @@
      "source": "for f in \"$state\"/*.status; do"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2374",
+     "site": "bin/fm-classify-lib.sh:2302",
      "source": "for f in \"$state\"/*.status; do"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3531",
+     "site": "bin/fm-classify-lib.sh:3127",
      "source": "for f in \"$state\"/*.status; do"
     },
     {
@@ -5487,19 +5487,19 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:323",
+     "site": "bin/fm-wake-drain.sh:325",
      "source": "[ -e \"$path\" ] || [ -L \"$path\" ] || return 0"
     },
     {
-     "site": "bin/fm-wake-drain.sh:324",
+     "site": "bin/fm-wake-drain.sh:326",
      "source": "if [ ! -f \"$path\" ] || [ ! -r \"$path\" ] || [ -L \"$path\" ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:328",
+     "site": "bin/fm-wake-drain.sh:330",
      "source": "size=$(_fm_status_file_size \"$path\") || { BRANCH_OUTCOME_INDEX_STATE=invalid; return 0; }"
     },
     {
-     "site": "bin/fm-wake-drain.sh:335",
+     "site": "bin/fm-wake-drain.sh:337",
      "source": "data=$(LC_ALL=C command cat \"$path\" 2>/dev/null) \\"
     }
    ],
@@ -5523,27 +5523,27 @@
      "source": "cursor_data=$(LC_ALL=C command cat \"$cf\" 2>/dev/null) || cursor_data=''"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2491",
+     "site": "bin/fm-classify-lib.sh:2419",
      "source": "if [ -e \"$legacy\" ] || [ -L \"$legacy\" ]; then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3152",
+     "site": "bin/fm-classify-lib.sh:2852",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3353",
+     "site": "bin/fm-classify-lib.sh:2949",
      "source": "if [ -e \"$cf\" ] || [ -L \"$cf\" ]; then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3354",
+     "site": "bin/fm-classify-lib.sh:2950",
      "source": "[ -f \"$cf\" ] && [ -r \"$cf\" ] && [ ! -L \"$cf\" ] || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3355",
+     "site": "bin/fm-classify-lib.sh:2951",
      "source": "if cursor_data=$(LC_ALL=C command cat \"$cf\" 2>/dev/null); then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3433",
+     "site": "bin/fm-classify-lib.sh:3029",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     }
    ],
@@ -5710,11 +5710,11 @@
      "source": "elif [ \"$GUARD_ACTOR\" != branch ] && [ \"$(fm_wake_actor_pending_count branch)\" -gt 0 ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:147",
+     "site": "bin/fm-wake-drain.sh:149",
      "source": "held=$(fm_wake_actor_pending_count branch \"$ELIGIBLE_ROWS_FILE\" \"$ELIGIBLE_OWNER_FILE\") || return 0"
     },
     {
-     "site": "bin/fm-wake-drain.sh:99",
+     "site": "bin/fm-wake-drain.sh:101",
      "source": "if ! fm_wake_branch_grant_live \"$ELIGIBLE_ROWS_FILE\" \"$ELIGIBLE_OWNER_FILE\"; then"
     },
     {
@@ -5741,39 +5741,39 @@
      "source": "elif [ \"$GUARD_ACTOR\" != branch ] && [ \"$(fm_wake_actor_pending_count branch)\" -gt 0 ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1202",
+     "site": "bin/fm-wake-drain.sh:1204",
      "source": "if [ -e \"$ELIGIBLE_ROWS_FILE\" ] || [ -L \"$ELIGIBLE_ROWS_FILE\" ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1251",
+     "site": "bin/fm-wake-drain.sh:1253",
      "source": "BEGIN { while ((getline line < seqs) > 0) keep[line]=1 }"
     },
     {
-     "site": "bin/fm-wake-drain.sh:147",
+     "site": "bin/fm-wake-drain.sh:149",
      "source": "held=$(fm_wake_actor_pending_count branch \"$ELIGIBLE_ROWS_FILE\" \"$ELIGIBLE_OWNER_FILE\") || return 0"
     },
     {
-     "site": "bin/fm-wake-drain.sh:149",
+     "site": "bin/fm-wake-drain.sh:151",
      "source": "seqs=$(fm_wake_grant_rows_valid \"$ELIGIBLE_ROWS_FILE\" \\"
     },
     {
-     "site": "bin/fm-wake-drain.sh:151",
+     "site": "bin/fm-wake-drain.sh:153",
      "source": "\"$ELIGIBLE_ROWS_FILE\")"
     },
     {
-     "site": "bin/fm-wake-drain.sh:196",
+     "site": "bin/fm-wake-drain.sh:198",
      "source": "while ((getline line < branch) > 0) reserved[line]=1"
     },
     {
-     "site": "bin/fm-wake-drain.sh:227",
+     "site": "bin/fm-wake-drain.sh:229",
      "source": "rows_file_valid \"$ELIGIBLE_ROWS_FILE\" || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:98",
+     "site": "bin/fm-wake-drain.sh:100",
      "source": "[ -e \"$ELIGIBLE_ROWS_FILE\" ] || [ -L \"$ELIGIBLE_ROWS_FILE\" ] || return 0"
     },
     {
-     "site": "bin/fm-wake-drain.sh:99",
+     "site": "bin/fm-wake-drain.sh:101",
      "source": "if ! fm_wake_branch_grant_live \"$ELIGIBLE_ROWS_FILE\" \"$ELIGIBLE_OWNER_FILE\"; then"
     },
     {
@@ -5800,11 +5800,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:372",
+     "site": "bin/fm-wake-drain.sh:374",
      "source": "if ! outcome_index_ready_ok \"$ready\"; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:374",
+     "site": "bin/fm-wake-drain.sh:376",
      "source": "|| ! outcome_index_ready_ok \"$ready\"; then"
     }
    ],
@@ -5881,7 +5881,7 @@
      "source": "fm_lock_acquire_wait \"$LOCK\""
     },
     {
-     "site": "bin/fm-wake-drain.sh:367",
+     "site": "bin/fm-wake-drain.sh:369",
      "source": "if ! fm_lock_acquire_wait_bounded \"$lock\" \"$PRESENTATION_LOCK_TIMEOUT\"; then"
     }
    ],
@@ -5983,11 +5983,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:910",
+     "site": "bin/fm-wake-drain.sh:912",
      "source": "[ -d \"$dir\" ] && [ ! -L \"$dir\" ] || return 0"
     },
     {
-     "site": "bin/fm-wake-drain.sh:911",
+     "site": "bin/fm-wake-drain.sh:913",
      "source": "for marker in \"$dir\"/.fm-inherited-config-reread.*; do"
     }
    ],
@@ -6002,11 +6002,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:912",
+     "site": "bin/fm-wake-drain.sh:914",
      "source": "[ -f \"$marker\" ] && [ ! -L \"$marker\" ] || continue"
     },
     {
-     "site": "bin/fm-wake-drain.sh:913",
+     "site": "bin/fm-wake-drain.sh:915",
      "source": "instruction=$(head -n 1 \"$marker\" 2>/dev/null) || continue"
     }
    ],
@@ -6151,15 +6151,15 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:1206",
+     "site": "bin/fm-wake-drain.sh:1208",
      "source": "if [ ! -s \"$MAIN_ROWS_FILE\" ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1251",
+     "site": "bin/fm-wake-drain.sh:1253",
      "source": "BEGIN { while ((getline line < seqs) > 0) keep[line]=1 }"
     },
     {
-     "site": "bin/fm-wake-drain.sh:197",
+     "site": "bin/fm-wake-drain.sh:199",
      "source": "while ((getline line < main) > 0) owned[line]=1"
     }
    ],
@@ -6238,11 +6238,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-classify-lib.sh:3027",
+     "site": "bin/fm-classify-lib.sh:2727",
      "source": "raw=$(cat \"$1\" 2>/dev/null) || { printf '0'; return 0; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3186",
+     "site": "bin/fm-classify-lib.sh:2886",
      "source": "classified=$(status_presentation_marker_offset \"$(status_signal_seen_marker_path \"$state\" \"$task\")\" \"$f\")"
     },
     {
@@ -6250,7 +6250,7 @@
      "source": "fm_file_text_to text \"$marker\" || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3548",
+     "site": "bin/fm-wake-drain-lib.sh:642",
      "source": "if [ \"$historical_batch\" = 0 ] && [ \"$mode\" = historical ] && fm_wake_signal_reported_current \"$STATE\" \"$path\"; then"
     }
    ],
@@ -6265,39 +6265,39 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-classify-lib.sh:2467",
+     "site": "bin/fm-classify-lib.sh:2395",
      "source": "if [ -e \"$manifest\" ] || [ -L \"$manifest\" ]; then"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2468",
+     "site": "bin/fm-classify-lib.sh:2396",
      "source": "[ -f \"$manifest\" ] && [ -r \"$manifest\" ] && [ ! -L \"$manifest\" ] || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2469",
+     "site": "bin/fm-classify-lib.sh:2397",
      "source": "data=$(LC_ALL=C command cat \"$manifest\" 2>/dev/null) || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2705",
+     "site": "bin/fm-classify-lib.sh:2440",
      "source": "[ -e \"$manifest\" ] || { printf '0'; return 0; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2706",
+     "site": "bin/fm-classify-lib.sh:2441",
      "source": "[ -f \"$manifest\" ] && [ -r \"$manifest\" ] && [ ! -L \"$manifest\" ] || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2707",
+     "site": "bin/fm-classify-lib.sh:2442",
      "source": "data=$(LC_ALL=C command cat \"$manifest\" 2>/dev/null) || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3152",
+     "site": "bin/fm-classify-lib.sh:2852",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3287",
+     "site": "bin/fm-wake-drain-lib.sh:402",
      "source": "backstop=$(status_outcome_backstop_cursor_offset \"$f\") || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3433",
+     "site": "bin/fm-classify-lib.sh:3029",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
@@ -6305,7 +6305,7 @@
      "source": "offset=$(status_presentation_cursor_offset \"$path\" 2>/dev/null) || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3574",
+     "site": "bin/fm-wake-drain-lib.sh:668",
      "source": "offset=$(fm_wake_status_cursor_offset \"$path\") || return 1"
     }
    ],
@@ -6320,7 +6320,7 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:933",
+     "site": "bin/fm-wake-drain.sh:935",
      "source": "if fm_lock_acquire_wait_bounded \"$lock\" \"$PRESENTATION_LOCK_TIMEOUT\"; then"
     }
    ],
@@ -6398,31 +6398,31 @@
      "source": "[ -s \"$state/.wake-queue\" ] && FM_SUP_QUEUE_PENDING=true"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1175",
+     "site": "bin/fm-wake-drain.sh:1177",
      "source": "if [ ! -s \"$FM_WAKE_QUEUE\" ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1253",
+     "site": "bin/fm-wake-drain.sh:1255",
      "source": "' \"$FM_WAKE_QUEUE\" > \"$DRAIN_VIEW_TMP\" || exit 1"
     },
     {
-     "site": "bin/fm-wake-drain.sh:116",
+     "site": "bin/fm-wake-drain.sh:118",
      "source": "[ -f \"$FM_WAKE_QUEUE\" ] || return 0"
     },
     {
-     "site": "bin/fm-wake-drain.sh:123",
+     "site": "bin/fm-wake-drain.sh:125",
      "source": "' \"$FM_WAKE_QUEUE\"); then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:124",
+     "site": "bin/fm-wake-drain.sh:126",
      "source": "queued=$(awk 'END { print NR }' \"$FM_WAKE_QUEUE\")"
     },
     {
-     "site": "bin/fm-wake-drain.sh:147",
+     "site": "bin/fm-wake-drain.sh:149",
      "source": "held=$(fm_wake_actor_pending_count branch \"$ELIGIBLE_ROWS_FILE\" \"$ELIGIBLE_OWNER_FILE\") || return 0"
     },
     {
-     "site": "bin/fm-wake-drain.sh:204",
+     "site": "bin/fm-wake-drain.sh:206",
      "source": "' \"$FM_WAKE_QUEUE\" | LC_ALL=C sort -n > \"$DRAIN_TMP\" || return 1"
     },
     {
@@ -6453,7 +6453,7 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:1031",
+     "site": "bin/fm-wake-drain.sh:1033",
      "source": "elif fm_lock_acquire_wait_bounded \"$FM_WAKE_QUEUE_LOCK\" \"$PRESENTATION_LOCK_TIMEOUT\"; then"
     }
    ],
@@ -6572,35 +6572,35 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:1177",
+     "site": "bin/fm-wake-drain.sh:1179",
      "source": "fm_recovery_marker_snapshot \"$RECOVERY_MARKER\" || true"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1181",
+     "site": "bin/fm-wake-drain.sh:1183",
      "source": "fm_recovery_marker_begin_handling \"$RECOVERY_MARKER\" || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1221",
+     "site": "bin/fm-wake-drain.sh:1223",
      "source": "fm_recovery_marker_snapshot \"$RECOVERY_MARKER\" || true"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1224",
+     "site": "bin/fm-wake-drain.sh:1226",
      "source": "if [ -e \"$RECOVERY_MARKER\" ] || [ -L \"$RECOVERY_MARKER\" ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1228",
+     "site": "bin/fm-wake-drain.sh:1230",
      "source": "fm_recovery_marker_publish \"$RECOVERY_MARKER\" downtime || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1233",
+     "site": "bin/fm-wake-drain.sh:1235",
      "source": "fm_recovery_marker_publish \"$RECOVERY_MARKER\" downtime || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1238",
+     "site": "bin/fm-wake-drain.sh:1240",
      "source": "fm_recovery_marker_begin_handling \"$RECOVERY_MARKER\" || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1272",
+     "site": "bin/fm-wake-drain.sh:1274",
      "source": "fm_recovery_marker_snapshot \"$RECOVERY_MARKER\" || exit 1"
     },
     {
@@ -6640,31 +6640,31 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:1177",
+     "site": "bin/fm-wake-drain.sh:1179",
      "source": "fm_recovery_marker_snapshot \"$RECOVERY_MARKER\" || true"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1181",
+     "site": "bin/fm-wake-drain.sh:1183",
      "source": "fm_recovery_marker_begin_handling \"$RECOVERY_MARKER\" || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1221",
+     "site": "bin/fm-wake-drain.sh:1223",
      "source": "fm_recovery_marker_snapshot \"$RECOVERY_MARKER\" || true"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1228",
+     "site": "bin/fm-wake-drain.sh:1230",
      "source": "fm_recovery_marker_publish \"$RECOVERY_MARKER\" downtime || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1233",
+     "site": "bin/fm-wake-drain.sh:1235",
      "source": "fm_recovery_marker_publish \"$RECOVERY_MARKER\" downtime || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1238",
+     "site": "bin/fm-wake-drain.sh:1240",
      "source": "fm_recovery_marker_begin_handling \"$RECOVERY_MARKER\" || {"
     },
     {
-     "site": "bin/fm-wake-drain.sh:1272",
+     "site": "bin/fm-wake-drain.sh:1274",
      "source": "fm_recovery_marker_snapshot \"$RECOVERY_MARKER\" || exit 1"
     },
     {
@@ -6695,11 +6695,11 @@
    "root": "state",
    "sites": [
     {
-     "site": "bin/fm-wake-drain.sh:988",
+     "site": "bin/fm-wake-drain.sh:990",
      "source": "[ -f \"$RECOVERY_MARKER.lock/pid\" ] || return 0"
     },
     {
-     "site": "bin/fm-wake-drain.sh:989",
+     "site": "bin/fm-wake-drain.sh:991",
      "source": "fm_file_text_to owner \"$RECOVERY_MARKER.lock/pid\" || return 0"
     }
    ],
@@ -6854,19 +6854,19 @@
      "source": "kind=$(_fm_status_kind \"$f\")"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3151",
+     "site": "bin/fm-classify-lib.sh:2851",
      "source": "_fm_status_kind_to kind \"$f\""
     },
     {
-     "site": "bin/fm-classify-lib.sh:3351",
+     "site": "bin/fm-classify-lib.sh:2947",
      "source": "fold_version=\"$FM_OPEN_DECISIONS_FOLD_VERSION:$(_fm_status_kind \"$f\")\""
     },
     {
-     "site": "bin/fm-classify-lib.sh:3535",
+     "site": "bin/fm-classify-lib.sh:3131",
      "source": "_fm_status_kind_to kind \"$f\""
     },
     {
-     "site": "bin/fm-classify-lib.sh:3560",
+     "site": "bin/fm-classify-lib.sh:3156",
      "source": "_fm_status_kind_to kind \"$f\""
     },
     {
@@ -7159,103 +7159,103 @@
      "source": "open=$(status_open_decisions_incremental \"$f\") || continue"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2375",
+     "site": "bin/fm-classify-lib.sh:2303",
      "source": "[ -e \"$f\" ] || continue"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2377",
+     "site": "bin/fm-classify-lib.sh:2305",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || continue"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2379",
+     "site": "bin/fm-classify-lib.sh:2307",
      "source": "size=$(_fm_status_file_size \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2381",
+     "site": "bin/fm-classify-lib.sh:2309",
      "source": "ident=$(_fm_open_decisions_file_ident \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2409",
+     "site": "bin/fm-classify-lib.sh:2337",
      "source": "before_mtime=$(_fm_status_file_mtime \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2410",
+     "site": "bin/fm-classify-lib.sh:2338",
      "source": "before_size=$(_fm_status_file_size \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2412",
+     "site": "bin/fm-classify-lib.sh:2340",
      "source": "before_ident=$(_fm_open_decisions_file_ident \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2424",
+     "site": "bin/fm-classify-lib.sh:2352",
      "source": "_fm_status_read_span \"$f\" \"$start\" \"$length\" > \"$scratch\" 2>/dev/null \\"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2446",
+     "site": "bin/fm-classify-lib.sh:2374",
      "source": "after_mtime=$(_fm_status_file_mtime \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2447",
+     "site": "bin/fm-classify-lib.sh:2375",
      "source": "after_size=$(_fm_status_file_size \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:2449",
+     "site": "bin/fm-classify-lib.sh:2377",
      "source": "after_ident=$(_fm_open_decisions_file_ident \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3152",
+     "site": "bin/fm-classify-lib.sh:2852",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3154",
+     "site": "bin/fm-classify-lib.sh:2854",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" \"$endpoint\" note working \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3156",
+     "site": "bin/fm-classify-lib.sh:2856",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" \"$endpoint\" note \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3280",
+     "site": "bin/fm-wake-drain-lib.sh:395",
      "source": "[ -f \"$f\" ] && [ -r \"$f\" ] && [ ! -L \"$f\" ] || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3281",
+     "site": "bin/fm-wake-drain-lib.sh:396",
      "source": "cur_ident=$(_fm_open_decisions_file_ident \"$f\") || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3282",
+     "site": "bin/fm-wake-drain-lib.sh:397",
      "source": "size=$(_fm_status_file_size \"$f\") || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3287",
+     "site": "bin/fm-wake-drain-lib.sh:402",
      "source": "backstop=$(status_outcome_backstop_cursor_offset \"$f\") || { rm -f \"$tmp\"; return 1; }"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3309",
+     "site": "bin/fm-classify-lib.sh:2905",
      "source": "open=$(status_open_decisions_incremental \"$f\" \"$endpoint\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3433",
+     "site": "bin/fm-classify-lib.sh:3029",
      "source": "offset=$(status_presentation_cursor_offset \"$f\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3532",
+     "site": "bin/fm-classify-lib.sh:3128",
      "source": "[ -e \"$f\" ] || continue"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3537",
+     "site": "bin/fm-classify-lib.sh:3133",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" '' note working \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3539",
+     "site": "bin/fm-classify-lib.sh:3135",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" '' note \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3562",
+     "site": "bin/fm-classify-lib.sh:3158",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" \"$endpoint\" note working \"$resolve\" \"$held\") || return 1"
     },
     {
-     "site": "bin/fm-classify-lib.sh:3564",
+     "site": "bin/fm-classify-lib.sh:3160",
      "source": "lines=$(status_new_lines_since_cursor \"$f\" \"$endpoint\" note \"$resolve\" \"$held\") || return 1"
     },
     {
@@ -7283,11 +7283,11 @@
      "source": "&& open=$(status_open_decisions_incremental \"$log\" \"${size//[[:space:]]/}\" exact); }; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:408",
+     "site": "bin/fm-wake-drain.sh:410",
      "source": "receipt=$(status_outcome_backstop_cursor_offset \"$STATE/$task.status\") || { rc=1; break; }"
     },
     {
-     "site": "bin/fm-wake-drain.sh:410",
+     "site": "bin/fm-wake-drain.sh:412",
      "source": "status_snapshot_latest_event \"$STATE/$task.status\" \"$endpoint\" \"$ident\" || continue"
     },
     {
@@ -7303,11 +7303,11 @@
      "source": "' \"$path\" \"$min_offset\" \"$end_offset\" 2>/dev/null) || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3574",
+     "site": "bin/fm-wake-drain-lib.sh:668",
      "source": "offset=$(fm_wake_status_cursor_offset \"$path\") || return 1"
     },
     {
-     "site": "bin/fm-wake-lib.sh:3586",
+     "site": "bin/fm-wake-drain-lib.sh:680",
      "source": "if ! fm_wake_unread_events \"$path\" 0 \"$offset\" \"$endpoint\"; then"
     }
    ],
@@ -7388,19 +7388,19 @@
      "source": "| if .verdict == \"captain\" then . + {recordedAgo: recorded_ago} else . end' \"$STORE\"; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:362",
+     "site": "bin/fm-wake-drain.sh:364",
      "source": "if [ -e \"$store\" ] || [ -L \"$store\" ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:363",
+     "site": "bin/fm-wake-drain.sh:365",
      "source": "if [ ! -f \"$store\" ] || [ ! -r \"$store\" ] || [ -L \"$store\" ]; then"
     },
     {
-     "site": "bin/fm-wake-drain.sh:457",
+     "site": "bin/fm-wake-drain.sh:459",
      "source": "if [ -e \"$store\" ] || [ -L \"$store\" ]; then fm_lock_release \"$lock\"; fi"
     },
     {
-     "site": "bin/fm-wake-drain.sh:685",
+     "site": "bin/fm-wake-drain.sh:687",
      "source": "[ -s \"$STATE/branch-outcomes.jsonl\" ] || return 0"
     }
    ],

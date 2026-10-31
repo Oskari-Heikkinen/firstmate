@@ -1432,6 +1432,7 @@ test_snapshot_does_not_ack_a_later_append() {
     set -u
     . "$1/bin/fm-wake-lib.sh"
     . "$1/bin/fm-classify-lib.sh"
+    . "$1/bin/fm-wake-drain-lib.sh"
     snapshot=$(status_presentation_snapshot "$STATE")
     scan_unread_surface_snapshot "$STATE" "$snapshot" > "$2"
     printf "note: appended after presentation snapshot\n" >> "$STATE/task-race.status"

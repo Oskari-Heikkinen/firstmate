@@ -850,6 +850,7 @@ SH
   cat > "$script" <<'SH'
 . "$1/bin/fm-wake-lib.sh"
 _fm_wake_require_classify || { printf 'the classify library did not load\n'; exit 0; }
+. "$1/bin/fm-wake-drain-lib.sh"
 cases=$2 state=$3 shim=$4 log=$5 seams=$6
 # The forked readers these helpers replaced, kept as the reference.
 reference_ident() {

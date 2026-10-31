@@ -5209,7 +5209,7 @@ function stage(task, presented, span) {
   const path = `${state}/${task}.status`;
   writeFileSync(path, presented);
   execFileSync("bash", ["-c",
-    'set -e; . "$1"; ident=$(_fm_open_decisions_file_ident "$2/$3.status"); ' +
+    'set -e; . "$1"; . "${1%/*}/fm-wake-drain-lib.sh"; ident=$(_fm_open_decisions_file_ident "$2/$3.status"); ' +
     'status_commit_presentation_snapshot "$2" "$(printf "%s\\t%s\\t%s" "$3" "$4" "$ident")"',
     "_", process.env.CLASSIFY_LIB, state, task, String(Buffer.byteLength(presented))]);
   appendFileSync(path, span);
