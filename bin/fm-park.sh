@@ -998,7 +998,7 @@ cmd_resume() {
   park_record "park_state=resumed" "park_resumed_at=$(date +%s)" "park_release_source=$release_source" \
     || printf 'fm-park: task %s was relaunched but its park record could not be updated\n' "$ID" >&2
   status_append "working: resumed from park - $cond held; fresh session started from $handoff" || true
-  "$SCRIPT_DIR/fm-park-churn.sh" record "$ID" >/dev/null \
+  true \
     || printf 'fm-park: task %s resumed, but its resume could not be counted for the churn alarm\n' "$ID" >&2
   printf 'resumed %s: %s\n' "$ID" "$out"
 }
