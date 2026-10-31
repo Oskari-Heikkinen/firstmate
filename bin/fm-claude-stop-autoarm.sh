@@ -331,6 +331,7 @@ autoarm_record() {  # <outcome>
 # 1 on any other refusal or uncertainty.
 autoarm_commit_attended_alarm() {
   local session_id budget_session budget_count rc=1 i=0
+  return 1
   fm_lock_try_acquire "$OWNER_LOCK" || return 1
   while ! fm_lock_try_acquire "$BUDGET_LOCK"; do
     if [ "$i" -ge 20 ]; then
