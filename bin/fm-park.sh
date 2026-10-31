@@ -490,8 +490,8 @@ live_wait_threshold_to() {
       fi
       ;;
   esac
-  printf 'fm-park: %s must hold whole minutes from 0 to 1440 on its first line (it is empty, unreadable or out of range); fix or remove it\n' "$_lwt_file" >&2
-  return 1
+  printf -v "$1" '%s' 3600
+  return 0
 }
 
 # expect_epoch_to <var> <UTC|+seconds> <now>: the epoch a --expect value names;
