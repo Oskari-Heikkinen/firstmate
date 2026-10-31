@@ -93,12 +93,16 @@ triage_log() {
 }
 
 # Exit after reporting one actionable wake. Tests override this callback.
+# wake <reason> [<cadence-kind>]: the heartbeat backoff streak in
+# .heartbeat-streak grows for a heartbeat* kind and resets for any other. The
+# kind defaults to the reason; an actionable heartbeat passes "actionable", so
+# it keeps its heartbeat reason and delivery but resets the idle backoff.
 wake() {
   local output_status=0
   if [ -n "$FM_WAKE_PRE_OUTPUT_ACTION" ]; then
     "$FM_WAKE_PRE_OUTPUT_ACTION" "$1" || true
   fi
-  case "$1" in
+  case "${2:-$1}" in
     heartbeat*) echo $(( $(cat "$STATE/.heartbeat-streak" 2>/dev/null || echo 0) + 1 )) > "$STATE/.heartbeat-streak" ;;
     *) echo 0 > "$STATE/.heartbeat-streak" ;;
   esac

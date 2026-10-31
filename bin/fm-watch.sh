@@ -4459,7 +4459,9 @@ EOF
   # Heartbeat: the watcher runs a cheap fleet-scan at a regular cadence no matter
   # what. Time-based via .last-heartbeat mtime; interval doubles per consecutive
   # no-change heartbeat (idle fleet) up to HEARTBEAT_MAX, and resets on any
-  # surfaced non-heartbeat wake.
+  # surfaced non-heartbeat wake or backstop hit. An away-mode heartbeat and a
+  # heartbeat woken only because the surfaced markers could not be recorded
+  # found no work, so they keep backing off.
   watcher_beat
   fm_file_text_to streak "$STATE/.heartbeat-streak" || streak=0
   [ "$streak" -gt 12 ] && streak=12
@@ -4484,7 +4486,7 @@ EOF
       fm_wake_append heartbeat heartbeat heartbeat || exit 1
       touch "$STATE/.last-heartbeat"
       mark_all_captain_relevant_surfaced || true
-      wake "heartbeat"
+      wake "heartbeat" actionable
     else
       if ! mark_all_captain_relevant_surfaced; then
         fm_wake_append heartbeat heartbeat heartbeat || exit 1
