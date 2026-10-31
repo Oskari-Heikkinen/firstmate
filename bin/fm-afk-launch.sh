@@ -19,8 +19,9 @@
 # on Pi, the ordinary supervision session keeps running in both postures, and
 # `start` refuses on those harnesses. The same holds for away mode (not quiet
 # mode) on a claude, cursor, opencode, omp, grok, or codex primary whose home
-# runs the supervision host (fm_supervision_host_enabled: explicit config/supervision-host opt-in
-# on every primary), where the host runs the away
+# runs the supervision host (fm_supervision_host_enabled: on by default where
+# the primary's own engine is verified, else config/supervision-host opts in;
+# config/supervision-host-off opts out), where the host runs the away
 # session; `enter` there adds one line when the host has no
 # engine, because every away wake then reaches main. Every other harness still
 # runs the daemon for now, so `start` and `start-native` require the record

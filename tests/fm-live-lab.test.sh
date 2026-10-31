@@ -59,13 +59,14 @@ test_up_host_expectation_matches_explicit_selection() {
   printf '#!/usr/bin/env bash\nexit 1\n' > "$builder/fm-lab-home.sh"
   printf '#!/usr/bin/env bash\nexit 93\n' > "$fakebin/claude"
   chmod +x "$builder/fm-live-lab.sh" "$builder/fm-lab-home.sh" "$fakebin/claude"
-  for name in default none off explicit-expect; do
+  for name in default none off explicit-expect explicit-no; do
     flags=()
     case "$name" in
       default) expected=yes ;;
-      none) flags=(--supervision-host none); expected=no ;;
+      none) flags=(--supervision-host none); expected=yes ;;
       off) flags=(--supervision-host off); expected=no ;;
-      explicit-expect) flags=(--supervision-host none --expect-host yes); expected=yes ;;
+      explicit-expect) flags=(--supervision-host off --expect-host yes); expected=yes ;;
+      explicit-no) flags=(--supervision-host none --expect-host no); expected=no ;;
     esac
     PATH="$fakebin:$PATH" "$builder/fm-live-lab.sh" up --harness claude \
       "${flags[@]+"${flags[@]}"}" "$dir/$name" > "$dir/$name.out" 2>&1
@@ -75,7 +76,7 @@ test_up_host_expectation_matches_explicit_selection() {
     assert_grep "expect_host=$expected" "$dir/$name/.fm-live-lab" \
       "$name host expectation must match its explicit selection or override"
   done
-  pass "lab up keeps its explicit host setup, treats none/off as disabled, and honors an explicit expectation"
+  pass "lab up keeps its explicit host setup, expects the default host with none, treats off as disabled, and honors an explicit expectation"
 }
 
 test_up_host_expectation_matches_explicit_selection
