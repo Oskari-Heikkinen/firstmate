@@ -1817,7 +1817,7 @@ alarm_pass() {  # <home> <state> <repo>
           "note [at=<epoch>]: helper-accepted $h@${sha:0:12}: rerun the update" >/dev/null 2>&1; then
         : > "$f" || problems="$problems"$'\n'"helper-unaccepted: accepted notice for $h@${sha:0:12} sent, but cannot write $f, so the next pass sends it again"
       else
-        problems="$problems"$'\n'"helper-unaccepted: accepted notice for $h@${sha:0:12} not sent to $root/state/$ALARM_STATUS; the next pass retries it"
+        : > "$f"; problems="$problems"$'\n'"helper-unaccepted: accepted notice for $h@${sha:0:12} not sent to $root/state/$ALARM_STATUS; the next pass retries it"
       fi
     done < "$dir/accepted.tsv"
   fi
