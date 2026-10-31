@@ -1400,8 +1400,14 @@ _fm_od_verb_to() {  # <key> <out-var>
 # Fold ONE status line into the working open set above. This is the ONE place
 # the per-line rule is written; the whole-file fold, the incremental fold and
 # the text-form wrapper _fm_decision_fold_line below all call it.
-_fm_od_fold_line() {  # <status-line> <resolve-verb> <held-verb> <kind>
-  local _ofl_unstamped _ofl_verb _ofl_key _ofl_note
+# With <timed> set to 1 each record also carries the time its decision opened,
+# as "<key>\t<verb>\t<opened>\t<note>": the epoch of the opening line's own
+# [at=...] tag, or "unknown" when that line has no well-formed tag or names no
+# explicit key (a keyless decision shares the stated default key, so its time
+# cannot be told apart from another keyless ask's). The open/close rule itself
+# never reads the time.
+_fm_od_fold_line() {  # <status-line> <resolve-verb> <held-verb> <kind> [<timed>]
+  local _ofl_unstamped _ofl_verb _ofl_key _ofl_note _ofl_explicit _ofl_opened
   # Both colon tests below ask where the head ends, the same question the note
   # and key readers ask, so they read the same unstamped copy those readers do.
   # A worker-written time tag must never decide whether a decision opens or
@@ -1445,6 +1451,14 @@ _fm_od_fold_line() {  # <status-line> <resolve-verb> <held-verb> <kind>
   _fm_od_drop "$_ofl_key"
   case "$_ofl_verb" in
     needs-decision|blocked)
+      if [ "${5:-0}" = 1 ]; then
+        _ofl_opened=unknown
+        _fm_decision_key_to "$1" _ofl_explicit '' || _ofl_explicit=''
+        if [ -n "$_ofl_explicit" ] && _fm_status_at_epoch "$1" _ofl_explicit; then
+          _ofl_opened=$_ofl_explicit
+        fi
+        _ofl_note="${_ofl_opened}"$'\t'"${_ofl_note}"
+      fi
       _fm_od_r[_fm_od_n]="${_ofl_key}"$'\t'"${_ofl_verb}"$'\t'"${_ofl_note}"
       _fm_od_n=$((_fm_od_n + 1))
       ;;
@@ -1816,12 +1830,20 @@ EOF
 # mid-fold leaves nothing in state/ but a whole cursor. Otherwise it reads and
 # advances its cursor exactly as above.
 #
-# In either mode a cursor that cannot be written leaves the old one in place
+# Timed mode (`timed` in place of `exact`, with or without a captured end) is
+# for the watcher's open-decision reminder (bin/fm-watch.sh): it reads and
+# advances like the default mode, but on its own cursor
+# (state/.<task>.timed-open-decisions-cursor, same format, its fold version
+# suffixed `:timed`), and each record also carries the time its decision opened
+# (see _fm_od_fold_line), "<key>\t<verb>\t<opened>\t<note>". It never reads or
+# moves the drain's cursor, for the same UNREAD STATUS reason as exact mode.
+#
+# In every mode a cursor that cannot be written leaves the old one in place
 # and the call still answers, since persistence only saves later reading.
 #
 # Not a pure status-file read: this writes/rewrites the sibling cursor file as a
-# side effect (state/.<task>.open-decisions-cursor, or the snapshot cursor in
-# exact mode), the library's second
+# side effect (state/.<task>.open-decisions-cursor, or the snapshot or timed
+# cursor in those modes), the library's second
 # documented exception to the pure-read rule after crew_absorb_class. The write
 # is atomic (temp file + rename), so a crash between calls leaves either the
 # prior cursor or the new one, never a partial one. bin/fm-wake-drain.sh calls
@@ -1842,6 +1864,13 @@ _fm_open_decisions_snapshot_cursor_path() {  # <status-file>
   dir=$(dirname "$f")
   base=$(basename "$f")
   printf '%s/.%s.snapshot-open-decisions-cursor' "$dir" "${base%.status}"
+}
+
+_fm_open_decisions_timed_cursor_path() {  # <status-file>
+  local f=$1 dir base
+  dir=$(dirname "$f")
+  base=$(basename "$f")
+  printf '%s/.%s.timed-open-decisions-cursor' "$dir" "${base%.status}"
 }
 
 # 4: verb parsing ends at the first "[name=value]" tag rather than only at a
@@ -2017,18 +2046,24 @@ _fm_chunk_size_and_tail() {  # <chunk-file>
   ' "$1"
 }
 
-status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [exact]]
-  local f=$1 captured_end=${2:-} exact_mode=0 cf offset ident open='' trusted_open='' cursor_data first rest offset_line ident_line
+status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [exact|timed]]
+  local f=$1 captured_end=${2:-} exact_mode=0 timed=0 cf offset ident open='' trusted_open='' cursor_data first rest offset_line ident_line
   local version='' size actual_size cur_ident resolve held chunk_file chunk_size line cursor_dirty=0 persist=1
   local kind fold_version persisted_open partial_size step want last folded
   local _fm_fold_status_file=$1 _fm_od_n=0
   local -a _fm_od_r
-  [ "${3:-}" = exact ] && exact_mode=1
+  case "${3:-}" in
+    exact) exact_mode=1 ;;
+    timed) timed=1 ;;
+  esac
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || { [ "$exact_mode" = 0 ] || return 1; return 0; }
   kind=$(_fm_status_kind "$f")
   fold_version="$FM_OPEN_DECISIONS_FOLD_VERSION:$kind"
   if [ "$exact_mode" = 1 ]; then
     cf=$(_fm_open_decisions_snapshot_cursor_path "$f")
+  elif [ "$timed" = 1 ]; then
+    cf=$(_fm_open_decisions_timed_cursor_path "$f")
+    fold_version="$fold_version:timed"
   else
     cf=$(_fm_open_decisions_cursor_path "$f")
   fi
@@ -2202,7 +2237,7 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
     held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
     _fm_od_load "$open"
     while IFS= read -r line || [ -n "$line" ]; do
-      _fm_od_fold_line "$line" "$resolve" "$held" "$kind"
+      _fm_od_fold_line "$line" "$resolve" "$held" "$kind" "$timed"
     done < "$chunk_file"
     _fm_od_emit_to open
     persisted_open=$open
@@ -2775,6 +2810,8 @@ status_retire_presentation_task() {  # <state> <task-id>
     && [ ! -L "$state/.$task.open-decisions-cursor" ] \
     && [ ! -e "$state/.$task.snapshot-open-decisions-cursor" ] \
     && [ ! -L "$state/.$task.snapshot-open-decisions-cursor" ] \
+    && [ ! -e "$state/.$task.timed-open-decisions-cursor" ] \
+    && [ ! -L "$state/.$task.timed-open-decisions-cursor" ] \
     && [ ! -e "$home_appends" ] && [ ! -L "$home_appends" ] \
     && [ ! -e "$home_appends_lock" ] && [ ! -L "$home_appends_lock" ] \
     && [ ! -e "$signal_marker" ] && [ ! -L "$signal_marker" ] \
@@ -2827,6 +2864,7 @@ EOF
   if [ "$rc" -eq 0 ]; then
     rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" \
       "$state/.$task.snapshot-open-decisions-cursor" \
+      "$state/.$task.timed-open-decisions-cursor" \
       "$home_appends" "$signal_marker" "$heartbeat_marker" "$daemon_marker" || rc=1
     fm_lock_remove_path "$home_appends_lock" 2>/dev/null || true
   fi

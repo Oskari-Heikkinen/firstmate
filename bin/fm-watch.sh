@@ -95,6 +95,15 @@
 #                          steering-inbox recovery; bin/fm-task-inbox-lib.sh owns
 #                          delivery-attempt, busy-deferral, and unavailable-endpoint policy
 #   check: <script>: <out> authenticated check output, always actionable
+#   check: open decision overdue: <task> key=<key> age=<seconds>s [(+<n> more queued)]
+#                          opt-in (config/open-decision-reminders) age backstop
+#                          for a worker decision still open, independent of pane
+#                          and branch state; open_decision_reminder_tick owns its
+#                          threshold, backoff and exemptions
+#   check: open-decision reminders failed: <why>; ...
+#                          that backstop cannot run (invalid settings, unreadable
+#                          ledger, failed fold or write); raised once per distinct
+#                          failure while the watcher keeps supervising
 #   check: process-event result captured: <keys>
 #                          a durably captured process-to-event result is queued
 #                          and has not been surfaced yet; reported once per
@@ -2534,6 +2543,8 @@ pause_state_class() {  # <window> <task>
 # before this bound and admits only status-declared waits: a backlog-only hold
 # whose mate still says `working:` or `done:` does not reach this read. Reaching
 # it would put backlog reads into windows deliberately skipped on ordinary polls.
+# The opt-in open-decision reminder below also reads it, only for a key that is
+# already due a reminder, at most once per task per reminder tick.
 STALE_WAIT_DECLARATION=
 
 CAPTAIN_CALL_IDENTITY=
@@ -2545,6 +2556,217 @@ task_captain_call_open() {  # <task>
   CAPTAIN_CALL_IDENTITY=$(FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-captain-hold.sh" \
     open "$task" --identity 2>/dev/null) || return 1
   return 0
+}
+
+# Opt-in decision-age backstop: a worker decision that stays open past a
+# threshold wakes this home again, however quiet its pane and branch are.
+# docs/configuration.md "Open-decision reminders" owns the switch and settings.
+# The shared fold owns every open/close transition; this reads its timed view
+# (status_open_decisions_incremental ... timed), which keeps its own cursor and
+# carries each decision's opening [at=...] time without moving the drain's
+# cursor. It scans the same logs the drain's OPEN DECISIONS fold does, skipping
+# this home's outbound parent channel, and only decisions with an explicit key
+# and a known opening time.
+#
+# STATE/.open-decision-reminders stores one row per open, timed decision,
+#   <task> TAB <key> TAB <opened> TAB <last-reminder> TAB <next-delay>
+# rebuilt from the open set on every tick, so a restart keeps each key's backoff
+# and a resolved or reopened decision drops its old row. A key is due once its
+# age reaches the threshold and, after a reminder, once its delay has passed
+# since that reminder; the delay starts at the threshold, doubles after each
+# repeat and stops at the cap. A due key whose task is in a declared paused or
+# captain-held wait, or in an open captain call, is skipped and keeps its row
+# as it was. Every due key gets its own check row; OPEN_DECISION_REMINDER names
+# the oldest, and the caller wakes once for all of them. The row is queued
+# before the ledger records it, so a crash between the two repeats a reminder
+# rather than losing one.
+#
+# Nonzero means nothing was queued for this tick and OPEN_DECISION_ERROR says
+# why: invalid settings, an unreadable ledger, a failed fold or a failed write.
+OPEN_DECISION_REMINDER=
+OPEN_DECISION_ERROR=
+
+# A positive whole number of seconds from <env-value> when set, else from
+# <config-file> when present, else <default>; nonzero with OPEN_DECISION_ERROR
+# set when the value or the file is not usable.
+open_decision_setting_to() {  # <out-var> <env-name> <env-value> <config-file> <default>
+  local _ods_value=$3
+  if [ -z "$_ods_value" ]; then
+    if [ -e "$4" ] || [ -L "$4" ]; then
+      if [ ! -f "$4" ] || [ ! -r "$4" ] || [ -L "$4" ] || ! fm_file_text_to _ods_value "$4"; then
+        OPEN_DECISION_ERROR="setting file $4 is not a readable regular file"
+        return 1
+      fi
+      _ods_value=${_ods_value//[[:space:]]/}
+      case "$_ods_value" in
+        ''|0*|*[!0-9]*) OPEN_DECISION_ERROR="setting file $4 does not hold a positive whole number of seconds"; return 1 ;;
+      esac
+    else
+      _ods_value=$5
+    fi
+  else
+    case "$_ods_value" in
+      0*|*[!0-9]*) OPEN_DECISION_ERROR="$2=$_ods_value is not a positive whole number of seconds"; return 1 ;;
+    esac
+  fi
+  [ "${#_ods_value}" -le 9 ] || { OPEN_DECISION_ERROR="open-decision reminder setting $_ods_value has more than nine digits"; return 1; }
+  printf -v "$1" '%s' "$_ods_value"
+}
+
+open_decision_reminder_tick() {  # [now-epoch], for deterministic clock callers
+  local now=${1:-} threshold cap ledger old='' rows='' exclude f task open key verb opened note
+  local old_task old_key old_opened old_last old_delay last delay wait_task='' waiting wait_line
+  local i j n=0 due_n=0 placed reason tmp
+  local -a r_task r_key r_opened r_last r_delay order order_new
+  OPEN_DECISION_REMINDER=
+  OPEN_DECISION_ERROR=
+  [ -e "$CONFIG/open-decision-reminders" ] || [ -L "$CONFIG/open-decision-reminders" ] || return 0
+  open_decision_setting_to threshold FM_OPEN_DECISION_OVERDUE_SECS "${FM_OPEN_DECISION_OVERDUE_SECS:-}" \
+    "$CONFIG/open-decision-overdue-secs" 1800 || return 1
+  open_decision_setting_to cap FM_OPEN_DECISION_BACKOFF_MAX_SECS "${FM_OPEN_DECISION_BACKOFF_MAX_SECS:-}" \
+    "$CONFIG/open-decision-backoff-max-secs" 14400 || return 1
+  threshold=$((10#$threshold)); cap=$((10#$cap))
+  [ "$cap" -ge "$threshold" ] || {
+    OPEN_DECISION_ERROR="backoff cap ${cap}s is below the ${threshold}s threshold"
+    return 1
+  }
+  [ -n "$now" ] || fm_epoch_seconds_to now
+  ledger="$STATE/.open-decision-reminders"
+  if [ -e "$ledger" ] || [ -L "$ledger" ]; then
+    if [ ! -f "$ledger" ] || [ ! -r "$ledger" ] || [ -L "$ledger" ] || ! fm_file_text_to old "$ledger"; then
+      OPEN_DECISION_ERROR="ledger $ledger is not a readable regular file"
+      return 1
+    fi
+  fi
+  exclude=$(status_scan_parent_channel_exclude "$STATE")
+  for f in "$STATE"/*.status; do
+    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
+    [ "$f" != "$exclude" ] || continue
+    task=${f##*/}; task=${task%.status}
+    open=$(status_open_decisions_incremental "$f" '' timed) || {
+      OPEN_DECISION_ERROR="the timed open-decision fold of $f failed"
+      return 1
+    }
+    [ -n "$open" ] || continue
+    while IFS=$'\t' read -r key verb opened note; do
+      case "$opened" in ''|*[!0-9]*) continue ;; esac
+      last=0; delay=$threshold
+      while IFS=$'\t' read -r old_task old_key old_opened old_last old_delay; do
+        [ "$old_task" = "$task" ] && [ "$old_key" = "$key" ] && [ "$old_opened" = "$opened" ] || continue
+        case "$old_last:$old_delay" in *[!0-9:]*) continue ;; esac
+        [ -n "$old_last" ] && [ "${#old_last}" -le 12 ] \
+          && [ -n "$old_delay" ] && [ "${#old_delay}" -le 9 ] || continue
+        last=$((10#$old_last)); delay=$((10#$old_delay))
+        [ "$delay" -ge "$threshold" ] || delay=$threshold
+        [ "$delay" -le "$cap" ] || delay=$cap
+        break
+      done <<LEDGER
+$old
+LEDGER
+      r_task[n]=$task; r_key[n]=$key; r_opened[n]=$opened; r_last[n]=$last; r_delay[n]=$delay
+      n=$((n + 1))
+      [ "$now" -ge "$opened" ] && [ "$((now - opened))" -ge "$threshold" ] || continue
+      [ "$last" -eq 0 ] || [ "$((now - last))" -ge "$delay" ] || continue
+      # The wait reads run only for a due key, once per task per tick.
+      if [ "$wait_task" != "$task" ]; then
+        wait_task=$task
+        waiting=0
+        status_declared_wait_line_to wait_line "$f"
+        # The hold reader runs inside this loop, so it must not read the
+        # open set from stdin.
+        if status_is_paused_or_captain_held "$wait_line" || task_captain_call_open "$task" < /dev/null; then
+          waiting=1
+        fi
+      fi
+      [ "$waiting" = 0 ] || continue
+      i=$((n - 1))
+      due_n=$((due_n + 1))
+      # Keep the due keys in opening-time order, so the queue lists the
+      # longest-waiting decision first; equal times keep scan order.
+      order_new=()
+      placed=0
+      for j in ${order[@]+"${order[@]}"}; do
+        if [ "$placed" = 0 ] && [ "$opened" -lt "${r_opened[j]}" ]; then
+          order_new+=("$i")
+          placed=1
+        fi
+        order_new+=("$j")
+      done
+      [ "$placed" = 1 ] || order_new+=("$i")
+      order=("${order_new[@]}")
+    done <<OPEN
+$open
+OPEN
+  done
+  if [ "$due_n" -gt 0 ]; then
+    for i in "${order[@]}"; do
+      reason="check: open decision overdue: ${r_task[i]} key=${r_key[i]} age=$((now - r_opened[i]))s"
+      fm_wake_append check "open-decision:${r_task[i]}:${r_key[i]}" "$reason" || {
+        OPEN_DECISION_ERROR="the overdue wake for ${r_task[i]} key=${r_key[i]} could not be queued"
+        return 1
+      }
+      [ -n "$OPEN_DECISION_REMINDER" ] || OPEN_DECISION_REMINDER=$reason
+      [ "${r_last[i]}" -eq 0 ] || r_delay[i]=$((r_delay[i] * 2))
+      [ "${r_delay[i]}" -le "$cap" ] || r_delay[i]=$cap
+      r_last[i]=$now
+    done
+    [ "$due_n" -le 1 ] || OPEN_DECISION_REMINDER="$OPEN_DECISION_REMINDER (+$((due_n - 1)) more queued)"
+  fi
+  for i in ${r_task[@]+"${!r_task[@]}"}; do
+    rows+="${r_task[i]}"$'\t'"${r_key[i]}"$'\t'"${r_opened[i]}"$'\t'"${r_last[i]}"$'\t'"${r_delay[i]}"$'\n'
+  done
+  # An unchanged ledger is not rewritten, so a quiet tick writes nothing.
+  [ "${rows%$'\n'}" != "$old" ] || return 0
+  tmp="$ledger.tmp.$$"
+  if ! printf '%s' "$rows" 2>/dev/null > "$tmp" || ! mv -f "$tmp" "$ledger" 2>/dev/null; then
+    rm -f -- "$tmp" 2>/dev/null
+    OPEN_DECISION_ERROR="ledger $ledger could not be written"
+    return 1
+  fi
+}
+
+# The main loop's entry to the tick above. It runs the tick at most once per
+# OPEN_DECISION_TICK_SECS within one watcher process, and on the first cycle of
+# every process: thresholds are tens of minutes, so a minute's lateness is
+# immaterial, while the timed fold costs a dozen subprocesses per status log.
+# A failed tick never stops the watcher: every other alarm it carries would go
+# quiet with it. It raises one check wake per distinct failure instead,
+# remembered in STATE/.open-decision-reminders.error and cleared by the next
+# tick that succeeds, and the cycle goes on. Nonzero only when that wake cannot
+# be queued.
+OPEN_DECISION_TICK_SECS=60
+OPEN_DECISION_TICK_LAST=
+open_decision_reminder_check() {  # [now-epoch]
+  local now=${1:-} marker="$STATE/.open-decision-reminders.error" seen=''
+  [ -n "$now" ] || fm_epoch_seconds_to now
+  # A clock that stepped back runs the tick rather than holding it until the
+  # clock catches up.
+  if [ -n "$OPEN_DECISION_TICK_LAST" ] && [ "$now" -ge "$OPEN_DECISION_TICK_LAST" ] \
+    && [ "$((now - OPEN_DECISION_TICK_LAST))" -lt "$OPEN_DECISION_TICK_SECS" ]; then
+    OPEN_DECISION_REMINDER=
+    return 0
+  fi
+  OPEN_DECISION_TICK_LAST=$now
+  if open_decision_reminder_tick "$now"; then
+    fm_rm_present "$marker"
+    return 0
+  fi
+  OPEN_DECISION_REMINDER=
+  [ -n "$OPEN_DECISION_ERROR" ] || OPEN_DECISION_ERROR='the reminder tick failed'
+  if [ -f "$marker" ] && [ ! -L "$marker" ] && fm_file_text_to seen "$marker" \
+    && [ "$seen" = "$OPEN_DECISION_ERROR" ]; then
+    return 0
+  fi
+  # A directory or symlink in the marker's place would take the rename into
+  # it, or through it, and still report success.
+  if { [ -e "$marker" ] || [ -L "$marker" ]; } && { [ ! -f "$marker" ] || [ -L "$marker" ]; } \
+    || ! printf '%s\n' "$OPEN_DECISION_ERROR" 2>/dev/null > "$marker.tmp.$$" \
+    || ! mv -f "$marker.tmp.$$" "$marker" 2>/dev/null; then
+    rm -f -- "$marker.tmp.$$" 2>/dev/null
+    OPEN_DECISION_ERROR="$OPEN_DECISION_ERROR, and $marker could not be written, so this repeats every tick"
+  fi
+  OPEN_DECISION_REMINDER="check: open-decision reminders failed: $OPEN_DECISION_ERROR; no reminder is sent until it is fixed"
+  fm_wake_append check open-decision-reminders "$OPEN_DECISION_REMINDER"
 }
 
 # The identity a re-surface throttle is bound to for a captain call, carrying
@@ -3824,6 +4046,10 @@ while :; do
   # No conversation scraping; unresolved records are never silently expired.
   # Incremental status readers use this callback for completed nested work too.
   fm_pending_reply_tick "$STATE" watcher_beat || true
+
+  # Opt-in overdue open-decision reminders: a check wake, so never batched.
+  open_decision_reminder_check || exit 1
+  [ -z "$OPEN_DECISION_REMINDER" ] || wake "$OPEN_DECISION_REMINDER"
 
   # Endpoint liveness runs before queue observation: a positively dead or
   # missing secondmate endpoint is relaunched here on a bounded cadence, which
