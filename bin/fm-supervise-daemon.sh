@@ -194,6 +194,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 # for the captain is never rechecked (the watcher applies the same rule).
 # shellcheck source=bin/fm-afk-contract.sh
 . "$FM_DAEMON_DIR/fm-afk-contract.sh"
+# The one config/watch.env loader the arm and the checkpoint also use.
+# shellcheck source=bin/fm-watch-env-lib.sh
+. "$FM_DAEMON_DIR/fm-watch-env-lib.sh"
 
 # The active-alert channels (wedge_alarm_notify and its notifiers, the
 # config/wedge-alarm reader, and the FM_WEDGE_ALARM_EXEC seam). Shared with the
@@ -582,12 +585,21 @@ clear_pause_tracking() {  # <window> <state>
   task=$(window_to_task "$win" "$state")
   key=$(_stale_key "$task")
   watcher_key=$(_stale_key "$win")
+  # This list mirrors the watcher's own per-window markers, cap markers included:
+  # releasing a window's wedge timer and escalation count releases them with it,
+  # which is what bin/fm-watch.sh's wedge_episode_end does on the routes that
+  # end an episode there. A marker missing from either list outlives a release
+  # the other already made, and a cap marker that does outlives its window for
+  # the whole horizon.
   rm -f "$state/.subsuper-paused-$key" "$state/.subsuper-pause-until-due-$key" "$state/.subsuper-stale-$key" \
     "$state/.subsuper-pause-absorbed-$key" "$state/.recheck-fp-$watcher_key" "$state/.recheck-surfaced-$watcher_key" \
     "$state/.paused-$watcher_key" "$state/.paused-rechecked-$watcher_key" "$state/.paused-resurfaced-$watcher_key" \
     "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key" \
+    "$state/.wedge-permanent-$watcher_key" "$state/.wedge-terminal-queued-$watcher_key" \
+    "$state/.wedge-rollback-failed-$watcher_key" \
     "$state/.writing-since-$watcher_key" "$state/.writing-resurfaced-$watcher_key" \
-    "$state/.waiting-resurfaced-$watcher_key"
+    "$state/.validating-since-$watcher_key" "$state/.validating-resurfaced-$watcher_key" \
+    "$state/.waiting-resurfaced-$watcher_key" "$state/.guard-deferrals-$watcher_key"
 }
 
 reconcile_pause_tracking() {  # <window> <state> <last-status-line>
@@ -1463,12 +1475,19 @@ handle_wake() {  # <reason> <state>
               # once per STALE_ESCALATE_SECS for as long as the wait lasted.
               # Housekeeping (2b) then owns the re-surface, so the wait is still
               # bounded - by one recheck per PAUSE_RESURFACE_SECS instead.
+              # Where config/wedge-defer-worker-wait arms it, the worker's own
+              # still-open newest blocked: or needs-decision: line is the same
+              # kind of declaration (worker_wait_deferral_verb, the armed test the
+              # watcher shares, owns it), and that line's own signal already
+              # escalated it.
               case "${decision%%|*}" in
                 pause) : ;;
                 *) case "$stale_detail" in
                      idle\ *s,\ possible\ wedge,\ escalation\ *)
                        last=$(status_declared_wait_line "$state/$task.status")
                        status_is_paused_or_captain_held "$last" \
+                         || worker_wait_deferral_verb "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" \
+                              "$state/$task.status" >/dev/null \
                          || decision="escalate|${reason#stale: }"
                        ;;
                    esac ;;
@@ -1785,7 +1804,11 @@ fm_super_main() {
 
   start_watcher() {
     CUR_TMP=$(mktemp "${TMPDIR:-/tmp}/fm-watch.XXXXXX") || { log "error: mktemp failed; retrying in 5s"; daemon_nap 5; return 1; }
-    "$WATCH" >"$CUR_TMP" 2>>"$WATCH_ERR" &
+    # config/watch.env reaches this watcher as it reaches an armed one, loaded in
+    # the child alone so the daemon's own settings stay its own; exec keeps the
+    # child's pid as the watcher's.
+    ( fm_watch_env_load "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"; exec "$WATCH" ) \
+      >"$CUR_TMP" 2>>"$WATCH_ERR" &
     WATCHER_PID=$!
   }
 
