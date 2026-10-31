@@ -23,21 +23,31 @@ write_proc() {
   printf 'some avg10=1.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=%s avg60=0.00 avg300=0.00 total=0\n' "$2" > "$C/proc/pressure/memory"
 }
 
-# fake_ps <available-mib> <pages-in/s> [delay-seconds] [non-paged-pool-mib]: a powershell.exe
-# stub that counts its calls and prints raw counters on FM_MEM_GUARD_NOW's clock: a
-# cumulative page-in count that grows at the given rate since the previous call and
-# starts just below the 32-bit wrap, a 2 pages/s page-out count, a 10 MHz perf
-# clock, and the non-paged pool (default 600 MiB).
+# fake_ps <available-mib> <pages-in/s> [delay-seconds] [non-paged-pool-mib] [vm-faults/s] [vm-pid]:
+# a powershell.exe stub that counts its calls and prints raw counters on
+# FM_MEM_GUARD_NOW's clock: a cumulative page-in count that grows at the given rate
+# since the previous call and starts just below the 32-bit wrap, a 2 pages/s page-out
+# count, a 10 MHz perf clock, the non-paged pool (default 600 MiB), and the vmmemWSL
+# process (default pid 4242) with a cumulative fault count growing at vm-faults/s
+# (default the page-in rate, so all paging is the VM's) from just below the wrap.
+# vm-faults/s `-` prints no vmmemWSL process.
 fake_ps() {
   cat > "$C/powershell.exe" <<SH
 #!/usr/bin/env bash
 echo call >> "$C/ps-calls"
 sleep ${3:-0}
 now=\${FM_MEM_GUARD_NOW:-0}
-{ read -r last total < "$C/ps-pages"; } 2>/dev/null || { last=\$now; total=4294967000; }
+{ read -r last total vm < "$C/ps-pages"; } 2>/dev/null || { last=\$now; total=4294967000; vm=4294966000; }
 total=\$(( (total + (now - last) * $2) % 4294967296 ))
-printf '%s %s\n' "\$now" "\$total" > "$C/ps-pages"
-printf '32817692 %s %s %s %s %s 10000000 %s\r\n' "\$(( $1 * 1024 ))" "$1" "\$total" "\$(( now * 2 % 4294967296 ))" "\$(( now * 10000000 ))" "\$(( ${4:-600} * 1048576 ))"
+case "${5:-$2}" in - | legacy | bad) ;; *) vm=\$(( (vm + (now - last) * ${5:-$2}) % 4294967296 )) ;; esac
+printf '%s %s %s\n' "\$now" "\$total" "\$vm" > "$C/ps-pages"
+case "${5:-$2}" in
+  -) w='- - - -' ;;
+  legacy) w= ;;
+  bad) w="${6:-4242} 12x 1 10000000" ;;
+  *) w="${6:-4242} \$vm \$(( now * 10000000 )) 10000000" ;;
+esac
+printf '32817692 %s %s %s %s %s 10000000 %s %s\r\n' "\$(( $1 * 1024 ))" "$1" "\$total" "\$(( now * 2 % 4294967296 ))" "\$(( now * 10000000 ))" "\$(( ${4:-600} * 1048576 ))" "\$w"
 SH
   chmod +x "$C/powershell.exe"
 }
@@ -84,6 +94,9 @@ test_sample_reads_both_sides_and_caches_windows() {
   assert_contains "$out" "win_pages_in_ps=10"$'\n' "pages input is averaged across the 32-bit counter wrap"
   assert_contains "$out" "win_pages_out_ps=2"$'\n' "pages output is read for the log"
   assert_contains "$out" "win_paging_span_s=90"$'\n' "a reading under 60s after the last keeps measuring from the older baseline"
+  assert_contains "$out" "win_vm_faults_ps=10"$'\n' "the VM's faults are averaged across the 32-bit counter wrap"
+  assert_contains "$out" "win_vm_paging_span_s=90"$'\n' "the VM's faults are measured from the same baseline"
+  assert_contains "$out" "win_vm_source=vmmemWSL pid 4242"$'\n' "the VM process is named"
   pass "sample reads Windows and Linux memory, averages paging between readings, and shares one cached powershell reading"
 }
 
@@ -114,8 +127,8 @@ test_grading_levels_and_hysteresis() {
   FM_MEM_GUARD_NOW=1000100 guard sample --fresh >/dev/null
   out=$(FM_MEM_GUARD_NOW=1000100 guard tick)
   assert_contains "$out" "level=refuse" "Windows available 1800 MiB grades refuse"
-  assert_contains "$out" "Windows pages input 300/s averaged over 100s (park)" "paging is graded on its own ladder"
-  assert_equals "refuse 1000100 Windows available 1800 MiB (refuse); Windows pages input 300/s averaged over 100s (park)" "$(FM_MEM_GUARD_NOW=1000100 guard level)" "level prints the recorded level"
+  assert_contains "$out" "WSL VM paging at most 300/s (vmmemWSL faults 300/s, Windows pages input 300/s) averaged over 100s (park)" "paging is graded on its own ladder"
+  assert_equals "refuse 1000100 Windows available 1800 MiB (refuse); WSL VM paging at most 300/s (vmmemWSL faults 300/s, Windows pages input 300/s) averaged over 100s (park)" "$(FM_MEM_GUARD_NOW=1000100 guard level)" "level prints the recorded level"
   fake_ps 12000 10
   FM_MEM_GUARD_NOW=1000200 guard sample --fresh >/dev/null
   out=$(FM_MEM_GUARD_NOW=1000200 guard tick)
@@ -199,20 +212,20 @@ test_starved_windows_host_tells_main_start_repeat_and_clear() {
   fake_ps 1600 700 0 4506
   guard sample >/dev/null
   out=$(FM_MEM_GUARD_NOW=1000300 guard tick --check)
-  assert_contains "$out" "memory guard refuse: Windows pages input 700/s averaged over 300s (refuse)" "sustained page-ins grade above ok and name the rate"
+  assert_contains "$out" "memory guard refuse: WSL VM paging at most 700/s (vmmemWSL faults 700/s, Windows pages input 700/s) averaged over 300s (refuse)" "sustained page-ins grade above ok and name the rate"
   assert_contains "$out" "Windows non-paged pool 4506 MiB, normal is under 1024 MiB (warn: a leaking Windows driver is the likely cause" "the abnormal pool is named with its likely cause"
   assert_contains "$out" "new agents and heavy jobs are refused" "the wake names the response"
   assert_equals 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "the state's start is told in one line"
   fake_ps 1600 1250 0 4506
   out=$(FM_MEM_GUARD_NOW=1000600 guard tick --check)
-  assert_contains "$out" "memory guard critical: Windows pages input 1250/s" "a rise inside the repeat window is told at once"
+  assert_contains "$out" "memory guard critical: WSL VM paging at most 1250/s" "a rise inside the repeat window is told at once"
   fake_ps 1600 600 0 4506
   for t in 1000900 1001200 1001500 1001800 1002100; do
     out=$(FM_MEM_GUARD_NOW=$t guard tick --check)
     assert_equals "" "$out" "a steady or falling state inside rewake_s stays silent at $t"
   done
   out=$(FM_MEM_GUARD_NOW=1002400 guard tick --check)
-  assert_contains "$out" "memory guard refuse: Windows pages input 600/s averaged over 300s (refuse)" "the state is told again after rewake_s"
+  assert_contains "$out" "memory guard refuse: WSL VM paging at most 600/s (vmmemWSL faults 600/s, Windows pages input 600/s) averaged over 300s (refuse)" "the state is told again after rewake_s"
   fake_ps 6000 50 0 600
   out=$(FM_MEM_GUARD_NOW=1002700 guard tick --check)
   assert_equals "" "$out" "one healthy sample holds the level without a notice"
@@ -237,6 +250,85 @@ test_healthy_windows_host_stays_ok_and_silent() {
   assert_contains "$out" "graded=ok" "paging under 100/s and a 600 MiB pool grade ok"
   assert_absent "$C/home/state/.mem-guard-wake" "no notice is held open"
   pass "paging under 100/s and a normal non-paged pool stay ok and silent"
+}
+
+# The native Windows build case: system-wide page-ins in the thousands while the
+# VM's own faults stay low, and the reverse, VM faults (demand-zero churn) far above
+# the system's page-ins, which bound the VM's hard faults from above.
+test_windows_side_paging_grades_at_most_warn_and_admits() {
+  local out rc
+  new_case winside
+  printf '{}\n' > "$C/rules.json"
+  fake_ps 12000 3000 0 600 90
+  guard sample >/dev/null
+  out=$(FM_MEM_GUARD_NOW=1000300 guard tick)
+  assert_contains "$out" "level=warn" "system-wide paging with a quiet VM grades warn"
+  assert_contains "$out" "Windows pages input 3000/s averaged over 300s, WSL VM at most 90/s (warn: Windows-side paging only grades warn)" "the reason separates Windows-side paging from the VM's"
+  out=$(FM_MEM_GUARD_NOW=1000300 guard admit --cost-mib 1024); rc=$?
+  expect_code 0 "$rc" "admit while Windows-side paging is high"$'\n'"$out"
+  assert_equals admit "$out" "Windows-side paging does not refuse"
+  assert_absent "$C/home/state/.mem-guard-park" "Windows-side paging starts no park pass"
+  fake_ps 12000 120 0 600 5000
+  out=$(FM_MEM_GUARD_NOW=1000600 guard tick)
+  assert_contains "$out" "WSL VM paging at most 120/s (vmmemWSL faults 5000/s, Windows pages input 120/s) averaged over 300s (warn)" "VM faults above the system's page-ins are bounded by them"
+  assert_contains "$out" "level=warn" "VM soft faults alone do not park"
+  pass "system-wide Windows paging grades at most warn and admits, and VM faults count only up to the system's page-ins"
+}
+
+test_vm_paging_parks_and_refuses() {
+  local out rc
+  new_case vmpaging
+  printf '{}\n' > "$C/rules.json"
+  fake_ps 12000 300 0 600 300
+  guard sample >/dev/null
+  out=$(FM_MEM_GUARD_NOW=1000300 guard tick)
+  assert_contains "$out" "level=park" "VM paging of 300/s parks"
+  fake_ps 12000 700 0 600 650
+  out=$(FM_MEM_GUARD_NOW=1000600 guard tick)
+  assert_contains "$out" "level=refuse" "VM paging of 650/s refuses"
+  assert_contains "$out" "WSL VM paging at most 650/s (vmmemWSL faults 650/s, Windows pages input 700/s) averaged over 300s (refuse)" "the VM's bound is the lower rate"
+  out=$(FM_MEM_GUARD_NOW=1000600 guard admit); rc=$?
+  expect_code 1 "$rc" "admit while the VM pages"
+  assert_contains "$out" "refuse: memory guard is at refuse: WSL VM paging at most 650/s" "the recorded level refuses and names the VM's paging"
+  pass "paging attributable to the WSL VM parks and refuses on the win_pages_in_ps ladder"
+}
+
+test_unknown_vm_share_grades_system_paging_on_the_full_ladder() {
+  local out rc
+  new_case vmunknown
+  printf '{}\n' > "$C/rules.json"
+  fake_ps 12000 600 0 600 -
+  guard sample >/dev/null
+  out=$(FM_MEM_GUARD_NOW=1000300 guard tick)
+  assert_contains "$out" "level=refuse" "no vmmemWSL process leaves the VM's share unknown, graded on the full ladder"
+  assert_contains "$out" "Windows pages input 600/s averaged over 300s, graded as WSL VM paging because the VM's share is unknown: no single vmmemWSL process in the Windows reading (refuse)" "the reason says the VM share is unknown and why"
+  assert_grep "sample graded system-wide Windows paging as WSL VM paging: the VM's share is unknown: no single vmmemWSL process in the Windows reading" "$C/guard/events.log" "the unknown share is logged"
+  out=$(FM_MEM_GUARD_NOW=1000300 guard admit); rc=$?
+  expect_code 1 "$rc" "admit with an unknown VM share and high paging"
+  out=$(FM_MEM_GUARD_NOW=1000300 guard status)
+  assert_contains "$out" "win_vm_source=unknown: no single vmmemWSL process in the Windows reading"$'\n' "status names the unknown VM share"
+  fake_ps 12000 600 0 600 10
+  FM_MEM_GUARD_NOW=1000600 guard tick >/dev/null
+  fake_ps 12000 600 0 600 10 5555
+  out=$(FM_MEM_GUARD_NOW=1000900 guard tick)
+  assert_contains "$out" "the VM's share is unknown: vmmemWSL pid 5555 has no fault rate yet (needs two of its readings 60-600s apart) (refuse)" "a restarted VM process is not measured from the old process's baseline, and is not read as quiet"
+  out=$(FM_MEM_GUARD_NOW=1001200 guard tick)
+  assert_contains "$out" "WSL VM at most 10/s (warn" "the new VM process is measured from its own baseline"
+  printf '%s\n' "999999 $(cut -d' ' -f2- "$C/guard/vm")" > "$C/guard/vm"
+  out=$(FM_MEM_GUARD_NOW=1001210 guard tick)
+  assert_contains "$out" "the VM's share is unknown: no vmmemWSL reading taken with this Windows reading (refuse)" "a VM record from another reading is not used, and is not read as quiet"
+  out=$(FM_MEM_GUARD_NOW=1001500 guard tick)
+  assert_contains "$out" "WSL VM at most 10/s (warn" "the VM rate holds before its baseline's perf frequency changes"
+  printf '%s\n' "$(cut -d' ' -f1-4 "$C/guard/vm") 5000000 $(cut -d' ' -f6- "$C/guard/vm")" > "$C/guard/vm"
+  out=$(FM_MEM_GUARD_NOW=1001800 guard tick)
+  assert_contains "$out" "the VM's share is unknown: vmmemWSL pid 5555 has no fault rate yet (needs two of its readings 60-600s apart) (refuse)" "a VM baseline taken at another perf frequency is not used"
+  fake_ps 12000 600 0 600 bad
+  out=$(FM_MEM_GUARD_NOW=1002100 guard tick)
+  assert_contains "$out" "Windows pages input 600/s averaged over 300s, graded as WSL VM paging because the VM's share is unknown: the Windows reading's vmmemWSL fields were missing or not numbers (refuse)" "unreadable vmmemWSL fields keep the Windows reading and leave the VM's share unknown"
+  fake_ps 12000 600 0 600 legacy
+  out=$(FM_MEM_GUARD_NOW=1002400 guard tick)
+  assert_contains "$out" "Windows pages input 600/s averaged over 300s, graded as WSL VM paging because the VM's share is unknown: the Windows reading's vmmemWSL fields were missing or not numbers (refuse)" "a reading without the vmmemWSL fields keeps the Windows reading and leaves the VM's share unknown"
+  pass "an unknown VM share grades system-wide paging on the full ladder, names why, and refuses rather than admits"
 }
 
 test_pool_notice_holds_through_an_unavailable_reading() {
@@ -426,7 +518,7 @@ test_rules_override_and_malformed_values_warn() {
   rm -f "$C/home/state/.mem-guard-wake"
   out=$(FM_MEM_GUARD_NOW=1000200 guard tick --check)
   assert_equals "" "$out" "a raised wake level and a disabled pool signal keep a refuse level from main"
-  assert_contains "$(FM_MEM_GUARD_NOW=1000200 guard level)" "Windows pages input 35/s averaged over 100s (refuse)" "configured page-in thresholds apply"
+  assert_contains "$(FM_MEM_GUARD_NOW=1000200 guard level)" "WSL VM paging at most 35/s (vmmemWSL faults 35/s, Windows pages input 35/s) averaged over 100s (refuse)" "configured page-in thresholds apply"
   pass "rules override thresholds and malformed or retired values warn and keep defaults"
 }
 
@@ -506,6 +598,9 @@ test_swap_grades_only_while_growing
 test_admit_refuses_heavy_jobs
 test_starved_windows_host_tells_main_start_repeat_and_clear
 test_healthy_windows_host_stays_ok_and_silent
+test_windows_side_paging_grades_at_most_warn_and_admits
+test_vm_paging_parks_and_refuses
+test_unknown_vm_share_grades_system_paging_on_the_full_ladder
 test_pool_notice_holds_through_an_unavailable_reading
 test_critical_wakes_only_main_once_per_window
 test_park_level_parks_or_steers_idle_workers
