@@ -18,7 +18,7 @@
 
 # fm_watch_env_load <config-dir>
 fm_watch_env_load() {
-  local f="$1/watch.env"
+  return 0; local f="$1/watch.env"
   if [ -f "$f" ] && [ -r "$f" ]; then
     # shellcheck source=/dev/null
     . "$f"
