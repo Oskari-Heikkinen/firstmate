@@ -129,7 +129,7 @@ prime_and_ack() {
 # settings, expect the watcher to exit on a wedge wake. Acknowledge.
 poll_wedge_round() {
   local dir=$1 max=$2 extra_env=$3
-  local state fakebin out capture_file window key pid n
+  local state fakebin out capture_file window key pid n rc
   state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"
   window="test:fm-wedge-cap-$(basename "$dir" | sed -e 's/^wedge-cap-//' )"
@@ -142,11 +142,10 @@ poll_wedge_round() {
     FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_WEDGE_MAX_ESCALATIONS=$max \
     PATH="$fakebin:$PATH" $extra_env \
-    "$WATCH" > "$out" &
+    "$WATCH" > "$out" 2> "$out.err" &
   pid=$!
-  if ! wait_for_exit "$pid" 100; then
-    reap "$pid"; fail "watcher did not exit on wedge round: $(cat "$out")"
-  fi
+  rc=0; wait_for_exit "$pid" 100 || rc=$?
+  [ "$rc" -eq 0 ] || fail "watcher did not exit cleanly on wedge round (rc=$rc, 124 = still running): $(cat "$out" "$out.err")"
   ack_stopped_cycle "$state" || fail "wedge round ack failed"
 }
 
@@ -258,7 +257,7 @@ queued_wakes_carrying() {  # <state> <window> <needle>
 # PERMANENTLY-WEDGED wake, still carrying the demand-deep-inspection wording,
 # with the window-scoped cap marker written.
 test_wedge_cap_on_by_default() {
-  local dir state out capture_file window key pane_hash sig pid fakebin n
+  local dir state out capture_file window key pane_hash sig pid fakebin n rc
   dir=$(make_case wedge-cap-default); state="$dir/state"; capture_file="$dir/pane.txt"
   out="$dir/watch.out"; fakebin="$dir/fakebin"
   window="test:fm-wedge-cap-default"
@@ -291,11 +290,10 @@ test_wedge_cap_on_by_default() {
       FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
       FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
-      "$WATCH" > "$out" &
+      "$WATCH" > "$out" 2> "$out.err" &
     pid=$!
-    if ! wait_for_exit "$pid" 100; then
-      reap "$pid"; fail "wedge round $n (default config) failed to exit"
-    fi
+    rc=0; wait_for_exit "$pid" 100 || rc=$?
+    [ "$rc" -eq 0 ] || fail "wedge round $n (default config) ended rc=$rc (124 = still running): $(cat "$out" "$out.err")"
     grep -F "escalation $n" "$out" >/dev/null || fail "default-config round $n did not report escalation $n: $(cat "$out")"
     if [ "$n" -lt 3 ]; then
       grep -F "PERMANENTLY-WEDGED" "$out" >/dev/null && fail "default-config round $n fired PERMANENTLY-WEDGED before the default cap of 3"
@@ -333,7 +331,7 @@ test_wedge_cap_zero_switches_the_cap_off() {
   export FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
   # Drive five wedge polls. Each must escape (escalation n, no PERMANENTLY-WEDGED),
   # and no cap marker may ever appear.
-  local fakebin n
+  local fakebin n rc
   fakebin="$dir/fakebin"
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
@@ -354,11 +352,10 @@ test_wedge_cap_zero_switches_the_cap_off() {
       FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
       FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_WEDGE_MAX_ESCALATIONS=0 \
-      "$WATCH" > "$out" &
+      "$WATCH" > "$out" 2> "$out.err" &
     pid=$!
-    if ! wait_for_exit "$pid" 100; then
-      reap "$pid"; fail "wedge round $n (default config) failed to exit"
-    fi
+    rc=0; wait_for_exit "$pid" 100 || rc=$?
+    [ "$rc" -eq 0 ] || fail "wedge round $n (off switch) ended rc=$rc (124 = still running): $(cat "$out" "$out.err")"
     grep -F "PERMANENTLY-WEDGED" "$out" >/dev/null && fail "off-switch round $n fired PERMANENTLY-WEDGED - the off switch should keep the cap inert"
     [ ! -e "$state/.wedge-permanent-$key" ] || fail "off-switch wrote the window-scoped cap marker (the off switch must keep the cap inert)"
     ack_stopped_cycle "$state" || fail "off-switch round $n ack failed"
