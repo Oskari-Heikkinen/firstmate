@@ -28,6 +28,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm_handoff_adapters.py` | Receipt adapters: read Firstmate's existing handoff records (pending replies, inbox messages, task metas, status logs) as handoff-receipt/v1 for the watcher, writing nothing |
 | `fm-schedule.sh`        | File captain-approved scheduled runs on a calendar, list them, and install or remove its user timer |
 | `fm-schedule.py`        | Validate schedule files, run the scheduled-run scan, read run summaries and write the board summary |
+| `fm-unit-file-lib.sh`   | Shared checks and escaping for the values `install-timer` commands write into systemd user units |
 | `fm-usage-audit.py`      | Audit explicitly selected local usage, status, ledger and inventory inputs |
 | `fm-home-summary-refresh.sh` | Atomically publish this home's structured summary ledger                         |
 | `fm-fleet-ledger.sh`     | Append the opt-in fleet activity ledger's records ([contract](fleet-ledger.md))      |

@@ -48,10 +48,16 @@
 # install-timer writes fm-schedule.service and fm-schedule.timer into
 # ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user, pinned to this code root and
 # the selected home, then runs `systemctl --user daemon-reload` and
-# `systemctl --user enable --now fm-schedule.timer`. The timer scans every 15
-# minutes and is Persistent=true; the service is a niced oneshot capped at 5
-# minutes. uninstall-timer disables the timer and removes both units; neither
-# touches schedules or run records.
+# `systemctl --user enable --now fm-schedule.timer`. The service carries the
+# installer's PATH, because the user manager's own PATH lacks per-user tool
+# directories such as ~/.local/npm/bin; it refuses, writing nothing, when
+# tasks-axi, python3 or systemd-analyze is not on that PATH, and reinstalling
+# after PATH changes rewrites the same two files. It never edits a drop-in under
+# fm-schedule.service.d/; it names each one there, because a drop-in's
+# Environment=PATH overrides the unit's. The timer scans every 15 minutes and
+# is Persistent=true; the service is a niced oneshot capped at 5 minutes.
+# uninstall-timer disables the timer and removes both units; neither touches
+# schedules, run records or drop-ins.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,13 +98,22 @@ case "$now" in ''|*[!0-9]*) [ -z "$now" ] || die "--now must be an integer epoch
 
 unit_dir() { printf '%s/systemd/user\n' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 
-# systemd unit lines get these paths verbatim, so only plain path characters pass.
-safe_path() { [[ "$1" =~ ^/[A-Za-z0-9._/@+-]+$ ]]; }
+# shellcheck source=bin/fm-unit-file-lib.sh
+. "$SCRIPT_DIR/fm-unit-file-lib.sh"
+
+# What a scan runs from PATH: tasks-axi through each home's bin/fm-tasks-axi.sh,
+# and the engine with its calendar evaluator.
+SCAN_TOOLS="tasks-axi python3 systemd-analyze"
 
 install_timer() {
-  local dir
-  safe_path "$CODE_ROOT" || die "code root has characters a unit file cannot carry: $CODE_ROOT"
-  safe_path "$home" || die "home has characters a unit file cannot carry: $home"
+  local dir env_line tool dropin
+  fm_unit_safe_path "$CODE_ROOT" || die "code root has characters a unit file cannot carry: $CODE_ROOT"
+  fm_unit_safe_path "$home" || die "home has characters a unit file cannot carry: $home"
+  for tool in $SCAN_TOOLS; do
+    command -v "$tool" >/dev/null 2>&1 \
+      || die "$tool is not on PATH, so the timer's scan could not run it; install it or fix PATH, then rerun install-timer"
+  done
+  env_line=$(fm_unit_env PATH "$PATH") || exit 2
   dir=$(unit_dir)
   mkdir -p "$dir"
   cat > "$dir/$UNIT.service.tmp" <<EOF
@@ -111,6 +126,7 @@ Nice=10
 IOSchedulingClass=idle
 TimeoutStartSec=300
 Environment=FM_HOME=$home
+$env_line
 ExecStart=/usr/bin/env bash $CODE_ROOT/bin/fm-schedule.sh scan --home $home
 EOF
   cat > "$dir/$UNIT.timer.tmp" <<EOF
@@ -128,7 +144,11 @@ WantedBy=timers.target
 EOF
   mv -f "$dir/$UNIT.service.tmp" "$dir/$UNIT.service"
   mv -f "$dir/$UNIT.timer.tmp" "$dir/$UNIT.timer"
-  printf 'wrote %s/%s.service and %s.timer (home %s)\n' "$dir" "$UNIT" "$UNIT" "$home"
+  printf 'wrote %s/%s.service and %s.timer (home %s, PATH from this shell)\n' "$dir" "$UNIT" "$UNIT" "$home"
+  for dropin in "$dir/$UNIT.service.d"/*.conf; do
+    [ -e "$dropin" ] || continue
+    printf 'note: drop-in %s also applies; its settings, an Environment=PATH included, override the unit'"'"'s\n' "$dropin"
+  done
   command -v systemctl >/dev/null 2>&1 \
     || die "systemctl not found; enable later with: systemctl --user daemon-reload && systemctl --user enable --now $UNIT.timer"
   systemctl --user daemon-reload

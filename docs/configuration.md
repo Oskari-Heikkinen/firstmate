@@ -1828,6 +1828,7 @@ A home with no fragment reads exactly what this file names.
 A scheduled run is a captain-approved task that [`bin/fm-schedule.sh`](../bin/fm-schedule.sh) files on a calendar, so nobody has to remember it.
 The script's header owns its commands, the timer and the scan steps; this section owns the file formats.
 `bin/fm-schedule.sh install-timer` enables one user timer that scans every 15 minutes; nothing is scheduled until a home adds a schedule file.
+Its service carries the installing shell's `PATH`, because the systemd user manager's own `PATH` lacks per-user directories such as `~/.local/npm/bin` where `tasks-axi` lives, so rerun `install-timer` after that `PATH` changes.
 Main and every local home in main's `data/secondmates.md` are scanned, and each home's tasks are filed through that home's own `bin/fm-tasks-axi.sh`.
 A scheduled run counts as captain-routed work, so the home that receives one dispatches it like any other approved task.
 

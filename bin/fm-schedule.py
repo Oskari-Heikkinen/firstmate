@@ -59,9 +59,17 @@ def one_line(text, n=600):
 
 
 def local(epoch):
-    if not epoch:
+    # A run record stores "no time" as "0" (a non-empty string), so test the number.
+    if not epoch or int(epoch) <= 0:
         return "-"
     return time.strftime("%a %Y-%m-%d %H:%M %Z", time.localtime(int(epoch)))
+
+
+def next_run(epoch):
+    """The next slot in words; a calendar with no slot left (a passed one-time date) says so."""
+    if not epoch or int(epoch) <= 0:
+        return "none: its calendar has no slot after now"
+    return local(epoch)
 
 
 def slot_stamp(epoch):
@@ -755,7 +763,7 @@ def main(argv=None):
                     bad += 1
                     print("refused %s: %s" % (conf["file"], conf["error"]))
                 else:
-                    print("ok      %s (next %s)" % (conf["file"], local(next_after(conf["calendar"], now))))
+                    print("ok      %s (next %s)" % (conf["file"], next_run(next_after(conf["calendar"], now))))
         return 1 if bad else 0
 
     if a.command == "list":
@@ -796,9 +804,9 @@ def main(argv=None):
         write_kv(rec_path(home, name), rec)
         if was:
             queue_notice(home, name, "resolved", "schedule-%s-paused" % name,
-                         "scheduled run %s (home %s) resumed; next run %s" % (name, area, local(rec["next_due"])))
+                         "scheduled run %s (home %s) resumed; next run %s" % (name, area, next_run(rec["next_due"])))
             flush_notices(env, home, area, name)
-        print("resumed %s/%s; next run %s" % (area, name, local(rec["next_due"])))
+        print("resumed %s/%s; next run %s" % (area, name, next_run(rec["next_due"])))
         return 0
 
     rows = gather(homes, env)

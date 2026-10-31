@@ -57,13 +57,13 @@ case "$now" in ''|*[!0-9]*) [ -z "$now" ] || die "--now must be an integer epoch
 
 unit_dir() { printf '%s/systemd/user\n' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 
-# systemd unit lines get these paths verbatim, so only plain path characters pass.
-safe_path() { [[ "$1" =~ ^/[A-Za-z0-9._/@+-]+$ ]]; }
+# shellcheck source=bin/fm-unit-file-lib.sh
+. "$SCRIPT_DIR/fm-unit-file-lib.sh"
 
 install_timer() {
   local dir
-  safe_path "$CODE_ROOT" || die "code root has characters a unit file cannot carry: $CODE_ROOT"
-  safe_path "$home" || die "home has characters a unit file cannot carry: $home"
+  fm_unit_safe_path "$CODE_ROOT" || die "code root has characters a unit file cannot carry: $CODE_ROOT"
+  fm_unit_safe_path "$home" || die "home has characters a unit file cannot carry: $home"
   dir=$(unit_dir)
   mkdir -p "$dir"
   cat > "$dir/$UNIT.service.tmp" <<EOF
