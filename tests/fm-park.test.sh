@@ -4,7 +4,8 @@
 # park-time refusal of a condition whose check errors,
 # automatic resume when the wait condition holds, the supervisor wake on a
 # deadline or failed relaunch, the self-park detached exit, and the Claude
-# self-park refusal while background shells still run. A fake control
+# self-park refusal while background shells still run, the live-wait rule
+# for self-parks and its `await` waiter. A fake control
 # plane stands in for the harness endpoint (FM_PARK_CONTROL_OVERRIDE) and logs
 # every lifecycle verb it receives, so no agent, terminal, or worktree is
 # touched; the condition watch is the real bin/fm-procevent-when.sh runner.
@@ -725,6 +726,7 @@ case_resume_and_repark() {
   assert_grep "park_state=resumed" "$H/state/t3.meta" "resume records the relaunch"
   assert_contains "$(last_line "$H/state/t3.status")" "working [at=" "resume ends the declared wait"
   assert_equals "uncommitted work" "$(cat "$H/wt-t3/scratch.txt")" "resume never touches the worktree"
+  assert_equals 1 "$(grep -c '^[0-9][0-9]*$' "$H/state/.park-churn/t3")" "resume records itself for the park-churn alarm"
   pass "the condition relaunches the parked task as a fresh session with its handoff"
 
   # --- the resumed session parks again at once ------------------------------------
@@ -782,6 +784,7 @@ case_failed_relaunch() {
   assert_equals action-failed "$("$ROOT/bin/fm-procevent-when.sh" classify "$res")" "a failed relaunch is an action failure"
   assert_grep "could not be relaunched" "$res" "the outcome carries the relaunch error"
   assert_grep "park_state=resume-failed" "$H/state/t4.meta" "the record says the resume failed"
+  assert_absent "$H/state/.park-churn/t4" "a failed relaunch is not counted as a resume"
   assert_grep "park_handoff=$H/data/t4/handoff.md" "$H/state/t4.meta" "the record keeps the handoff"
   wait_for_wake "$H" when-park-t4 || fail "the failure did not wake the supervisor"
   pass "a failed relaunch wakes the supervisor and leaves the park record intact"
@@ -813,7 +816,7 @@ case_self_park_detached_exit() {
   H="$TMP_ROOT/h-self"; new_task "$H" t6
   handoff "$TMP_ROOT/t6.md" "file:$TMP_ROOT/t6-results"
   out=$(cd "$H/wt-t6" && FM_HOME="$H" FAKE_CONTROL_LOG="$H/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" \
-    FM_PARK_SELF_EXIT_DELAY=0 "$PARK" t6 --handoff "$TMP_ROOT/t6.md") || fail "self-park failed: $out"
+    FM_PARK_SELF_EXIT_DELAY=0 "$PARK" t6 --handoff "$TMP_ROOT/t6.md" --expect +7200) || fail "self-park failed: $out"
   assert_contains "$out" "this session stops in a few seconds" "self-park returns before stopping its own session"
   for _ in $(seq 1 100); do [ -s "$H/control.log" ] && break; sleep 0.1; done
   assert_equals "t6 exit" "$(cat "$H/control.log" 2>/dev/null)" "the detached exit stops the session"
@@ -826,7 +829,7 @@ case_self_park_by_task_id() {
   H="$TMP_ROOT/h-selfid"; new_task "$H" t7
   handoff "$TMP_ROOT/t7.md" "file:$TMP_ROOT/t7-results"
   out=$(cd "$TMP_ROOT" && FM_TASK_ID=t7 FM_HOME="$H" FAKE_CONTROL_LOG="$H/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" \
-    FM_PARK_SELF_EXIT_DELAY=0 "$PARK" t7 --handoff "$TMP_ROOT/t7.md") || fail "self-park by task id failed: $out"
+    FM_PARK_SELF_EXIT_DELAY=0 "$PARK" t7 --handoff "$TMP_ROOT/t7.md" --expect +7200) || fail "self-park by task id failed: $out"
   assert_contains "$out" "this session stops in a few seconds" "a worker outside its worktree still self-parks"
   for _ in $(seq 1 100); do [ -s "$H/control.log" ] && break; sleep 0.1; done
   assert_equals "t7 exit" "$(cat "$H/control.log" 2>/dev/null)" "the detached exit stops the session"
@@ -839,13 +842,176 @@ case_self_park_exit_failure() {
   H="$TMP_ROOT/h-selffail"; new_task "$H" t8
   handoff "$TMP_ROOT/t8.md" "file:$TMP_ROOT/t8-results"
   out=$(cd "$H/wt-t8" && FM_HOME="$H" FAKE_CONTROL_LOG="$H/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" \
-    FAKE_CONTROL_FAIL=exit FM_PARK_SELF_EXIT_DELAY=0 "$PARK" t8 --handoff "$TMP_ROOT/t8.md") || fail "self-park t8 failed: $out"
+    FAKE_CONTROL_FAIL=exit FM_PARK_SELF_EXIT_DELAY=0 "$PARK" t8 --handoff "$TMP_ROOT/t8.md" --expect +7200) || fail "self-park t8 failed: $out"
   for _ in $(seq 1 100); do grep -q '^blocked' "$H/state/t8.status" && break; sleep 0.1; done
   assert_contains "$(last_line "$H/state/t8.status")" "blocked [at=" "a failed detached exit appends a blocked line"
   assert_contains "$(last_line "$H/state/t8.status")" "$H/data/t8/park-exit.log" "the blocked line names the exit log"
   assert_grep "fake exit failure" "$H/data/t8/park-exit.log" "the exit log keeps the failure"
   FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-t8 >/dev/null 2>&1 || true
   pass "a self-park whose exit fails wakes the supervisor instead of idling silently"
+}
+
+# self_park <home> <id> <park-args...>: park as the task's own worker would,
+# with stderr in <home>/self.err.
+self_park() {
+  (cd "$TMP_ROOT" && FM_TASK_ID=$2 FM_HOME="$1" FAKE_CONTROL_LOG="$1/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" \
+    FM_PARK_SELF_EXIT_DELAY=0 "$PARK" "$2" "${@:3}" 2> "$1/self.err")
+}
+# refused_self_park <home> <id> <expected-rc> <what> <park-args...>: the self-park
+# exits <expected-rc> and installs nothing.
+refused_self_park() {
+  local rc=0
+  self_park "$1" "$2" "${@:5}" > /dev/null || rc=$?
+  expect_code "$3" "$rc" "$4"
+  assert_no_grep "park_state=" "$1/state/$2.meta" "$4 records no park"
+  assert_absent "$1/control.log" "$4 stops no session"
+  assert_absent "$1/state/procevent/when-park-$2.source" "$4 arms no resume watch"
+}
+
+# --- a worker parking itself waits live on a wait expected within the threshold
+case_live_wait_rule() {
+  H="$TMP_ROOT/h-live"; new_task "$H" tl
+  handoff "$TMP_ROOT/tl.md" "file:$TMP_ROOT/tl-results"
+  refused_self_park "$H" tl 1 'a self-park with no expected time' --handoff "$TMP_ROOT/tl.md"
+  assert_grep "with --expect <UTC|+seconds>" "$H/self.err" "the refusal names the missing expected time"
+  refused_self_park "$H" tl 4 'a self-park expected within the threshold' --handoff "$TMP_ROOT/tl.md" --expect +600
+  assert_grep "fm-park.sh await tl file:$TMP_ROOT/tl-results\`" "$H/self.err" \
+    "the refusal gives the live waiter for the same condition"
+  refused_self_park "$H" tl 4 'a self-park expected within the default threshold by UTC time' --handoff "$TMP_ROOT/tl.md" \
+    --expect "$(date -u -d "@$(( $(date +%s) + 3000 ))" +%Y-%m-%dT%H:%MZ 2>/dev/null || date -u -r "$(( $(date +%s) + 3000 ))" +%Y-%m-%dT%H:%MZ)"
+  refused_self_park "$H" tl 1 'a malformed expected time' --handoff "$TMP_ROOT/tl.md" --expect soon
+  assert_grep "--expect must be a UTC time" "$H/self.err" "the refusal names the malformed expected time"
+  handoff "$TMP_ROOT/tl-inbox.md" "inbox:tl"
+  refused_self_park "$H" tl 4 'a self-park on its own inbox expected soon' --handoff "$TMP_ROOT/tl-inbox.md" --expect +60
+  assert_grep "paused [wait=inbox:tl]" "$H/self.err" "an inbox wait is told to declare itself and end its turn"
+  pass "a self-park expected within the live-wait threshold, or with no expected time, is refused before anything is installed"
+
+  self_park "$H" tl --handoff "$TMP_ROOT/tl.md" --expect +3600 > /dev/null || fail "a self-park expected at the threshold was refused: $(cat "$H/self.err")"
+  assert_grep "park_state=parked" "$H/state/tl.meta" "a wait expected at the threshold parks"
+  FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-tl >/dev/null 2>&1 || true
+  pass "a self-park expected at or past the threshold parks"
+}
+
+# --- a park that firstmate or the memory guard asked for always parks ----------
+case_live_wait_requested() {
+  H="$TMP_ROOT/h-live-req"; new_task "$H" tq
+  handoff "$TMP_ROOT/tq.md" "file:$TMP_ROOT/tq-results"
+  self_park "$H" tq --handoff "$TMP_ROOT/tq.md" --expect +60 --requested > /dev/null \
+    || fail "a requested self-park was refused: $(cat "$H/self.err")"
+  assert_grep "park_state=parked" "$H/state/tq.meta" "a requested park parks whatever the expected time"
+  FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-tq >/dev/null 2>&1 || true
+  pass "a requested self-park parks whatever the wait's expected time"
+}
+
+# --- the threshold setting is read every run and a bad one refuses --------------
+case_live_wait_threshold_file() {
+  local shape
+  for shape in empty words range dir; do
+    H="$TMP_ROOT/h-live-cfg-$shape"; new_task "$H" tc
+    mkdir -p "$H/config"
+    case "$shape" in
+      empty) : > "$H/config/park-live-wait-minutes" ;;
+      words) printf 'sixty\n' > "$H/config/park-live-wait-minutes" ;;
+      range) printf '1441\n' > "$H/config/park-live-wait-minutes" ;;
+      dir) mkdir "$H/config/park-live-wait-minutes" ;;
+    esac
+    handoff "$TMP_ROOT/tc-$shape.md" "file:$TMP_ROOT/tc-results"
+    refused_self_park "$H" tc 1 "a self-park under a $shape threshold file" --handoff "$TMP_ROOT/tc-$shape.md" --expect +7200
+    assert_grep "$H/config/park-live-wait-minutes must hold whole minutes" "$H/self.err" "a $shape threshold file is named, not defaulted"
+  done
+  pass "an empty, unparsable, out-of-range or non-file threshold setting refuses and names the file"
+
+  H="$TMP_ROOT/h-live-cfg-ten"; new_task "$H" tt
+  mkdir -p "$H/config"; printf '10\n' > "$H/config/park-live-wait-minutes"
+  handoff "$TMP_ROOT/tt.md" "file:$TMP_ROOT/tt-results"
+  refused_self_park "$H" tt 4 'a self-park expected within a ten-minute threshold' --handoff "$TMP_ROOT/tt.md" --expect +590
+  self_park "$H" tt --handoff "$TMP_ROOT/tt.md" --expect +1200 > /dev/null || fail "a ten-minute threshold refused a 20-minute wait: $(cat "$H/self.err")"
+  assert_grep "park_state=parked" "$H/state/tt.meta" "the configured threshold replaces the default"
+  FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-tt >/dev/null 2>&1 || true
+
+  H="$TMP_ROOT/h-live-cfg-zero"; new_task "$H" tz
+  mkdir -p "$H/config"; printf '0\n' > "$H/config/park-live-wait-minutes"
+  handoff "$TMP_ROOT/tz.md" "file:$TMP_ROOT/tz-results"
+  self_park "$H" tz --handoff "$TMP_ROOT/tz.md" > /dev/null || fail "a zero threshold still refused a self-park: $(cat "$H/self.err")"
+  assert_grep "park_state=parked" "$H/state/tz.meta" "a zero threshold parks every wait"
+  FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-tz >/dev/null 2>&1 || true
+  pass "the threshold setting applies on the next park, and 0 parks every wait"
+}
+
+# --- the live waiter declares the wait and ends on the condition ---------------
+# await <home> <id> <condition>: run the live waiter with stderr in <home>/await.err.
+await() { FM_HOME="$1" "$PARK" await "$2" "$3" 2> "$1/await.err"; }
+
+case_await_holds() {
+  local pid rc=0 line
+  H="$TMP_ROOT/h-await"; new_task "$H" ta
+  : > "$TMP_ROOT/ta-done"
+  out=$(await "$H" ta "file:$TMP_ROOT/ta-done") || fail "a holding condition did not end the waiter at once: $(cat "$H/await.err")"
+  assert_contains "$out" "already holds" "a condition that already holds is reported"
+  assert_equals 'working [at=1]: started' "$(last_line "$H/state/ta.status")" "a condition that already holds declares nothing"
+  rc=0; await "$H" ta "inbox:ta" > /dev/null || rc=$?
+  expect_code 2 "$rc" "an inbox wait needs no waiter"
+  assert_grep "paused [wait=inbox:ta]" "$H/await.err" "an inbox waiter is told to declare the inbox wait instead"
+  pass "the live waiter ends at once on a holding condition and refuses an inbox wait"
+
+  FM_PARK_INTERVAL=0.2 FM_HOME="$H" "$PARK" await ta "file:$TMP_ROOT/ta-results" > "$H/await.out" 2> "$H/await.err" &
+  pid=$!
+  for _ in $(seq 1 200); do grep -q 'live wait on' "$H/state/ta.status" && break; sleep 0.1; done
+  line=$(last_line "$H/state/ta.status")
+  assert_contains "$line" "paused [wait=process:$pid:" "the waiter declares a process wait on itself"
+  assert_contains "$line" "live wait on file:$TMP_ROOT/ta-results" "the declared wait names the condition"
+  assert_grep "live_wait_when=file:$TMP_ROOT/ta-results" "$H/state/ta.meta" "the waiter records the condition"
+  assert_grep "live_wait_until=" "$H/state/ta.meta" "the waiter records its bound"
+  assert_grep "pr=https://github.com/example/repo/pull/7" "$H/state/ta.meta" "the task record keeps its other fields"
+  : > "$TMP_ROOT/ta-results"
+  wait "$pid" || rc=$?
+  expect_code 0 "$rc" "the waiter exits 0 once the condition holds"
+  assert_contains "$(last_line "$H/state/ta.status")" "working [at=" "the waiter ends its declared wait"
+  pass "the live waiter declares a process wait on itself and exits 0 when the condition holds"
+}
+
+case_await_bound() {
+  local rc=0
+  H="$TMP_ROOT/h-await-bound"; new_task "$H" tb
+  rc=0; FM_PARK_LIVE_WAIT_SECS=2 FM_PARK_INTERVAL=0.2 await "$H" tb "file:$TMP_ROOT/tb-never" > /dev/null || rc=$?
+  expect_code 3 "$rc" "a waiter whose condition does not hold within the threshold exits 3"
+  assert_grep "park now" "$H/await.err" "the waiter says to park"
+  assert_contains "$(last_line "$H/state/tb.status")" "reached the" "the waiter ends its declared wait at the threshold"
+  pass "the live waiter exits 3 at the threshold"
+
+  handoff "$TMP_ROOT/tb.md" "file:$TMP_ROOT/tb-never"
+  self_park "$H" tb --handoff "$TMP_ROOT/tb.md" > /dev/null || fail "a self-park after a lapsed live wait was refused: $(cat "$H/self.err")"
+  assert_grep "park_state=parked" "$H/state/tb.meta" "a live wait that reached the threshold allows the park"
+  FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-tb >/dev/null 2>&1 || true
+  pass "a live wait that reached its threshold lets the same condition park without an expected time"
+
+  H="$TMP_ROOT/h-await-open"; new_task "$H" to
+  handoff "$TMP_ROOT/to.md" "file:$TMP_ROOT/to-never"
+  fm_write_meta "$H/state/to.meta" "window=fm:fm-to" "worktree=$H/wt-to" "kind=ship" "harness=claude" "spawn_gen=g1" \
+    "live_wait_when=file:$TMP_ROOT/to-never" "live_wait_until=$(( $(date +%s) + 600 ))" "pr=https://github.com/example/repo/pull/7"
+  refused_self_park "$H" to 1 'a self-park during a live wait still within its bound' --handoff "$TMP_ROOT/to.md"
+  fm_write_meta "$H/state/to.meta" "window=fm:fm-to" "worktree=$H/wt-to" "kind=ship" "harness=claude" "spawn_gen=g1" \
+    "live_wait_when=file:$TMP_ROOT/other" "live_wait_until=1" "pr=https://github.com/example/repo/pull/7"
+  refused_self_park "$H" to 1 'a self-park after a lapsed live wait on another condition' --handoff "$TMP_ROOT/to.md"
+  pass "only a lapsed live wait on the same condition allows a park without an expected time"
+}
+
+case_await_errors() {
+  local rc=0
+  H="$TMP_ROOT/h-await-err"; new_task "$H" te
+  printf '#!/bin/sh\necho broken source\nexit 5\n' > "$TMP_ROOT/te-check.sh"; chmod +x "$TMP_ROOT/te-check.sh"
+  rc=0; FM_PARK_ERROR_BUDGET=2 FM_PARK_INTERVAL=0.1 await "$H" te "cmd:$TMP_ROOT/te-check.sh" > /dev/null || rc=$?
+  expect_code 2 "$rc" "a waiter whose check keeps erroring exits 2"
+  assert_grep "failed 2 times in a row; last output: broken source" "$H/await.err" "the waiter shows the check's output"
+  assert_contains "$(last_line "$H/state/te.status")" "stopped" "the waiter ends its declared wait on errors"
+  mkdir -p "$H/config"; printf '0\n' > "$H/config/park-live-wait-minutes"
+  rc=0; await "$H" te "file:$TMP_ROOT/te-never" > /dev/null || rc=$?
+  expect_code 2 "$rc" "a zero threshold has no live waits"
+  printf 'x\n' > "$H/config/park-live-wait-minutes"
+  rc=0; await "$H" te "file:$TMP_ROOT/te-never" > /dev/null || rc=$?
+  expect_code 2 "$rc" "an unreadable threshold refuses the waiter"
+  assert_grep "park-live-wait-minutes must hold whole minutes" "$H/await.err" "the waiter names the bad threshold file"
+  pass "the live waiter stops on repeated check errors and refuses without a usable threshold"
 }
 
 # --- a Claude worker with live background shells is refused before parking ----
@@ -874,7 +1040,7 @@ SH
 chmod +x "$AGENT"
 self_park_as_agent() {  # <home> <id> <with-background> <handoff> [harness]
   FM_HOME="$1" FAKE_CONTROL_LOG="$1/control.log" FM_PARK_CONTROL_OVERRIDE="$CONTROL" FM_PARK_SELF_EXIT_DELAY=0 \
-    "$AGENT" "$3" "$1/wt-$2" "$PARK" "$2" --handoff "$4"
+    "$AGENT" "$3" "$1/wt-$2" "$PARK" "$2" --handoff "$4" --expect +7200
 }
 
 case_claude_background_refusal() {
@@ -1502,7 +1668,9 @@ POOL_CASES+=(case_handoff_validation case_park_refuses_missing_handoff case_queu
   case_cross_home_conditions
   case_kind_default_deadlines case_park_time_refusal case_self_park_detached_exit
   case_self_park_by_task_id case_self_park_exit_failure case_claude_background_refusal
-  case_other_harness_background case_copy_free_qualification case_wait_age)
+  case_other_harness_background case_copy_free_qualification case_wait_age
+  case_live_wait_rule case_live_wait_requested case_live_wait_threshold_file
+  case_await_holds case_await_bound case_await_errors)
 pool_param_cases release_scenario_case off true nm raw dependency symlink route job bad-endpoint lease kill return reuse park stop poll
 POOL_CASES+=(case_release_entrypoint case_resume_before_release)
 pool_param_cases save_refusal_case profile branch mktemp jq rev-parse

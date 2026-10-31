@@ -1292,6 +1292,8 @@ test_ship_and_scout_teach_validation_round_pause() {
     assert_section_line_with "$brief" "# Rules" "$kind brief lost its task's exact park command" \
       'park' "\`FM_HOME='$home' "
     assert_grep "/bin/fm-park.sh' $id --handoff <file>" "$brief" "$kind brief's park command does not name its own task"
+    assert_grep "--handoff <file> --expect <UTC|+seconds>\`" "$brief" "$kind brief's park command does not state the wait's expected time"
+    assert_grep "within the live-wait threshold" "$brief" "$kind brief does not send short waits to a live wait"
     assert_section_line_with "$brief" "# Rules" "$kind brief did not limit the declaration to actual waits" \
       'not declare' 'implementation' 'wait'
   done
