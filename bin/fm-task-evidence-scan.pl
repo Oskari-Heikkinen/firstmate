@@ -10,8 +10,11 @@
 # prepare and verify never inspect a disposable root.
 # snapshot records one declared source's (or carried earlier copy's) metadata
 # inventory before it is copied; recheck repeats every walk, refuses any change,
-# and rehashes the regular files whose mtime or ctime is not older than their
-# snapshot by the timestamp margin below, against the staged manifest. Both run
+# and rehashes against the staged manifest the regular files whose mtime or
+# ctime is not older than their snapshot by the timestamp margin below, and those
+# whose signature differs from it only in mtime and ctime (git freshens a pack
+# hard-linked from another repository that way); such a retimed file that the
+# manifest lacks refuses. Both run
 # while staging, before teardown takes its project lock, so the copy and every
 # walk of it stay outside that lock (the library header owns that contract).
 # Citation parsing, object survival and installation remain in the library,
@@ -92,11 +95,26 @@ sub inventory {
     }
     return (\%entries, \%times);
 }
+# True when two signatures name the same regular file and differ only in its
+# mtime and ctime, the last two of a regular file's ten fields.
+sub times_only {
+    my @a = split(/:/, $_[0], -1);
+    my @b = split(/:/, $_[1], -1);
+    return @a == 10 && @b == 10 && ($a[2] & 0170000) == 0100000
+        && join(':', @a[0 .. 7]) eq join(':', @b[0 .. 7]);
+}
 # The first path whose presence or signature differs, or undef when none does.
+# With <retimed>, a path whose signature differs only as times_only allows is
+# pushed there instead, for the caller to prove its bytes unchanged.
 sub changed {
-    my ($a, $b) = @_;
+    my ($a, $b, $retimed) = @_;
     for my $path (sort keys %$a) {
-        return $path unless exists($b->{$path}) && $a->{$path} eq $b->{$path};
+        next if exists($b->{$path}) && $a->{$path} eq $b->{$path};
+        if ($retimed && exists($b->{$path}) && times_only($a->{$path}, $b->{$path})) {
+            push @$retimed, $path;
+            next;
+        }
+        return $path;
     }
     for my $path (sort keys %$b) {
         return $path unless exists($a->{$path});
@@ -125,10 +143,13 @@ if ($mode eq 'recheck') {
         $snap or refuse_copy("cannot read copy snapshot $index");
         my ($root, $key, $t0) = @$snap{qw(root key t0)};
         my ($entries, $times) = inventory($root, 0);
-        my $path = changed($snap->{entries}, $entries);
+        my @retimed;
+        my $path = changed($snap->{entries}, $entries, \@retimed);
         defined($path) and refuse_copy("$path changed while it was copied outside the project lock");
+        my %retimed = map { $_ => 1 } @retimed;
         for my $file (sort keys %$times) {
-            push @racy, [$file, $key . substr($file, length($root))] if $times->{$file} >= $t0;
+            push @racy, [$file, $key . substr($file, length($root)), $retimed{$file}]
+                if $retimed{$file} || $times->{$file} >= $t0;
         }
     }
     exit 0 unless @racy;
@@ -141,9 +162,14 @@ if ($mode eq 'recheck') {
     }
     close($manifest) or refuse_copy("cannot read the staged manifest: $!");
     for my $item (@racy) {
-        my ($file, $name) = @$item;
-        # A file the copy did not manifest was never verified; nothing to compare.
-        next unless exists($staged{$name});
+        my ($file, $name, $retimed) = @$item;
+        # A file the copy did not manifest was never verified; nothing to
+        # compare, so only a racy one passes: a retimed one cannot prove its
+        # bytes unchanged.
+        if (!exists($staged{$name})) {
+            $retimed and refuse_copy("$file changed while it was copied outside the project lock");
+            next;
+        }
         my $sha = Digest::SHA->new(256);
         my $hash = eval { $sha->addfile($file, 'b'); $sha->hexdigest };
         defined($hash) && $hash eq $staged{$name}

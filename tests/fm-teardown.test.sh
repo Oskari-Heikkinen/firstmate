@@ -7643,10 +7643,13 @@ SH
 # the earlier evidence tree untouched and nothing left staged, when anything it
 # read changed after it was read and before staging's recheck (a fake perl makes
 # each change just before that recheck). Each variant changes one thing, so each
-# guard fires alone.
+# guard fires alone. A file whose only change is its mtime and ctime, as git
+# freshening a hard-linked pack leaves it, still holds the copied bytes and
+# installs; the same-size edit retimes its file too and must still refuse.
 test_evidence_unlocked_copy_changes_refuse() {
   local variant case_dir ev hash rc
-  for variant in stable edit add remove retarget appear prior racy owned; do
+  for variant in stable retime retime-prior edit add remove retarget appear prior racy \
+      chmod retime-unmanifested owned; do
     case_dir=$(make_case "evidence-copy-change-$variant")
     ev="$case_dir/data/task-x1/evidence"
     mkdir -p "$case_dir/wt/ws/sub" "$ev/copy" "$case_dir/scan" "$case_dir/fakebin"
@@ -7673,6 +7676,14 @@ if [ "\${2:-}" = recheck ]; then
     retarget) rm -- "$case_dir/wt/ws/lnk" && ln -s sub "$case_dir/wt/ws/lnk" ;;
     appear) printf back > "$case_dir/wt/gone" ;;
     prior) printf changed > "$ev/copy/gone" ;;
+    retime) touch -t 203001010000 "$case_dir/wt/ws/a" ;;
+    retime-prior) touch -t 203001010000 "$ev/copy/gone" ;;
+    chmod) chmod 600 "$case_dir/wt/ws/a" ;;
+    # A retimed file the staged manifest does not list has no bytes to match.
+    retime-unmanifested)
+      touch -t 203001010000 "$case_dir/wt/ws/a"
+      sed '\\#  copy/ws/a\$#d' "\$3/MANIFEST.sha256" > "\$3/MANIFEST.new" \
+        && mv -- "\$3/MANIFEST.new" "\$3/MANIFEST.sha256" ;;
     # Stands in for a write the clock could not tell from the snapshot:
     # identical metadata, but the staged copy no longer holds the bytes.
     racy)
@@ -7699,8 +7710,8 @@ SH
     ' _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$case_dir/wt" "$case_dir/scan" "$variant" \
       "$case_dir/fakebin" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
     assert_present "$case_dir/mutated" "staging did not recheck its copy ($variant): $(cat "$case_dir/stderr")"
-    if [ "$variant" = stable ]; then
-      expect_code 0 "$rc" "an unchanged copy should install: $(cat "$case_dir/stderr")"
+    if [ "$variant" = stable ] || [ "$variant" = retime ] || [ "$variant" = retime-prior ]; then
+      expect_code 0 "$rc" "an unchanged copy should install ($variant): $(cat "$case_dir/stderr")"
       evidence_manifest_verifies "$ev" || fail 'unlocked copy installed an unverifiable tree'
       assert_grep '  copy/ws/sub/b' "$ev/MANIFEST.sha256" 'unlocked copy lost a declared member'
       assert_grep '  copy/gone' "$ev/MANIFEST.sha256" 'unlocked copy lost the carried earlier copy'
@@ -7710,7 +7721,7 @@ SH
         owned) assert_grep 'task evidence inputs changed since the unlocked copy for task-x1' "$case_dir/stderr" 'ownership drift did not refuse' ;;
         edit) assert_grep "$case_dir/wt/ws/sub/b changed while it was copied" "$case_dir/stderr" 'same-size edit did not refuse' ;;
         add) assert_grep "$case_dir/wt/ws/new changed while it was copied" "$case_dir/stderr" 'added member did not refuse' ;;
-        remove|racy) assert_grep "$case_dir/wt/ws/a changed while it was copied" "$case_dir/stderr" "$variant member did not refuse" ;;
+        remove|racy|chmod|retime-unmanifested) assert_grep "$case_dir/wt/ws/a changed while it was copied" "$case_dir/stderr" "$variant member did not refuse" ;;
         retarget) assert_grep "$case_dir/wt/ws/lnk changed while it was copied" "$case_dir/stderr" 'retargeted link did not refuse' ;;
         appear) assert_grep "$case_dir/wt/gone changed while it was copied" "$case_dir/stderr" 'reappeared source did not refuse' ;;
         prior) assert_grep "$ev/copy/gone changed while it was copied" "$case_dir/stderr" 'changed earlier copy did not refuse' ;;
@@ -7725,7 +7736,7 @@ SH
       fail "$variant left a staged or replaced evidence tree behind"
     fi
   done
-  pass 'an evidence copy staged outside the lock refuses when a source, member, link, earlier copy or staged byte changed before its recheck, or ownership changed before finishing'
+  pass 'an evidence copy staged outside the lock installs when a member or earlier copy was only retimed, and refuses when a source, member, link, mode, earlier copy or staged byte changed before its recheck, or ownership changed before finishing'
 }
 
 test_evidence_citation_scan_completes_for_a_plain_missing_path() {

@@ -35,10 +35,11 @@
 # declaration refuses, naming the path.
 # Staging runs without a lock, so before each source (or carried earlier copy)
 # is read its metadata inventory is snapshotted; staging's last step repeats
-# every walk, rehashes each file modified within a few seconds of its snapshot,
-# and refuses with nothing changed when any member was added, removed,
-# replaced, retargeted or edited since (bin/fm-task-evidence-scan.pl owns the
-# comparison). No walk of a declared tree runs at finishing, so a caller's lock
+# every walk, rehashes each file modified within a few seconds of its snapshot
+# or whose only metadata change is its mtime and ctime, and refuses with nothing
+# changed when any member was added, removed, replaced, retargeted or edited
+# since; a retimed file whose bytes still match its copy is unchanged
+# (bin/fm-task-evidence-scan.pl owns the comparison). No walk of a declared tree runs at finishing, so a caller's lock
 # hold does not grow with the tree; finishing refuses when its inputs differ
 # from staging's. Every other check and refusal below runs at finishing, in the
 # original order.
