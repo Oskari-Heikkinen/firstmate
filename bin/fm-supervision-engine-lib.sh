@@ -10,9 +10,10 @@
 #
 # THE HOME GATE (config/supervision-host-off, config/supervision-host).
 # docs/configuration.md "Supervision host" owns both files: the inherited
-# opt-out flag, the home-local engine line's schema, the posture on a Claude
-# primary (opt-in), and the no-engine outcome; this file implements them
-# (fm_supervision_host_enabled, fm_supervision_host_config) and holds the
+# opt-out flag, the home-local engine line's schema, the default with neither
+# file, and the no-engine outcome; this file implements them
+# (fm_supervision_host_enabled, fm_supervision_host_may_run,
+# fm_supervision_host_config) and holds the
 # verified-engine list and each engine's default model
 # (docs/supervision-host.md "Engines"). Every reader of either file asks
 # fm_supervision_host_enabled rather than testing the files itself, and a
@@ -66,11 +67,35 @@ fm_supervision_host_primary() {
 
 # fm_supervision_host_enabled <config-dir> [<primary-harness>]: 0 iff this home
 # runs the supervision host. A present supervision-host-off opts out on every
-# primary; otherwise a supervision-host file opts in. With neither file the
-# host is disabled on every primary, including Claude.
+# primary; otherwise a supervision-host file opts in, and with neither file
+# the host runs on a primary whose own engine is verified, at that engine's
+# default model, and not on any other primary. The primary is detected
+# (fm_supervision_host_primary) only when neither file decides and the caller
+# did not name one.
 fm_supervision_host_enabled() {
-  [ ! -e "$1/supervision-host-off" ] && [ ! -L "$1/supervision-host-off" ] || return 1
-  [ -f "$1/supervision-host" ]
+  ! _fm_supervision_host_opted_out "$1" || return 1
+  [ ! -f "$1/supervision-host" ] || return 0
+  fm_supervision_engine_verified "${2-$(fm_supervision_host_primary)}"
+}
+
+_fm_supervision_host_opted_out() {  # <config-dir>
+  [ -e "$1/supervision-host-off" ] || [ -L "$1/supervision-host-off" ]
+}
+
+# fm_supervision_host_may_run <config-dir> [<primary-harness>]: 0 when the
+# home runs the host (fm_supervision_host_enabled), and also when the primary
+# is unknown and the home is not opted out, since the answer then depends on
+# the primary. For a reader that must fail toward a host that may be running:
+# the lease guard (bin/fm-lease-lib.sh) and the away watchdog
+# (bin/fm-away-watch.sh), which can run outside the primary's process tree.
+fm_supervision_host_may_run() {
+  local primary
+  primary=${2-$(fm_supervision_host_primary)}
+  fm_supervision_host_enabled "$1" "$primary" && return 0
+  case "$primary" in
+    ''|unknown) ! _fm_supervision_host_opted_out "$1" ;;
+    *) return 1 ;;
+  esac
 }
 
 fm_supervision_engine_verified() {  # <engine>

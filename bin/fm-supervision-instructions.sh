@@ -3,8 +3,9 @@
 # the short repair line used by guards and turn-end hooks. On a non-Pi primary
 # with a supervision protocol (claude, cursor, opencode, omp, grok, codex) whose
 # home runs the supervision host (fm_supervision_host_enabled in
-# bin/fm-supervision-engine-lib.sh: explicit config/supervision-host opt-in on
-# every primary, never with config/supervision-host-off), the block
+# bin/fm-supervision-engine-lib.sh: on by default where the primary's own
+# engine is verified, else by config/supervision-host, never with
+# config/supervision-host-off), the block
 # adds one state line and the host's main-side protocol
 # (docs/supervision-protocols/supervision-host.md, whose lines tagged
 # "{<harness>,...} " render only for the listed harnesses), and Grok's arm
