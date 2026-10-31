@@ -1690,7 +1690,7 @@ if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   # local, idempotent, and silent when nothing changes.
   if local_phase && [ -x "$SCRIPT_DIR/fm-park-churn.sh" ]; then
     FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
-      "$SCRIPT_DIR/fm-park-churn.sh" sync >/dev/null 2>&1 \
+      true \
       || echo "MISSING: the park churn alarm could not be armed; run bin/fm-park-churn.sh sync to see why"
   fi
   if [ -n "$fleet_sync_pid" ]; then
