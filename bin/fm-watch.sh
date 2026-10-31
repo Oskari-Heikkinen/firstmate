@@ -2593,7 +2593,7 @@ open_decision_setting_to() {  # <out-var> <env-name> <env-value> <config-file> <
   local _ods_value=$3
   if [ -z "$_ods_value" ]; then
     if [ -e "$4" ] || [ -L "$4" ]; then
-      if [ ! -f "$4" ] || [ ! -r "$4" ] || [ -L "$4" ] || ! fm_file_text_to _ods_value "$4"; then
+      if [ ! -f "$4" ] || [ ! -r "$4" ] || ! fm_file_text_to _ods_value "$4"; then
         OPEN_DECISION_ERROR="setting file $4 is not a readable regular file"
         return 1
       fi
