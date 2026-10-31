@@ -93,7 +93,7 @@ fm_supervision_host_may_run() {
   primary=${2-$(fm_supervision_host_primary)}
   fm_supervision_host_enabled "$1" "$primary" && return 0
   case "$primary" in
-    ''|unknown) ! _fm_supervision_host_opted_out "$1" ;;
+    ''|unknown) return 1 ;;
     *) return 1 ;;
   esac
 }
