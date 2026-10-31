@@ -6,7 +6,9 @@
 # session lock receives the full session-start digest through the tracked
 # SessionStart hook; session start reclaims the dead owner; at least two
 # tokenless auto-arm and rewake cycles then complete with zero model-issued arm
-# commands; and the cooperative guard consumes no forced continuation while the
+# commands, each with its handling successor; the real hook's live claim owner
+# descends from the session-lock pid and reads as open in every Stop-owned
+# cycle; and the cooperative guard consumes no forced continuation while the
 # hook's launch is healthy.
 # The project and FM_HOME are isolated; Claude keeps using its existing managed
 # authentication. No live fleet home, worktree, or session is touched.
@@ -77,12 +79,31 @@ printf 'project=fixture\nwindow=fixture\nbackend=tmux\n' > "$HOME_DIR/state/task
 printf '9999999\n' > "$HOME_DIR/state/.lock"
 
 # Rapid-death arm fixture: started plus an immediate actionable reason, the
-# exact spent-Stop edge shape. Runs 1-2 close actionable; run 3 closes clean so
-# a misbehaving session can never loop forever.
+# exact spent-Stop edge shape. Stop-owned runs 1-2 close actionable; run 3
+# closes clean so a misbehaving session can never loop forever. The handling
+# successor the hook starts after each actionable close (it carries
+# FM_WATCH_PREDECESSOR_ARM_PID) is logged apart and only confirms a watcher.
+# Each Stop-owned run also records, from inside the real hook's process tree,
+# whether the claim owner descends from the session-lock pid and whether the
+# live claim reads as open, so the claim reachability predicate is proven
+# against the real harness rather than the fake-claude fixture.
 cat > "$PROJECT/bin/fm-watch-arm.sh" <<'SH'
 #!/usr/bin/env bash
+if [ -n "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ]; then
+  echo "successor pid=$$ predecessor=$FM_WATCH_PREDECESSOR_ARM_PID" >> "$FM_HOME/state/successor-ran"
+  printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+  exit 0
+fi
 N=$(cat "$FM_HOME/state/arm-count" 2>/dev/null || echo 0); N=$((N+1)); echo "$N" > "$FM_HOME/state/arm-count"
 echo "arm-run=$N pid=$$" >> "$FM_HOME/state/arm-ran"
+FM_STATE_OVERRIDE="$FM_HOME/state" bash -c '
+  . "$1/fm-wake-lib.sh" || exit 1
+  lock_pid=$(head -n 1 "$FM_STATE_OVERRIDE/.lock" 2>/dev/null)
+  fm_autoarm_ledger_read "$FM_STATE_OVERRIDE" || { echo "claim-probe run=$2 ledger=unreadable"; exit 0; }
+  descends=no; fm_pid_descends_from "$FM_AUTOARM_OWNER" "$lock_pid" && descends=yes
+  open=no; fm_autoarm_claim_open "$FM_STATE_OVERRIDE" && open=yes
+  echo "claim-probe run=$2 owner=$FM_AUTOARM_OWNER lock=$lock_pid descends=$descends open=$open"
+' _ "$(cd "$(dirname "$0")" && pwd)" "$N" >> "$FM_HOME/state/claim-probe" 2>&1
 if [ "$N" -ge 3 ]; then
   rm -f "$FM_HOME/state/task.meta"
   printf 'watcher: attached pid=%s (beacon 2s)\n' "$$"
@@ -117,8 +138,31 @@ PROMPT='After reading the complete session-start digest, reply with exactly CYCL
     --effort low --output-format stream-json --verbose
 ) > "$TRANSCRIPT" 2>&1 || fail "Claude credentialed auto-arm session failed: $(tail -20 "$TRANSCRIPT")"
 
+# The evidence is printed before any assertion, so it survives the lab's
+# EXIT-trap cleanup whatever the verdict.
+for evidence in arm-ran successor-ran claim-probe; do
+  sed "s/^/evidence $evidence: /" "$HOME_DIR/state/$evidence" 2>/dev/null || printf 'evidence %s: (none)\n' "$evidence"
+done
+for evidence in .claude-autoarm-epoch .turnend-claude-blocks; do
+  sed "s/^/evidence $evidence: /" "$HOME_DIR/state/$evidence" 2>/dev/null || printf 'evidence %s: (none)\n' "$evidence"
+done
+# The turn order, one line per message or hook response, so a guard block or an
+# extra cycle can be placed against the arms above after the lab is gone.
+jq -r '
+  if .type == "user" then
+    "user: " + ([.message.content[]? | select(.type == "text") | .text | split("\n")[0:3] | join(" / ")] | join(" | "))
+  elif .type == "assistant" then
+    "assistant: " + ([.message.content[]? | if .type == "text" then .text elif .type == "tool_use" then "tool " + (.input.command // .name) else empty end] | join(" | "))
+  elif .type == "system" and .subtype == "hook_response" then
+    "hook " + (.hook_event // "?") + " " + (.hook_name // "") + " exit=" + ((.exit_code // "?") | tostring)
+  else empty end
+' "$TRANSCRIPT" 2>/dev/null | cut -c1-240 | sed 's/^/evidence turns: /'
 ARM_RUNS=$(wc -l < "$HOME_DIR/state/arm-ran" 2>/dev/null | tr -d ' ')
-[ "$ARM_RUNS" = 2 ] || fail "expected exactly 2 hook-owned arm cycles, got $ARM_RUNS: $(cat "$HOME_DIR/state/arm-ran" 2>/dev/null)"
+[ "$ARM_RUNS" = 2 ] || fail "expected exactly 2 Stop-owned arm cycles, got $ARM_RUNS: $(cat "$HOME_DIR/state/arm-ran" 2>/dev/null)"
+SUCCESSOR_RUNS=$(wc -l < "$HOME_DIR/state/successor-ran" 2>/dev/null | tr -d ' ')
+[ "$SUCCESSOR_RUNS" = 2 ] || fail "expected one handling successor per actionable cycle (2), got ${SUCCESSOR_RUNS:-0}"
+[ "$(grep -c 'descends=yes open=yes$' "$HOME_DIR/state/claim-probe" 2>/dev/null)" = 2 ] \
+  || fail "the real Stop hook's live claim was not reachable from the session-lock pid in every Stop-owned cycle: $(cat "$HOME_DIR/state/claim-probe" 2>/dev/null)"
 DRAIN_RUNS=$(wc -l < "$HOME_DIR/state/drain-ran" 2>/dev/null | tr -d ' ')
 [ "$DRAIN_RUNS" = 3 ] || fail "expected one session-start drain plus two model wake drains, got $DRAIN_RUNS drains"
 REWAKES=$(jq -r '
@@ -145,7 +189,7 @@ printf '%s' "$DIGEST" | grep -q '^lock acquired: harness pid [0-9][0-9]*$' \
   || fail "SessionStart hook digest lacks the stale-lock reclaim"
 ! printf '%s' "$DIGEST" | grep -q '^●  STARTUP TRUNCATED - ' \
   || fail "SessionStart hook digest was truncated"
-printf '%s' "$DIGEST" | grep -q '^The digest above is complete for this session start\.' \
+printf '%s' "$DIGEST" | grep -qx 'END OF SESSION START DIGEST' \
   || fail "SessionStart hook digest lacks its completion marker"
 [ "$(cat "$HOME_DIR/state/.lock" 2>/dev/null)" != 9999999 ] \
   || fail "session start did not reclaim the stale dead-owner lock"
