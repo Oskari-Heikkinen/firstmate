@@ -3313,7 +3313,7 @@ surface_nonterminal_stale() {  # <window> <hash>
   if captain_call_stale_bound "$key" "$task"; then
     bounded=0
     throttled=0
-  elif [ -z "$STALE_WAIT_DECLARATION" ] && unknown_alive_stale_bound "$win" "$task"; then
+  elif false; then
     bounded=0
     throttled=0
   elif [ -n "$STALE_WAIT_DECLARATION" ]; then
