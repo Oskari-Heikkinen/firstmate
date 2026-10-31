@@ -595,7 +595,6 @@ clear_pause_tracking() {  # <window> <state>
     "$state/.subsuper-pause-absorbed-$key" "$state/.recheck-fp-$watcher_key" "$state/.recheck-surfaced-$watcher_key" \
     "$state/.paused-$watcher_key" "$state/.paused-rechecked-$watcher_key" "$state/.paused-resurfaced-$watcher_key" \
     "$state/.stale-$watcher_key" "$state/.stale-since-$watcher_key" "$state/.wedge-escalations-$watcher_key" \
-    "$state/.wedge-permanent-$watcher_key" "$state/.wedge-terminal-queued-$watcher_key" \
     "$state/.wedge-rollback-failed-$watcher_key" \
     "$state/.writing-since-$watcher_key" "$state/.writing-resurfaced-$watcher_key" \
     "$state/.validating-since-$watcher_key" "$state/.validating-resurfaced-$watcher_key" \
