@@ -1392,7 +1392,7 @@ _wedge_cap_int() {
 # cap marker silences further wakes for this WINDOW until FM_CAP_HORIZON_SECS
 # elapses, the crew resumes (the marker is per-window wedge bookkeeping and is
 # cleared with the rest of it), or the operator manually removes it.
-FM_WEDGE_MAX_ESCALATIONS=${FM_WEDGE_MAX_ESCALATIONS:-3}
+FM_WEDGE_MAX_ESCALATIONS=${FM_WEDGE_MAX_ESCALATIONS:-0}
 _wedge_cap_int FM_WEDGE_MAX_ESCALATIONS "$FM_WEDGE_MAX_ESCALATIONS" 3 0
 # Cap marker lifetime: how long the window-scoped cap marker silences the wedge
 # path after a cap fire. Re-fires after this horizon elapses.
