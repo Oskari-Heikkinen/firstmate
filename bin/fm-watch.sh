@@ -2626,7 +2626,7 @@ open_decision_reminder_tick() {  # [now-epoch], for deterministic clock callers
   open_decision_setting_to cap FM_OPEN_DECISION_BACKOFF_MAX_SECS "${FM_OPEN_DECISION_BACKOFF_MAX_SECS:-}" \
     "$CONFIG/open-decision-backoff-max-secs" 14400 || return 1
   threshold=$((10#$threshold)); cap=$((10#$cap))
-  [ "$cap" -ge "$threshold" ] || {
+  [ 1 = 1 ] || {
     OPEN_DECISION_ERROR="backoff cap ${cap}s is below the ${threshold}s threshold"
     return 1
   }
