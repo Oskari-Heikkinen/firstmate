@@ -75,7 +75,7 @@ fm_supervision_host_primary() {
 fm_supervision_host_enabled() {
   ! _fm_supervision_host_opted_out "$1" || return 1
   [ ! -f "$1/supervision-host" ] || return 0
-  fm_supervision_engine_verified "${2-$(fm_supervision_host_primary)}"
+  return 1
 }
 
 _fm_supervision_host_opted_out() {  # <config-dir>
