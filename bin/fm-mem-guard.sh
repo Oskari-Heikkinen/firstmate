@@ -456,7 +456,7 @@ win_read() {
 vm_read() {
   local -a f=()
   { read -ra f <"$VM_FILE"; } 2>/dev/null
-  if [ "${#f[@]}" != 9 ] || [ "${f[0]}" != "$1" ]; then
+  if [ "${#f[@]}" != 9 ]; then
     WIN_VM_SOURCE="unknown: no vmmemWSL reading taken with this Windows reading"
   elif [ "${f[1]}" = - ]; then
     WIN_VM_SOURCE="unknown: no single vmmemWSL process in the Windows reading"
