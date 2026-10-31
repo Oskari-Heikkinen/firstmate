@@ -133,25 +133,14 @@ fm_task_evidence_hash_paths() {
   done
 }
 
-# Set FM_TE_HASH to <batch-hash> when fm_task_evidence_hash_paths succeeded
-# (<batched> is 1), otherwise to fm_task_evidence_hash <path>, whose status it
-# returns.
-fm_task_evidence_hash_or() {  # <batched 0|1> <batch-hash> <path>
-  if [ "$1" = 1 ]; then
-    FM_TE_HASH=$2
-  else
-    FM_TE_HASH=$(fm_task_evidence_hash "$3")
-  fi
-}
-
-# Set FM_TE_HASH to the hash of FM_TE_PATHS[<index>], as fm_task_evidence_hash_or
-# chooses it. Bash walks an indexed array from its last access, so callers step
-# <index> in order; a loop that alternates between distant indexes is quadratic.
+# Set FM_TE_HASH to the hash of FM_TE_PATHS[<index>]: the batch's when
+# fm_task_evidence_hash_paths succeeded, otherwise fm_task_evidence_hash's,
+# whose status it returns.
 fm_task_evidence_hash_at() {
   if [ "${#FM_TE_HASHES[@]}" -gt 0 ]; then
-    fm_task_evidence_hash_or 1 "${FM_TE_HASHES[$1]}" ''
+    FM_TE_HASH=${FM_TE_HASHES[$1]}
   else
-    fm_task_evidence_hash_or 0 '' "${FM_TE_PATHS[$1]}"
+    FM_TE_HASH=$(fm_task_evidence_hash "${FM_TE_PATHS[$1]}")
   fi
 }
 
@@ -172,29 +161,15 @@ fm_task_evidence_load_hashes() {
 # second half and append each copy's manifest line, <hash>  <key><rel>, with
 # <rel> from FM_TE_RELS.
 fm_task_evidence_verify_copies() {
-  local manifest=$1 key=$2 n=${#FM_TE_RELS[@]} i h1 batched=0
-  local src_paths=() copy_paths=() src_hashes=() copy_hashes=()
+  local manifest=$1 key=$2 n=${#FM_TE_RELS[@]} i h1
   fm_task_evidence_hash_paths || :
-  [ "$n" -gt 0 ] || return 0
-  # Split each array into its source and copy halves, so the loop reads every
-  # array in order; reading [i] and [n + i] in turn walks half the array each
-  # time (see fm_task_evidence_hash_at).
-  src_paths=("${FM_TE_PATHS[@]:0:n}")
-  copy_paths=("${FM_TE_PATHS[@]:n}")
-  if [ "${#FM_TE_HASHES[@]}" -gt 0 ]; then
-    batched=1
-    src_hashes=("${FM_TE_HASHES[@]:0:n}")
-    copy_hashes=("${FM_TE_HASHES[@]:n}")
-  fi
   for ((i = 0; i < n; i++)); do
     # A name that gained a newline after the scan refuses at its place.
     case "${FM_TE_RELS[i]}" in *$'\n'*) return 1 ;; esac
-    fm_task_evidence_hash_or "$batched" "${src_hashes[i]-}" "${src_paths[i]}" \
-      && h1=$FM_TE_HASH && [ -n "$h1" ] || return 1
-    fm_task_evidence_hash_or "$batched" "${copy_hashes[i]-}" "${copy_paths[i]}" \
-      && [ -n "$FM_TE_HASH" ] || return 1
+    fm_task_evidence_hash_at "$i" && h1=$FM_TE_HASH && [ -n "$h1" ] || return 1
+    fm_task_evidence_hash_at $((n + i)) && [ -n "$FM_TE_HASH" ] || return 1
     [ "$h1" = "$FM_TE_HASH" ] || {
-      echo "REFUSED: copied evidence ${copy_paths[i]} does not match its source" >&2
+      echo "REFUSED: copied evidence ${FM_TE_PATHS[n + i]} does not match its source" >&2
       return 1
     }
     printf '%s  %s%s\n' "$FM_TE_HASH" "$key" "${FM_TE_RELS[i]}" >> "$manifest" || return 1
