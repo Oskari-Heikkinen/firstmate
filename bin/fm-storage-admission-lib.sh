@@ -295,20 +295,45 @@ def reason_ok: type == "object" and (keys == ["code", "detail", "term", "volume"
   else "bad" end
 '
 
+# adm_cterms_refused LINE: names the measurer's exit-2 refusal. Its one
+# "fm-storage-c-terms: refused: CODE: DETAIL" line (CODE usage or policy)
+# becomes CT_WHY "CODE: DETAIL"; a policy value refusal for one term's key
+# names that term (pagefile_system_managed_growth_bytes: pagefile, ext4_vhdx:
+# ext4_vhdx, wslconfig: swap_vhdx), any other stays host-c:c-terms. Any other
+# stderr reads "measurer exited 2".
+adm_cterms_refused() {
+  local line=${1#fm-storage-c-terms: refused: }
+  CT_WHY="measurer exited 2"
+  case "$1" in *$'\n'*) return ;; esac
+  case "$1" in 'fm-storage-c-terms: refused: policy: '?*|'fm-storage-c-terms: refused: usage: '?*) ;; *) return ;; esac
+  CT_WHY=${line//[^[:print:]]/?}
+  CT_WHY=${CT_WHY:0:320}
+  case "$line" in
+    'policy: '*' pagefile_system_managed_growth_bytes is not a nonnegative integer') CT_TERM=host-c:pagefile ;;
+    'policy: '*' ext4_vhdx is not an absolute path') CT_TERM=host-c:ext4_vhdx ;;
+    'policy: '*' wslconfig is not an absolute path') CT_TERM=host-c:swap_vhdx ;;
+  esac
+}
+
 # adm_cterms: measures the strict C: terms once per process. Sets CT_STATE
 # (ok or failed), CT_TERM and CT_WHY (the first unusable VOLUME:TERM and why),
 # CT_SWAP, CT_VSS, CT_PAGEFILE (reserved bytes), CT_EXT4 (its state), CT_VSS_*
 # and CT_JSON (the measurer's object). Returns 1 when any mandatory term is
 # unusable.
 adm_cterms() {
-  local out rc t state res proven why
+  local out rc t state res proven why errf err=''
   if [ -n "${CT_STATE:-}" ]; then [ "$CT_STATE" = ok ]; return; fi
   CT_STATE=failed CT_TERM=host-c:c-terms CT_WHY='' CT_SWAP=0 CT_VSS=0 CT_PAGEFILE=0 CT_EXT4='' CT_JSON=null
   command -v jq >/dev/null 2>&1 || { CT_WHY="jq is not installed"; return 1; }
-  out=$(timeout "$ADM_CTERMS_TIMEOUT" "$POL_CMD" ${POL_ARGS[@]+"${POL_ARGS[@]}"} </dev/null 2>/dev/null); rc=$?
+  # The measurer's stderr is kept only for its exit-2 refusal line; without a
+  # temp file that refusal reads as "measurer exited 2".
+  errf=$(mktemp "${TMPDIR:-/tmp}/fm-storage-c-terms.XXXXXX" 2>/dev/null) || errf=/dev/null
+  out=$(timeout "$ADM_CTERMS_TIMEOUT" "$POL_CMD" ${POL_ARGS[@]+"${POL_ARGS[@]}"} </dev/null 2>"$errf"); rc=$?
+  if [ "$errf" != /dev/null ]; then err=$(head -c 1024 -- "$errf" 2>/dev/null); rm -f -- "$errf"; fi
   case "$rc" in
     0|75) ;;
     124) CT_WHY="measurer timed out after ${ADM_CTERMS_TIMEOUT}s"; return 1 ;;
+    2) adm_cterms_refused "$err"; return 1 ;;
     *) CT_WHY="measurer exited $rc"; return 1 ;;
   esac
   out=$(printf '%s\n' "$out" | jq -r "$ADM_CTERMS_JQ" 2>/dev/null) || out=bad

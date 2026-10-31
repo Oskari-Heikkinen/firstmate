@@ -6,7 +6,7 @@ metadata:
   internal: true
   sources:
     - path: docs/storage.md
-      sha256: ca421cc840013f142c1418268775040d022040468426100fee9fa2c734eb4574
+      sha256: 3e0f14467191fb0f02e18f438778b5fbb382581d049ca30ba8ab6a37872af779
     - path: bin/fm-storage.sh
       sha256: 035a87a5a19fb7521ce5a5b757bd89232a3c1fb24d2010feb9800bc0eaaaf86d
     - path: bin/fm-pack.sh

@@ -210,7 +210,10 @@
 #     measurer's first reason, under its exit 75 or not, is the failed reading
 #     "VOLUME:TERM: DETAIL"; an unknown term, a failed or malformed reading, a
 #     bounded reading without c-terms-bounded=accept, or a bounded vss whose
-#     cap is not proven is "host-c:TERM: WHY". Either is the failed reading for
+#     cap is not proven is "host-c:TERM: WHY". Its exit-2 refusal is
+#     "host-c:c-terms: CODE: DETAIL", naming the term instead when one term's
+#     C: policy key is malformed (bin/fm-storage-admission-lib.sh
+#     adm_cterms_refused). Each is the failed reading for
 #     status and every Linux and C: admission; D: admissions never run the
 #     measurer.
 #   - While c-terms=strict, or while the policy is present but unreadable,
@@ -379,7 +382,7 @@ BAT_CACHE_SECS=300
 VHDX_BAT_SHA256=bc4917f5d8a697c8916671307d6d909219fe16fd45574bb89718ecd92fe69c03
 # sha256 of bin/fm-storage-admission-lib.sh; only a library with exactly these
 # bytes loads.
-ADM_LIB_SHA256=81cc748bafe3d7f1f57b4505acba79c655bbe6cb68275d587f8997e264c890d6
+ADM_LIB_SHA256=57739db62bb3550a16031f454d518240c9a0aa19e69dd1e178dc3a59551ba56f
 INTERFACE=v3
 # The storage admission site policy; absent, nothing below loads it.
 POLICY=${FM_DISK_ROOM_POLICY:-${FM_CONFIG_OVERRIDE:-${FM_HOME:-${SCRIPT_DIR%/*}}/config}/storage-admission}

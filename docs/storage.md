@@ -276,7 +276,7 @@ The reader writes nothing, caches nothing and never changes a Windows setting; i
   Fixed pagefiles reserve, per C: file, the maximum minus the allocated size, clamped at 0; no pagefile on C: reserves 0, and settings that do not match the allocated files are unknown until a restart.
 
 The C: policy (`fm-storage-c-policy/v1`, passed by the admission policy's `c-terms-arg=--policy`) has a closed key set that the reader's header owns: the approved pagefile growth budget and optional explicit `ext4_vhdx` and `.wslconfig` paths.
-An invalid C: policy refuses before any reading.
+An invalid C: policy refuses before any reading, and admissions and `status` wait on that refusal as `host-c:pagefile`, `host-c:ext4_vhdx` or `host-c:swap_vhdx` (the `.wslconfig` path) when one term's key is malformed, else as `host-c:c-terms`, with the reader's `policy: DETAIL`.
 A bounded term admits only while the admission policy says `c-terms-bounded=accept`, and until a home has a C: policy with an approved pagefile budget, a system-managed pagefile keeps every Linux and C: admission waiting, which is why nothing activates on landing.
 
 ### Pinning

@@ -73,12 +73,14 @@ cat >"$FAKEBIN/flock" <<SH
 exec $(command -v flock) "\$@"
 SH
 chmod +x "$FAKEBIN/flock"
-# The C: terms measurer port: records its arguments, prints $FAKE_CTERMS and
-# exits with $FAKE_CTERMS_RC (default 0).
+# The C: terms measurer port: records its arguments, prints $FAKE_CTERMS,
+# $FAKE_CTERMS_ERR on stderr when set, and exits with $FAKE_CTERMS_RC
+# (default 0).
 cat >"$FAKEBIN/measurer" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_CTERMS.args"
 cat "$FAKE_CTERMS"
+[ -z "${FAKE_CTERMS_ERR:-}" ] || printf '%s\n' "$FAKE_CTERMS_ERR" >&2
 exit "${FAKE_CTERMS_RC:-0}"
 SH
 chmod +x "$FAKEBIN/measurer"
@@ -100,7 +102,7 @@ set_sizes() {
 run_adm() {
   FM_HOME="$TMP_ROOT/home-unset" \
   PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FAKE_BULK_MNT="$TMP_ROOT/mnt" \
-    FAKE_CTERMS="$CTERMS" FAKE_CTERMS_RC="${FAKE_CTERMS_RC-}" FAKE_FLOCK_SEEN="${FAKE_FLOCK_SEEN-}" \
+    FAKE_CTERMS="$CTERMS" FAKE_CTERMS_RC="${FAKE_CTERMS_RC-}" FAKE_CTERMS_ERR="${FAKE_CTERMS_ERR-}" FAKE_FLOCK_SEEN="${FAKE_FLOCK_SEEN-}" \
     FM_STORAGE_CONFIG="$CFG" FM_STORAGE_MNT="$TMP_ROOT/mnt" FM_STORAGE_MOUNTINFO="$TMP_ROOT/mountinfo" \
     FM_DISK_ROOM_POLICY="$POLICY" FM_DISK_ROOM_MARGIN="${TEST_MARGIN-1G}" \
     FM_DISK_ROOM_HOST="$HOSTDIR" FM_DISK_ROOM_ROOT="$LINUXDIR" FM_DISK_ROOM_STATE="$STATE" \
@@ -318,6 +320,30 @@ test_unknown_terms_wait() {
   write_cterms "$GIB" $((2 * GIB)) $((3 * GIB))
   FAKE_CTERMS_RC=3 lin a 1
   expect_err 75 "fm-storage: wait: cannot-measure: linux:results: host-c:c-terms: measurer exited 3" "a failed measurer holds admissions"
+  : >"$CTERMS"
+  why='/p/c policy.json pagefile_system_managed_growth_bytes is not a nonnegative integer'
+  FAKE_CTERMS_RC=2 FAKE_CTERMS_ERR="fm-storage-c-terms: refused: policy: $why" lin a 1
+  expect_err 75 "fm-storage: wait: cannot-measure: linux:results: host-c:pagefile: policy: $why" "a malformed pagefile budget names the pagefile term"
+  FAKE_CTERMS_RC=2 FAKE_CTERMS_ERR="fm-storage-c-terms: refused: policy: $why" hostc a 1
+  expect_err 75 "fm-storage: wait: cannot-measure: host-c:results: host-c:pagefile: policy: $why" "a malformed pagefile budget holds C: admissions by name"
+  FAKE_CTERMS_RC=2 FAKE_CTERMS_ERR='fm-storage-c-terms: refused: policy: /p/c.json ext4_vhdx is not an absolute path' lin a 1
+  expect_err 75 "fm-storage: wait: cannot-measure: linux:results: host-c:ext4_vhdx: policy: /p/c.json ext4_vhdx is not an absolute path" "a malformed ext4_vhdx path names its term"
+  FAKE_CTERMS_RC=2 FAKE_CTERMS_ERR='fm-storage-c-terms: refused: policy: /p/c.json wslconfig is not an absolute path' lin a 1
+  expect_err 75 "fm-storage: wait: cannot-measure: linux:results: host-c:swap_vhdx: policy: /p/c.json wslconfig is not an absolute path" "a malformed .wslconfig path names the swap term"
+  FAKE_CTERMS_RC=2 FAKE_CTERMS_ERR='fm-storage-c-terms: refused: policy: /p/c.json schema is not fm-storage-c-policy/v1' lin a 1
+  expect_err 75 "fm-storage: wait: cannot-measure: linux:results: host-c:c-terms: policy: /p/c.json schema is not fm-storage-c-policy/v1" "a whole-policy refusal names the policy, not a term"
+  FAKE_CTERMS_RC=2 FAKE_CTERMS_ERR='fm-storage-c-terms: refused: usage: measure needs --linux-pending BYTES' lin a 1
+  expect_err 75 "fm-storage: wait: cannot-measure: linux:results: host-c:c-terms: usage: measure needs --linux-pending BYTES" "a usage refusal is named"
+  FAKE_CTERMS_RC=2 FAKE_CTERMS_ERR="fm-storage-c-terms: refused: policy: $why"$'\nmore' lin a 1
+  expect_err 75 "fm-storage: wait: cannot-measure: linux:results: host-c:c-terms: measurer exited 2" "a refusal that is not one line is not trusted"
+  FAKE_CTERMS_RC=2 FAKE_CTERMS_ERR="other: refused: policy: $why" lin a 1
+  expect_err 75 "fm-storage: wait: cannot-measure: linux:results: host-c:c-terms: measurer exited 2" "another program's refusal is not trusted"
+  FAKE_CTERMS_RC=2 FAKE_CTERMS_ERR="fm-storage-c-terms: refused: internal: $why" lin a 1
+  expect_err 75 "fm-storage: wait: cannot-measure: linux:results: host-c:c-terms: measurer exited 2" "a refusal code other than policy or usage is not trusted"
+  FAKE_CTERMS_RC=2 lin a 1
+  expect_err 75 "fm-storage: wait: cannot-measure: linux:results: host-c:c-terms: measurer exited 2" "a silent exit 2 holds admissions"
+  FAKE_CTERMS_RC=3 FAKE_CTERMS_ERR="fm-storage-c-terms: refused: policy: $why" lin a 1
+  expect_err 75 "fm-storage: wait: cannot-measure: linux:results: host-c:c-terms: measurer exited 3" "only exit 2 is read as a refusal"
   why="fm-storage: wait: cannot-measure: linux:results: host-c:c-terms: measurer output is not the strict c_terms object"
   CT_EXTRA=',"extra":1' write_cterms "$GIB" $((2 * GIB)) $((3 * GIB))
   lin a 1
@@ -414,6 +440,22 @@ test_landed_measurer() {
   printf 'PS=\n' >"$w/ps-env"
   lin fit 1
   expect_err 75 "fm-storage: wait: cannot-measure: linux:results: host-c:vss: Windows reading unavailable: no PowerShell command" "no Windows reading holds admissions"
+  # A malformed pagefile budget in the C: policy names the pagefile term in
+  # every reading, and the measurer's stderr leaves no temp file behind.
+  printf '{"schema":"fm-storage-c-policy/v1","policy_id":"p1","approval":"fixture","pagefile_system_managed_growth_bytes":"2G"}\n' >"$w/c-policy.json"
+  write_policy admission=on c-terms=strict "c-terms-command=$w/measurer" \
+    c-terms-arg=measure c-terms-arg=--linux-pending c-terms-arg=0 c-terms-arg=--policy "c-terms-arg=$w/c-policy.json"
+  why="policy: $w/c-policy.json pagefile_system_managed_growth_bytes is not a nonnegative integer"
+  mkdir -p "$w/tmp"
+  TMPDIR=$w/tmp lin fit 1
+  expect_err 75 "fm-storage: wait: cannot-measure: linux:results: host-c:pagefile: $why" "the landed measurer's malformed pagefile budget names the pagefile term"
+  assert_equals '' "$(ls -A "$w/tmp")" "the measurer's stderr capture leaves no temp file"
+  TMPDIR=$w/tmp try admission-status --json
+  expect_code 75 "$RC" "admission-status waits on the malformed pagefile budget"
+  assert_equals "fm-storage: wait: cannot-measure: host-c:pagefile: $why" "$ERRT" "admission-status names the pagefile term"
+  assert_equals "[{\"code\":\"cannot-measure\",\"volume\":\"host-c\",\"term\":\"pagefile\",\"detail\":\"host-c:pagefile: $why\"}]" \
+    "$(printf '%s\n' "$OUT" | jq -c '[.reasons[] | select(.volume == "host-c")]')" "the host-c reason's term is pagefile, not null"
+  assert_equals '' "$(ls -A "$w/tmp")" "admission-status leaves no temp file"
   pass "the landed fm-storage-c-terms.py measurer feeds strict admission end to end"
 }
 
