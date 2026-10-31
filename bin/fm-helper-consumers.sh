@@ -1647,7 +1647,7 @@ alarm_pass() {  # <home> <state> <repo>
       done < "$dir/deployed.helpers"
       [ "$new" = 0 ] || alarm_deployed "$dir" "$log" \
         || { alarm_report "$dir" "helper-unaccepted: cannot write $dir/deployed.tsv"; return 0; }
-      [ "$new" = 0 ] && [ -f "$dir/accepted.tsv" ] || alarm_accepted "$dir" "$log" || accepted_ok=0
+      [ "$new" = 0 ] && [ -f "$dir/accepted.tsv" ] || alarm_accepted "$dir" "$log" || return 0
     fi
 
     # Records: one stat each; only a record new, changed or no longer readable
