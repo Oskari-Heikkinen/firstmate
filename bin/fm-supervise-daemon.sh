@@ -1807,7 +1807,7 @@ fm_super_main() {
     # config/watch.env reaches this watcher as it reaches an armed one, loaded in
     # the child alone so the daemon's own settings stay its own; exec keeps the
     # child's pid as the watcher's.
-    ( fm_watch_env_load "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"; exec "$WATCH" ) \
+    ( exec "$WATCH" ) \
       >"$CUR_TMP" 2>>"$WATCH_ERR" &
     WATCHER_PID=$!
   }
