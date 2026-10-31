@@ -1636,7 +1636,7 @@ alarm_pass() {  # <home> <state> <repo>
     log="$VERSIONS_DIR/holds.log"
     if [ ! -e "$log" ] && [ ! -L "$log" ]; then
       [ ! -s "$dir/deployed.tsv" ] || : > "$dir/deployed.tsv"
-      { [ ! -s "$dir/accepted.tsv" ] && ! accepted_markers "$dir"; } || alarm_accepted "$dir" /dev/null || accepted_ok=0
+      { [ ! -s "$dir/accepted.tsv" ] && ! accepted_markers "$dir"; } || alarm_accepted "$dir" /dev/null || { alarm_report "$dir" "helper-unaccepted: cannot write $dir/accepted.tsv"; return 0; }
     elif [ ! -f "$log" ] || [ ! -r "$log" ]; then
       rows="$rows$ALARM_ID-hold-log-unreadable${TAB}hold log $log cannot be read, so versions deployed past the hold limit cannot be judged; the last judged alarms stay"$'\n'
     else
