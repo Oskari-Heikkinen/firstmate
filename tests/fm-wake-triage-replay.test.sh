@@ -50,7 +50,7 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-TR="$ROOT/bin/fm-wake-triage-replay.sh"
+TR=${FM_CF_TR:-$ROOT/bin/fm-wake-triage-replay.sh}
 TMP_ROOT=$(fm_test_tmproot fm-wake-triage-replay-tests)
 H="$TMP_ROOT/home"
 mkdir -p "$H/state/loop-alerts" "$H/state/beta.inbox"
