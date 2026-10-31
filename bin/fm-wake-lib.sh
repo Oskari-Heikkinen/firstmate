@@ -1683,7 +1683,7 @@ fm_lock_acquire_wait_max() {  # <lockdir> <max-seconds>
           if [ -z "$grace_deadline" ]; then
             grace_deadline=$FM_LOCK_STALE_AFTER
             [ "$grace_deadline" -ge 2 ] 2>/dev/null || grace_deadline=2
-            grace_deadline=$((deadline + grace_deadline))
+            grace_deadline=$deadline
           fi
           [ "$SECONDS" -lt "$grace_deadline" ] || return 1
           ;;
