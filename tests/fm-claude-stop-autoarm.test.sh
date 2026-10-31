@@ -1522,6 +1522,61 @@ test_recycled_bridge_claim_stays_open_on_session_id_match() {
   pass "auto-arm: a recycled-bridge claim stays open on its recorded session id and lock-holder identity, and nothing else does"
 }
 
+# The arming claim is published before the hook proves its session id, because
+# that proof walks the harness ancestry with ps and the synchronous guard waits
+# only FM_CLAUDE_AUTOARM_SYNC_WAIT_MS for an open claim before it blocks the
+# turn. The probe holds the session-id lookup until the claim shows on the
+# ledger (or a 30 s hang guard ends), then releases it. A claim still this
+# process's open generation gains the id and the lock holder's identity; one
+# superseded while the lookup ran is left as the newer owner wrote it.
+test_claim_publishes_before_session_id_pin() {
+  local dir out published final
+  dir=$(make_primary_dir "$TMP_ROOT/v2-claim-before-pin")
+  probe() {
+    bash -c '
+        . "$1/bin/fm-wake-lib.sh"
+        . "$1/bin/fm-session-lock-lib.sh"
+        state="$1/state"
+        fm_session_lock_trusted_session_id() {
+          while [ ! -e "$state/release" ]; do sleep 0.02; done
+          printf "%s\n" sess-pin
+        }
+        rm -f "$state/release" "$state/.claude-autoarm-epoch"
+        sleep 60 &
+        holder=$!
+        printf "%s\n" "$holder" > "$state/.lock"
+        ( fm_autoarm_claim_next "$state" ) &
+        claimant=$!
+        for _ in $(seq 1 600); do
+          grep -q "outcome=arming" "$state/.claude-autoarm-epoch" 2>/dev/null && break
+          sleep 0.05
+        done
+        published=$(sed -n 1p "$state/.claude-autoarm-epoch" 2>/dev/null)
+        if [ "$2" = superseded ]; then
+          printf "epoch=99 owner_pid=1 outcome=rewake updated_at=1\nnewer-identity\n" \
+            > "$state/.claude-autoarm-epoch"
+        fi
+        : > "$state/release"
+        wait "$claimant"
+        kill "$holder" 2>/dev/null
+        printf "%s\n" "$published"
+        cat "$state/.claude-autoarm-epoch"
+      ' _ "$dir" "$1"
+  }
+  out=$(probe pinned)
+  published=$(printf '%s\n' "$out" | sed -n 1p)
+  final=$(printf '%s\n' "$out" | sed -n 2p)
+  assert_contains "$published" "outcome=arming" "the arming claim must be on the ledger while the session-id proof is still running"
+  assert_not_contains "$published" "owner_session_id=" "the claim published before the session-id proof must not carry a session id yet"
+  assert_contains "$final" "owner_session_id=sess-pin" "the claim still this process's generation must gain its session id once the proof ends"
+  [ -n "$(printf '%s\n' "$out" | sed -n 4p)" ] || fail "the pinned claim must record the lock holder's identity on line 3: $out"
+  out=$(probe superseded)
+  final=$(printf '%s\n' "$out" | sed -n 2,4p)
+  [ "$final" = "$(printf 'epoch=99 owner_pid=1 outcome=rewake updated_at=1\nnewer-identity')" ] \
+    || fail "a claim superseded during the session-id proof must be left as the newer owner wrote it: $out"
+  pass "auto-arm: the claim is published before the session-id proof and pinned only while still its owner's"
+}
+
 # A claim with no numeric session-lock pid is never open: nothing can receive
 # its rewake (the hook itself goes silent on a missing or malformed lock), so
 # deferring to it would leave the home deaf. Same live, identity-matched,
@@ -2103,6 +2158,7 @@ test_orphaned_claim_from_dead_session_is_superseded_by_replacement
 test_resumed_same_id_session_supersedes_the_orphan
 test_claim_without_numeric_session_lock_is_not_open
 test_recycled_bridge_claim_stays_open_on_session_id_match
+test_claim_publishes_before_session_id_pin
 test_identityless_ledger_never_defers
 test_superseded_owner_never_reinvokes_the_arm
 test_superseded_owner_goes_silent_and_never_double_translates
