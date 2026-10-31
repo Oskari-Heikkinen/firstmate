@@ -39,7 +39,7 @@ FILES = tuple(sorted((
     "bin/fm-tmux-lib.sh", "bin/fm-composer-lib.sh", "bin/fm-cursor-lib.sh",
     "bin/fm-session-lock-lib.sh", "bin/fm-agent-process-lib.sh", "bin/fm-gemini-lib.sh",
     "bin/fm-busy-lib.sh", "bin/fm-suspend-lib.sh", "bin/fm-control-lib.sh",
-    "bin/fm-classify-lib.sh", "bin/fm-timeout-lib.sh", "bin/fm-alert-store-lib.sh",
+    "bin/fm-classify-lib.sh", "bin/fm-wait-cond-lib.sh", "bin/fm-timeout-lib.sh", "bin/fm-alert-store-lib.sh",
     "bin/fm-parent-channel-lib.sh", "bin/fm-secondmate-parent-lib.sh",
     "bin/fm-dod-lib.sh", "bin/fm-pr-lib.sh", "bin/fm-nm-run-lib.sh", "bin/fm-brief-heading-lib.sh",
 )))

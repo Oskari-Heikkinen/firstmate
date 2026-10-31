@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -786,6 +787,35 @@ class BundlePreparation(unittest.TestCase):
         self.assertEqual(original.stat().st_ino, inode)
         self.assertEqual(list(original.iterdir()), [])
         self.assertTrue(self.command("verify", "--bundle", moved)["verified"])
+
+    def test_requirements_cover_adapter_shell_source_closure(self):
+        # A library that starts sourcing a sibling must bring it into the
+        # bundle; otherwise the relocated adapter fails only at run time.
+        source = re.compile(r'^\s*(?:\.|source)\s+(\S+)', re.M)
+        sibling_form = re.compile(r'"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}"]*)?\})/([A-Za-z0-9_.-]+\.sh)"')
+        # "$adapter" is the backend dispatch, walked from bin/backends/ below;
+        # "$1" is fm-dod-lib.sh's child shell re-reading fm-pr-lib.sh.
+        dynamic = {'"$adapter"', '"$1"'}
+        pending = ["bin/fm-view-adapter.sh"] + [name for name in self.requirements if name.startswith("bin/backends/")]
+        reached = set()
+        while pending:
+            name = pending.pop()
+            if name in reached:
+                continue
+            reached.add(name)
+            for target in source.findall((ROOT / name).read_text()):
+                if target in dynamic:
+                    continue
+                match = sibling_form.fullmatch(target)
+                self.assertTrue(match, (name, "unrecognized source form", target))
+                sibling = match.group(1)
+                # Backend adapters source from the bin/ directory above them.
+                found = [str(Path(base) / sibling) for base in (Path(name).parent, "bin") if (ROOT / base / sibling).is_file()]
+                self.assertTrue(found, (name, sibling))
+                pending.append(found[0])
+        for name in ("bin/fm-wait-cond-lib.sh", "bin/fm-gemini-lib.sh", "bin/fm-composer-lib.sh"):
+            self.assertIn(name, reached)
+        self.assertEqual(sorted(reached - set(self.requirements)), [])
 
     def test_relocated_code_runs_fixed_passive_owners_without_source_checkout(self):
         bundle = self.prepared()
