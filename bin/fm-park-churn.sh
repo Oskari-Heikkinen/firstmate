@@ -87,7 +87,8 @@ cmd_record() {
         alarmed=*) alarmed=${line#alarmed=}; continue ;;
       esac
       case "$line" in
-        ''|*[!0-9]*)
+        ''|*[!0-9]*) continue ;;
+        __never__)
           publish "$rec.new" "park-churn: task $id: its resume record $rec holds an unreadable line; fix or remove it so resume churn is counted again"$'\n' || true
           die "$rec holds a line that is not an epoch" ;;
       esac
