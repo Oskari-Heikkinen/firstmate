@@ -700,6 +700,38 @@ Held signals keep their seen markers unmoved, the batch start is kept in `state/
 Batching is off while the away-mode daemon owns triage.
 `bin/fm-watch.sh`'s `wake_batch_due` and `signal_span_urgent` own the exact rules.
 
+## Open-decision reminders (config/open-decision-reminders)
+
+The optional local, gitignored `config/open-decision-reminders` presence flag opts this home into a default-off reminder for worker decisions that stay open.
+Without it the OPEN DECISIONS section of every drain still lists each open decision, but nothing wakes the supervisor for one that has gone quiet.
+
+### What wakes
+
+With the flag present, the watcher wakes with one `check: open decision overdue: <task> key=<key> age=<seconds>s` row for each `needs-decision` or `blocked` decision whose opening `[at=...]` time is at least the threshold old.
+Every due key gets its own check row, oldest first, and one wake carries them all, naming the oldest and how many more are queued.
+A check row is never batched or absorbed as a quiet wait, so the wake comes at once.
+A key repeats one threshold after its first reminder, and each later interval doubles up to the backoff cap.
+The decisions are the ones the shared OPEN DECISIONS fold holds open, so a resolution, a captain-held transfer or a terminal `done:` or `failed:` from the owning ship or scout ends the reminders at once, and a reopened key starts afresh.
+Only a decision with an explicit `[key=...]` and a readable `[at=...]` opening time is aged; a keyless or unstamped one is never inferred overdue.
+A due key is skipped while its task's current declared wait is `paused:` or `captain-held:`, or while its task has an open captain call, and is reminded once that ends.
+This home's own outbound parent channel is not scanned, as in the drain.
+
+### Settings and failures
+
+The threshold is `FM_OPEN_DECISION_OVERDUE_SECS`, else the number in the optional local `config/open-decision-overdue-secs`, else `1800` seconds.
+The backoff cap is `FM_OPEN_DECISION_BACKOFF_MAX_SECS`, else `config/open-decision-backoff-max-secs`, else `14400` seconds, and must not be below the threshold.
+Each must be a positive whole number of at most nine digits, and the files are read on every tick.
+An invalid value, an unusable setting file, an unreadable `state/.open-decision-reminders` ledger or a failed fold sends no reminder and raises one `check: open-decision reminders failed: <why>` wake per distinct failure, remembered in `state/.open-decision-reminders.error` and cleared by the next good tick; the watcher keeps running.
+
+### Cost and persistence
+
+The watcher runs the reminder at most once a minute, and on the first cycle of each watcher process, so a reminder can be up to a minute late.
+The fold reads only status bytes appended since its last tick, through its own `state/.<task>.timed-open-decisions-cursor`, which never moves the drain's cursor.
+The ledger keeps each open key's last reminder and next interval, so a restarted watcher keeps each key's backoff; a row whose decision closed drops on the next tick.
+
+The flag and its settings are a home-local supervision preference and are not inherited by secondmate homes.
+`bin/fm-watch.sh`'s `open_decision_reminder_tick` and `open_decision_reminder_check` own the exact rules.
+
 ## Parked-gate wait deferral (config/wedge-defer-parked-gate)
 
 The optional local, gitignored `config/wedge-defer-parked-gate` presence flag opts this home into a default-off second form of wait evidence in the watcher's wedge timer.
@@ -2937,6 +2969,8 @@ FM_SIGNAL_GRACE=30      # seconds to coalesce nearby status and turn-end signals
 FM_WAKE_BATCH_SECS=180  # seconds the watcher holds routine signals, declared-wait rechecks, and rearm-resurface wakes in one batch before waking; urgent lines still wake at once; 0 keeps the immediate wake; overrides config/wake-batch-secs (see "Wake batching")
 FM_WATCHER_CLEANUP_LOCK_BOUND=   # optional watcher EXIT marker-lock wait; default and validation: docs/watcher-continuity.md
 FM_TURNEND_CHURN_ABSORB_SECS=900   # longest one endpoint's bare turn-ends may be deferred on pane-churn evidence alone; only consulted when config/turnend-churn-absorb is present
+FM_OPEN_DECISION_OVERDUE_SECS=1800   # age of a keyed open decision before its check reminder; overrides config/open-decision-overdue-secs; only consulted when config/open-decision-reminders is present (see "Open-decision reminders")
+FM_OPEN_DECISION_BACKOFF_MAX_SECS=14400   # cap on the doubling interval between repeat reminders of one key; overrides config/open-decision-backoff-max-secs
 FM_CAPTAIN_RE='done:|needs-decision:|blocked:|failed:|PR ready|checks green|ready in branch|merged'   # captain-relevant status regex; nonterminal progress verbs remain excluded even when their prose matches
 FM_CLASSIFY_PAUSED_VERB=paused     # leading declared-wait status verb; bin/fm-classify-lib.sh owns its meaning and legacy external-wait label; excluded from FM_CAPTAIN_RE and distinct from blocked
 FM_STALE_ESCALATE_SECS=240         # idle seconds before a provably-working stale pane escalates, unless that pane's own worker declared a wait that has not elapsed, or, where config/wedge-defer-parked-gate arms it, that pane's crew is parked at a validation gate awaiting the supervisor's decision on it that the crew raised under that run's key and nobody has answered yet, either of which takes the FM_PAUSE_RESURFACE_SECS recheck below instead; stale panes whose crew is not provably working surface immediately unless a standing declared wait admits them to the declared-wait cadence or FM_IDLE_PARK_NUDGE below first nudges a ship or scout, whatever their agent's liveness; at that same escalation moment a recovery-grade agent-state probe (docs/architecture.md owns that dead-record contract) reports a pane whose endpoint is proven `dead` or `missing` once and stops re-escalating it while it stays that way
