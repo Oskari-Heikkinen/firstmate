@@ -136,6 +136,7 @@ assert_grep "HANDOFF 2026-09-27T18:00:00Z home=test-home task=t1 branch=fm/t1 he
 sid=$(mq "$H" source-id t1 "$HEAD_A")
 assert_equals "merge-queue-t1-aaaaaaaa" "$sid" "the source id names the task and head"
 assert_present "$H/state/procevent/$sid.source" "handoff arms the watch"
+assert_present "$Q/watches/$HEAD_A.$sid.json" "handoff leaves the watch receipt for the train"
 assert_grep "paused [key=merge-queue] [wait=merge-result:$HEAD_A] [at=" "$H/state/t1.status" "handoff declares the existing wait tag"
 assert_grep "result-ready $HEAD_A" "$H/state/t1.status" "the paused wait names the configured result check"
 assert_grep "park_state=parked" "$H/state/t1.meta" "handoff parks through the existing mechanism"
@@ -158,6 +159,7 @@ if mq "$H" handoff t1 fm/t1 "$HEAD_B" --resume-note 'must not replace earlier in
 fi
 assert_grep "refused the handoff" "$TMP_ROOT/refused.err" "the refusal is reported"
 assert_absent "$H/state/procevent/merge-queue-t1-bbbbbbbb.source" "a refused handoff arms nothing"
+assert_absent "$Q/watches/$HEAD_B.merge-queue-t1-bbbbbbbb.json" "a refused handoff writes no watch receipt"
 assert_no_grep "$HEAD_B" "$H/state/t1.status" "a refused handoff declares no wait"
 assert_equals 'rebase onto main and rerun the gate' "$(cat "$H/state/merge-queue/t1.resume")" 'queue refusal preserves the previous head continuation'
 assert_grep "$HEAD_A" "$H/data/t1/handoff.md" 'queue refusal preserves the previous handoff'
@@ -1085,3 +1087,60 @@ SH
   pass 'queue live expiry is bounded, single-owner and subordinate to results and requested parks'
 )
 queue_expiry_regressions
+
+# --- watch receipts: arm writes, re-arm rewrites, retire removes ---------------
+Q="$TMP_ROOT/q-receipt"; new_queue "$Q"
+H="$TMP_ROOT/h-receipt"; new_home "$H" "$Q" t1
+sid=merge-queue-t1-aaaaaaaa
+receipt="$Q/watches/$HEAD_A.$sid.json"
+mq "$H" arm t1 "$HEAD_A" >/dev/null 2>"$TMP_ROOT/receipt-arm.err" || fail "arm with a writable queue must succeed"
+assert_equals "" "$(cat "$TMP_ROOT/receipt-arm.err")" "a receipt that was written prints no warning"
+assert_present "$receipt" "arm writes the receipt named by head and source id"
+home_phys=$(cd -P "$H" && pwd -P)
+assert_equals "lattice.merge-queue.watch.v1" "$(jq -r .schema "$receipt")" "the receipt carries its version"
+assert_equals "$HEAD_A" "$(jq -r .head "$receipt")" "the receipt names the head"
+assert_equals t1 "$(jq -r .task "$receipt")" "the receipt names the task"
+assert_equals "$sid" "$(jq -r .source_id "$receipt")" "the receipt names the watch's source id"
+assert_equals "$home_phys" "$(jq -r .home "$receipt")" "the receipt names the home by its absolute physical path"
+assert_equals "$home_phys/state/procevent/$sid.source" "$(jq -r .registration "$receipt")" \
+  "the receipt names the registration that proves the watch"
+[[ "$(jq -r .armed_at "$receipt")" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+  || fail "armed_at must be a UTC time, got $(jq -r .armed_at "$receipt")"
+assert_present "$(jq -r .registration "$receipt")" "the named registration exists while the watch is armed"
+receipt_mode=$(stat -c %a "$receipt" 2>/dev/null || stat -f %Lp "$receipt")
+assert_equals 644 "$receipt_mode" "the train's home can read the receipt"
+mq "$H" arm t1 "$HEAD_A" >/dev/null || fail "re-arm must succeed"
+assert_equals "$HEAD_A.$sid.json" "$(ls -A "$Q/watches")" "a re-arm keeps exactly one receipt and leaves no temporary file"
+mq "$H" retire t1 "$HEAD_A" >/dev/null
+assert_absent "$receipt" "retire removes the receipt"
+assert_absent "$H/state/procevent/$sid.source" "retire stops the watch"
+pass "arm writes the versioned watch receipt atomically, re-arm rewrites it, and retire removes it"
+
+mq "$H" arm t1 "$HEAD_A" >/dev/null || fail "arm must succeed before the failed re-arm"
+assert_present "$receipt" "the receipt exists before the failed re-arm"
+rm -rf "$H/state/procevent"; : > "$H/state/procevent"
+if mq "$H" arm t1 "$HEAD_A" >/dev/null 2>"$TMP_ROOT/receipt-refused.err"; then
+  fail "an arm whose watch cannot be registered must fail"
+fi
+assert_grep "cannot register the watch $sid" "$TMP_ROOT/receipt-refused.err" "the failed arm says why"
+assert_absent "$receipt" "a failed re-arm removes the earlier receipt, so no receipt outlives its watch"
+rm -f "$H/state/procevent"
+pass "an arm that cannot register leaves no receipt"
+
+rm -rf "$Q/watches"; : > "$Q/watches"
+mq "$H" arm t1 "$HEAD_A" >"$TMP_ROOT/receipt-unwritable.out" 2>"$TMP_ROOT/receipt-unwritable.err" \
+  || fail "a receipt that cannot be written must not fail the arm"
+assert_grep "armed: $sid" "$TMP_ROOT/receipt-unwritable.out" "the watch is armed without its receipt"
+assert_grep "could not write its watch receipt" "$TMP_ROOT/receipt-unwritable.err" "the missing receipt is warned about"
+assert_present "$H/state/procevent/$sid.source" "the watch stays armed"
+rm -f "$Q/watches"
+mq "$H" retire t1 "$HEAD_A" >/dev/null
+pass "a receipt that cannot be written warns and keeps the watch"
+
+mkdir -p "$receipt/inner"
+mq "$H" arm t1 "$HEAD_A" >/dev/null 2>"$TMP_ROOT/receipt-dir.err" || fail "a directory in the receipt's place must not fail the arm"
+assert_grep "could not write its watch receipt" "$TMP_ROOT/receipt-dir.err" "a directory in the receipt's place is warned about"
+assert_equals "inner" "$(ls -A "$receipt")" "no receipt is moved into the directory"
+rm -rf "$receipt"
+mq "$H" retire t1 "$HEAD_A" >/dev/null
+pass "a directory in the receipt's place is never written into"

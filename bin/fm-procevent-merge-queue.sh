@@ -48,7 +48,12 @@
 # arm        Register the watch for one handed-over head (idempotent). Use it
 #            to re-arm after an `error` outcome or when a head was handed over
 #            by hand. The source id is merge-queue-<task-id>-<head8>, so a new
-#            head for the same task gets its own watch.
+#            head for the same task gets its own watch. Once registered, it
+#            writes the watch receipt <queue dir>/watches/<head40>.<source-id>.json
+#            by rename (docs/handoff-coverage.md "Merge-queue watch receipts"
+#            owns the format). An arm that cannot register leaves no receipt
+#            for that watch, and a receipt that cannot be written leaves the
+#            watch armed with a stderr warning.
 # result     Print the head's final RESULT line, or nothing while it is still
 #            pending. Exit 2 when the queue cannot be read.
 # result-ready  Exit 0 for a final result, 1 pending, 2 unreadable. The
@@ -66,7 +71,8 @@
 #            park conversion. Reads live/parked state only under that lock.
 #            Autohandle holds the lock through the handled acknowledgement and
 #            rechecks it there, so competing handlers cannot duplicate delivery.
-# retire     Stop a head's watch. Captured results are never touched.
+# retire     Remove the head's watch receipt, then stop its watch. Captured
+#            results are never touched.
 # watch      The blocking child the generic runner executes; never run it in a
 #            conversational turn. It emits one outcome document on stdout.
 #            While pending it calls the park owner's expire-queue under the
@@ -171,6 +177,7 @@ SELF="$SCRIPT_DIR/fm-procevent-merge-queue.sh"
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 ADAPTER=merge-queue
+WATCH_SCHEMA=lattice.merge-queue.watch.v1
 MQ_STATE="$STATE/merge-queue"
 # The lifecycle owners settle delegates to; overridable only so tests can
 # observe the calls without a live worker.
@@ -372,6 +379,37 @@ default_branch_of() {  # <repo>
   printf '%s\n' "${ref:-main}"
 }
 
+# --- watch receipts ------------------------------------------------------------
+
+watch_receipt_path() {  # <dir> <head> <sid>
+  printf '%s/watches/%s.%s.json\n' "$1" "$2" "$3"
+}
+
+# Publish the receipt that tells the train this home's own watch covers <head>.
+# Written to a dot name in the same folder and renamed, so a reader sees a whole
+# receipt or none.
+write_watch_receipt() {  # <dir> <task> <head> <sid>
+  local dir=$1 home state final tmp at
+  shift
+  home=$(CDPATH='' cd -P -- "$FM_HOME" 2>/dev/null && pwd -P) || return 1
+  fm_procevent_state_root_resolve_to state "$STATE" || return 1
+  at=$(date -u +%Y-%m-%dT%H:%M:%SZ) || return 1
+  final=$(watch_receipt_path "$dir" "$2" "$3")
+  # mv would move the receipt into a directory standing in its place and report success.
+  [ ! -d "$final" ] || return 1
+  (umask 022; mkdir -p "$dir/watches") 2>/dev/null || return 1
+  tmp=$(mktemp "$dir/watches/.$2.$3.XXXXXX" 2>/dev/null) || return 1
+  if jq -cn --arg schema "$WATCH_SCHEMA" --arg head "$2" --arg task "$1" --arg source_id "$3" \
+      --arg home "$home" --arg armed_at "$at" --arg registration "$state/procevent/$3.source" \
+      '{schema: $schema, head: $head, task: $task, source_id: $source_id, home: $home,
+        armed_at: $armed_at, registration: $registration}' > "$tmp" 2>/dev/null \
+    && chmod 0644 "$tmp" && mv -f -- "$tmp" "$final" 2>/dev/null; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
 # --- commands ------------------------------------------------------------------
 
 cmd_source_id() {
@@ -381,12 +419,17 @@ cmd_source_id() {
 }
 
 cmd_arm() {
-  local task=${1-} head=${2-} sid
+  local task=${1-} head=${2-} sid dir
   sid=$(cmd_source_id "$task" "$head") || exit 1
   [ -f "$STATE/$task.meta" ] || die "no task record for $task in this home"
-  queue_dir >/dev/null || die "no merge queue is configured: set dir= in $CONFIG/merge-queue"
-  "$SCRIPT_DIR/fm-procevent.sh" register "$ADAPTER" "$sid" -- "$SELF" watch "$task" "$head" >/dev/null \
-    || die "cannot register the watch $sid"
+  dir=$(queue_dir) || die "no merge queue is configured: set dir= in $CONFIG/merge-queue"
+  if ! "$SCRIPT_DIR/fm-procevent.sh" register "$ADAPTER" "$sid" -- "$SELF" watch "$task" "$head" >/dev/null; then
+    # An earlier arm's receipt must not outlive a watch this arm could not renew.
+    rm -f -- "$(watch_receipt_path "$dir" "$head" "$sid")" 2>/dev/null
+    die "cannot register the watch $sid"
+  fi
+  write_watch_receipt "$dir" "$task" "$head" "$sid" \
+    || printf 'warning: armed %s, but could not write its watch receipt under %s/watches\n' "$sid" "$dir" >&2
   printf 'armed: %s\n' "$sid"
 }
 
@@ -778,8 +821,15 @@ cmd_pending_result() {
 }
 
 cmd_retire() {
-  local sid
+  local sid dir receipt
   sid=$(cmd_source_id "${1-}" "${2-}") || exit 1
+  # Receipt first: a receipt without a watch would hide a landing from the
+  # train's line, while a watch without a receipt only keeps the line.
+  if dir=$(queue_dir); then
+    receipt=$(watch_receipt_path "$dir" "$2" "$sid")
+    rm -f -- "$receipt" 2>/dev/null
+    [ ! -e "$receipt" ] || printf 'warning: could not remove the watch receipt %s\n' "$receipt" >&2
+  fi
   "$SCRIPT_DIR/fm-procevent.sh" retire "$sid"
 }
 

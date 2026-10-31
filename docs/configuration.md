@@ -628,6 +628,7 @@ The optional gitignored `config/merge-queue` file holds one `key=value` per line
 
 Without a `dir`, every handoff and arm refuses.
 The watch reads `result.sh` when it is executable and parses `queue.log` otherwise; `STALL` lines are always read from `queue.log`, and the `home=`, `task=`, and `evidence=` result fields are used when present and tolerated when absent.
+Each armed watch also leaves a watch receipt for the train under `<dir>/watches/`; [Merge-queue watch receipts](handoff-coverage.md#merge-queue-watch-receipts) owns it.
 
 ## Fleet activity ledger (config/fleet-ledger)
 

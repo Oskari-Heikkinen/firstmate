@@ -535,6 +535,7 @@ Each protocol is owned by the home that sends, because only that home's watcher 
 | `fm-brief.<home>` | `launch` | a launched task's `state/<id>.meta` | its `state/<id>.status` has a line | none | `accepted` 2h |
 | `fm-corr.<home>` | `reply.<secondmate>`, one per local secondmate | a marked `fm-send` request (its `state/pending-replies/<corr>`), or an unmarked message in `state/<secondmate>.inbox/` | the pending reply is `resolved`, or the message moved to `handled/` | `unacked`, `reply-missed` (fix: the secondmate), `delivery-unknown` (fix: the sender) | `accepted` 24h, `held` 4h, `retry_limit` 1 |
 | `fm-status.<home>` | `status.<secondmate>`, one per local secondmate | an open keyed `needs-decision` or `blocked` line in `state/<secondmate>.status` | the key is resolved | none | `accepted` 7d |
+| `fm-mq-watch.<home>` (a home whose `config/merge-queue` names a queue) | `train`, owned by the home the queue's `owner.json` names, `planned` | a [merge-queue watch receipt](#merge-queue-watch-receipts) in `<queue dir>/watches/` | the train reads it when it lands the head | none | `accepted` 7d, not evaluated while `planned` |
 | `handoff-watch` (tooling-mate only) | one per home it sees | that home's watcher heartbeat | see [Watcher](#watcher-fm-handoff-watch) | none | not evaluated |
 
 The existing tools stay the only writers of these records: `fm-spawn`, `fm-send` with `bin/fm-pending-reply-lib.sh`, `bin/fm-task-inbox-lib.sh`, and the status-append path.
@@ -542,8 +543,49 @@ The bounds are backstops behind that enforcement, not new limits: the pending-re
 A secondmate on another machine (a `(host: ...)` entry in `data/secondmates.md`) gets no stage yet.
 
 **Adopting it.**
-A home's owner runs `bin/fm-handoff-firstmate.py publish --home <home>` and then `bin/fm-handoff-watch.sh arm`, and runs `publish` again whenever a secondmate is added or retired; an unchanged publish writes nothing.
+A home's owner runs `bin/fm-handoff-firstmate.py publish --home <home>` and then `bin/fm-handoff-watch.sh arm`, and runs `publish` again whenever a secondmate is added or retired or `config/merge-queue` changes; an unchanged publish writes nothing.
 Tooling-mate's publish also declares each home's heartbeat folder, so it reruns `publish` when a home joins or leaves.
+
+### Merge-queue watch receipts
+
+A merge train names every member in its landing line, whoever owns it, because the `home=` name on a `HANDOFF` line is free text and cannot route.
+The watch receipt proves that the owning home's own watch will deliver a member's `RESULT`, so the train can leave that member out of the line it sends its own owner.
+`bin/fm-procevent-merge-queue.sh` is its only writer.
+
+- `arm` (which `handoff` always runs) writes `<queue dir>/watches/<head40>.<source-id>.json` once its watch is registered, and rewrites it on every re-arm.
+- The write goes to a dot-named temporary file in `watches/` and is renamed into place, so a reader sees a whole receipt or none; the file is mode 0644.
+- An arm that cannot register removes any receipt an earlier arm left for that watch, and writes none.
+- An arm that registers but cannot write its receipt keeps the watch, warns on stderr and exits 0, because a missing receipt only keeps the member in the train's line.
+- `retire` removes the receipt before it stops the watch, so there is never a receipt without a watch that `retire` stopped.
+
+The receipt is one JSON object, version `lattice.merge-queue.watch.v1`:
+
+| Field | Value |
+|---|---|
+| `schema` | `lattice.merge-queue.watch.v1` |
+| `head` | the handed-over head, 40 hex characters, as in the file name |
+| `task` | the task id |
+| `source_id` | the watch's process-event source id, `merge-queue-<task>-<head8>`, as in the file name |
+| `home` | the absolute physical path of the home that armed the watch |
+| `armed_at` | when the receipt was written, UTC `YYYY-MM-DDTHH:MM:SSZ` |
+| `registration` | the absolute path of the watch's registration, `<home state>/procevent/<source-id>.source` |
+
+Version 1 grows only by adding fields, and readers ignore fields they do not know; a change to a field's meaning is a new version.
+The home's fragment declares it as protocol `fm-mq-watch.<home>` (see the table above), with one planned stage `train` owned by the train's home; its outbox is `<queue dir>/watch-receipts/<home>`, so several homes sharing one queue never share an outbox.
+
+**What the reader must check.**
+The reader is the train's, not Firstmate's.
+A member counts as covered only when all of these hold, checked before the train writes that member's `RESULT`, because a watch removes its registration once it has captured the result:
+
+- a receipt whose `schema` is `lattice.merge-queue.watch.v1` parses for the member's head (any receipt named `<head40>.*.json`);
+- its `head` equals the member's head;
+- `home` is an existing directory and is not the home the train's channel reports to, compared as physical paths;
+- `registration` is an existing regular file;
+- `armed_at` is not after the landing.
+
+Anything else, including a missing, unreadable or unknown-version receipt, leaves the member uncovered, so every failure adds a line and none removes one.
+A receipt can outlive its watch, because the watch's own runner retires the registration after a terminal capture without removing the receipt; the `registration` check is what makes such a receipt prove nothing.
+The receipt's home id, for the stage's outbox, is the one `bin/fm_handoff_registry.py` gives that `home`: its `.fm-secondmate-home` marker, else `main`.
 
 ### Receipt adapters
 

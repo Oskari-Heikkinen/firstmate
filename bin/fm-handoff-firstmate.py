@@ -18,11 +18,16 @@ publish   writes it to DIR/state/handoff-registry/firstmate.json: validated,
           and writes nothing when the protocols are the same.
 
 Every home gets protocol fm-brief.<home>; a home with local secondmates also
-gets fm-corr.<home> and fm-status.<home>, with one stage per secondmate.
+gets fm-corr.<home> and fm-status.<home>, with one stage per secondmate. A home
+whose config/merge-queue names a queue directory also gets fm-mq-watch.<home>,
+the watch receipts bin/fm-procevent-merge-queue.sh arm writes there, read by
+the train home that the queue's owner.json names; a queue whose dir= is not
+absolute or whose owner cannot be read is skipped with a warning on stderr.
 Tooling-mate's fragment also declares protocol handoff-watch, one stage per
 home it sees, whose outbox is that home's heartbeat folder. --root DIR is the
 drill root fm-handoff-watch uses: every folder under it named like a home id is
-a home. Rerun publish after a secondmate is added or retired.
+a home. Rerun publish after a secondmate is added or retired, and after
+config/merge-queue changes.
 
 Exit: 0 printed or published; 1 the fragment would be invalid or could not be
 written; 2 usage.
@@ -46,6 +51,7 @@ FILE_NAME = "firstmate.json"
 TOOLING = "tooling-mate"
 WATCH_PROTOCOL = "handoff-watch"
 LOCAL = {"kind": "local"}
+MQ_WATCH_RECORD = "lattice.merge-queue.watch.v1"
 
 
 def local_mates(home):
@@ -60,6 +66,46 @@ def local_mates(home):
         if match and "(host:" not in line and match.group(1) not in out:
             out.append(match.group(1))
     return out
+
+
+def merge_queue(home):
+    """(queue dir, train owner home) when config/merge-queue names a queue, else None.
+
+    Reads dir= the way bin/fm-procevent-merge-queue.sh does (the last line wins,
+    a leading ~/ is the user's home) and the train owner from <dir>/owner.json."""
+    config = Path(home) / "config/merge-queue"
+    if config.is_symlink() or not config.is_file():
+        return None
+    try:
+        lines = config.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"fm-handoff-firstmate: skipping the merge-queue watch receipts: {config} is unreadable ({exc})",
+              file=sys.stderr)
+        return None
+    dirs = [line[len("dir="):] for line in lines if line.startswith("dir=")]
+    qdir = dirs[-1] if dirs else ""
+    if qdir.startswith("~/"):
+        qdir = os.path.join(os.path.expanduser("~"), qdir[2:])
+    if not qdir:
+        return None
+    if not os.path.isabs(qdir):
+        print(f"fm-handoff-firstmate: skipping the merge-queue watch receipts: dir={qdir} in {config} is not "
+              "absolute", file=sys.stderr)
+        return None
+    qdir = os.path.normpath(qdir)
+    owner_file = Path(qdir) / "owner.json"
+    owner = None
+    try:
+        # A FIFO or device in its place would block the read, so only a regular file is read.
+        if owner_file.is_file():
+            owner = json.loads(owner_file.read_text(encoding="utf-8"))["owner"]["home"]
+    except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
+        owner = exc
+    if not isinstance(owner, str) or not registry.HOME_ID_RE.match(owner):
+        print(f"fm-handoff-firstmate: skipping the merge-queue watch receipts: {owner_file} names no train owner "
+              "home", file=sys.stderr)
+        return None
+    return qdir, owner
 
 
 def stage(name, owner, src, src_match, outbox, bounds, retry_limit, codes, adapter):
@@ -102,6 +148,17 @@ def protocols(hid, home, homes):
             "firstmate:bin/fm-classify-lib.sh", "fm-status-log", mates,
             [stage(f"status.{m}", hid, state, f"{m}.status", state, ("7d", "1h", "1h"), 0, {}, "status-decisions")
              for m in mates], "1d"))
+    queue = merge_queue(home)
+    if queue:
+        qdir, train = queue
+        out.append(protocol(
+            f"fm-mq-watch.{hid}", hid, f"Merge-queue watch receipts {hid} writes for the merge train",
+            "firstmate:docs/handoff-coverage.md", MQ_WATCH_RECORD, [hid],
+            [{"name": "train", "owner": train, "accepts": {"min": 1, "max": 1},
+              "input": {"path": f"{qdir}/watches", "reach": LOCAL, "match": "*.json", "type_field": "schema"},
+              "outbox": {"path": f"{qdir}/watch-receipts/{hid}", "reach": LOCAL},
+              "bounds": {"accepted": "7d", "waiting": "1h", "held": "1h"}, "retry_limit": 0, "codes": {},
+              "cleanup": {"action": "keep"}, "planned": True}], "7d"))
     if hid == TOOLING:
         out.append({
             "id": WATCH_PROTOCOL, "owner": TOOLING, "title": "Each home's handoff watcher heartbeat",
