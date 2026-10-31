@@ -227,10 +227,12 @@
 # to the root home's state/helper-unaccepted.status through fm-worker-status.sh,
 # where <helper> is the path the hold log names. A consumer whose declaration is
 # removed counts as accepting and a malformed one as not, and a hold naming no
-# consumer is never judged. A sent version is marked under
-# state/helper-unaccepted/accepted/ until its holds clear, so a rerun sends
-# nothing; a notice that cannot be sent prints one line and is retried on the
-# next pass.
+# consumer is never judged. The note is per helper version, so a pass held on
+# several helpers can hold again on another after one note. A sent version is
+# marked under state/helper-unaccepted/accepted/ until it stops being accepted
+# or its holds clear, so a rerun sends nothing; a notice that cannot be sent
+# prints one line and is retried on the next pass, and a failure to write the
+# notices' own state prints one line and leaves the rest of the pass running.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1513,8 +1515,10 @@ alarm_deployed() {  # <dir> <log>
 # consumer whose declaration is removed counts as accepting and a malformed one
 # as not, and a hold naming no consumer is never judged. A sent marker in
 # <dir>/accepted/ (<helper name>@<sha256>, as the levels key a version) whose
-# version left the set is removed, so a later hold on it
-# is a new occurrence.
+# version left the set is removed, so a later hold on it is a new occurrence; a
+# marker that cannot be removed adds one line to alarm_pass's `problems`. Fails,
+# removing <dir>/accepted.tsv so the next pass judges again, when the set cannot
+# be read or written.
 alarm_accepted() {  # <dir> <log>
   local rows f k h sha
   rows=$(awk -F '\t' '
@@ -1542,17 +1546,30 @@ alarm_accepted() {  # <dir> <log>
         }
       }
       for (j = 1; j <= m; j++) if (any[vorder[j]] && ok[vorder[j]]) print vorder[j]
-    }' "$1/decls.tsv" "$2") || return 1
+    }' "$1/decls.tsv" "$2") || { rm -f -- "$1/accepted.tsv"; return 1; }
   { mkdir -p "$1/accepted" && if [ -n "$rows" ]; then printf '%s\n' "$rows"; fi > "$1/accepted.tsv.new" \
-    && mv -f -- "$1/accepted.tsv.new" "$1/accepted.tsv"; } || return 1
+    && mv -f -- "$1/accepted.tsv.new" "$1/accepted.tsv"; } 2>/dev/null \
+    || { rm -f -- "$1/accepted.tsv.new" "$1/accepted.tsv" 2>/dev/null; return 1; }
   k=$'\n'
   while IFS="$TAB" read -r h sha; do
     [ -z "$h" ] || k="$k${h##*/}@$sha"$'\n'
   done <<< "$rows"
   for f in "$1"/accepted/*@*; do
     [ -e "$f" ] || continue
-    case "$k" in *$'\n'"${f##*/}"$'\n'*) ;; *) rm -f -- "$f" ;; esac
+    case "$k" in
+      *$'\n'"${f##*/}"$'\n'*) ;;
+      *) rm -f -- "$f" 2>/dev/null \
+        || problems="$problems"$'\n'"helper-unaccepted: cannot remove the sent marker $f, so a later hold on that version sends no accepted notice" ;;
+    esac
   done
+  return 0
+}
+
+# Whether <dir>/accepted/ holds a sent marker.
+accepted_markers() {  # <dir>
+  local f
+  for f in "$1"/accepted/*@*; do [ -e "$f" ] && return 0; done
+  return 1
 }
 
 # Append one level's routes to alarm_pass's `routes`: to each owner in <owners>
@@ -1577,7 +1594,7 @@ alarm_pass() {  # <home> <state> <repo>
   local home=$1 dir="$2/$ALARM_ID" repo=$3 now limit_file main_ref main="" project stamp
   local f old="" scan="" rows="" routes="" problems="" root="" line key reason
   local b s12 rel t who owners rdir ref by bypassed oh id store wanted prev tmp decl_new=0
-  local log h live sha new deployed=" " cfg declared=0
+  local log h live sha new deployed=" " cfg declared=0 accepted_ok=1
   local -a targets=()
   now_to now
   if [ -z "$(declarations)" ]; then
@@ -1618,8 +1635,7 @@ alarm_pass() {  # <home> <state> <repo>
     log="$VERSIONS_DIR/holds.log"
     if [ ! -e "$log" ] && [ ! -L "$log" ]; then
       [ ! -s "$dir/deployed.tsv" ] || : > "$dir/deployed.tsv"
-      [ ! -s "$dir/accepted.tsv" ] || alarm_accepted "$dir" /dev/null \
-        || { alarm_report "$dir" "helper-unaccepted: cannot write $dir/accepted.tsv"; return 0; }
+      { [ ! -s "$dir/accepted.tsv" ] && ! accepted_markers "$dir"; } || alarm_accepted "$dir" /dev/null || accepted_ok=0
     elif [ ! -f "$log" ] || [ ! -r "$log" ]; then
       rows="$rows$ALARM_ID-hold-log-unreadable${TAB}hold log $log cannot be read, so versions deployed past the hold limit cannot be judged; the last judged alarms stay"$'\n'
     else
@@ -1631,8 +1647,7 @@ alarm_pass() {  # <home> <state> <repo>
       done < "$dir/deployed.helpers"
       [ "$new" = 0 ] || alarm_deployed "$dir" "$log" \
         || { alarm_report "$dir" "helper-unaccepted: cannot write $dir/deployed.tsv"; return 0; }
-      [ "$new" = 0 ] && [ -f "$dir/accepted.tsv" ] || alarm_accepted "$dir" "$log" \
-        || { alarm_report "$dir" "helper-unaccepted: cannot write $dir/accepted.tsv"; return 0; }
+      [ "$new" = 0 ] && [ -f "$dir/accepted.tsv" ] || alarm_accepted "$dir" "$log" || accepted_ok=0
     fi
 
     # Records: one stat each; only a record new, changed or no longer readable
@@ -1788,8 +1803,10 @@ alarm_pass() {  # <home> <state> <repo>
     fi
   done
   # Each held version every consumer its hold names now accepts: one note to
-  # main, once; a note not sent is retried on the next pass.
-  if [ "$declared" = 1 ] && [ -s "$dir/accepted.tsv" ]; then
+  # main, once; a note not sent is retried on the next pass. A set that could
+  # not be written sends nothing this pass and is judged again on the next.
+  [ "$accepted_ok" = 1 ] || problems="$problems"$'\n'"helper-unaccepted: cannot write $dir/accepted.tsv, so no accepted notice is sent until it can"
+  if [ "$declared" = 1 ] && [ "$accepted_ok" = 1 ] && [ -s "$dir/accepted.tsv" ]; then
     while IFS="$TAB" read -r h sha; do
       [ -n "$h" ] || continue
       f="$dir/accepted/${h##*/}@$sha"

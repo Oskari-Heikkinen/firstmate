@@ -1367,6 +1367,91 @@ test_alarm_accepted_notice_once_per_version() {
   pass "a held version sends one helper-accepted note once every held consumer accepts it, and none before or after"
 }
 
+# A note that cannot be sent leaves no sent marker, so the next pass sends it.
+test_alarm_accepted_notice_retries_a_failed_send() {
+  local w out at c helper status
+  w=$(alarm_world alarm-accepted-send)
+  helper="$w/repo/bin/helper.sh"
+  status="$w/home/state/helper-unaccepted.status"
+  at=$(iso_epoch 2026-10-31T09:00:00Z)
+  land "$w" 'echo v2' "$at"
+  c=$(git -C "$w/repo" rev-parse origin/main)
+  declare_consumer "$w" holder "$helper" "$V1" "$V2"
+  FM_HELPER_CONSUMERS_NOW=$((at + 60)) hc "$w" log held "$w/home" "$c" "$helper" "$V2" holder "held-for-helper: awaiting holder" \
+    || fail "the held line was not written"
+  mkdir -p "$status"
+  out=$(alarm_at "$w" $((at + 120)))
+  assert_contains "$out" "accepted notice for $helper@${V2:0:12} not sent" "a failed send prints one line"
+  [ ! -e "$w/home/state/helper-unaccepted/accepted/helper.sh@$V2" ] || fail "a failed send was marked as sent"
+  rmdir "$status"
+  out=$(alarm_at "$w" $((at + 180)))
+  assert_equals 1 "$(accepted_count "$w")" "the pass after a failed send sends the note"
+  alarm_at "$w" $((at + 240)) >/dev/null
+  assert_equals 1 "$(accepted_count "$w")" "a rerun after the retried note sends no second note"
+  pass "a helper-accepted note that cannot be sent is sent by the next pass, once"
+}
+
+# Only consumers a hold names decide its note: a hold naming none is never
+# judged, a removed declaration counts as accepting, and a hold log that goes
+# away prunes the sent markers.
+test_alarm_accepted_notice_judges_named_consumers() {
+  local w at c helper
+  w=$(alarm_world alarm-accepted-named)
+  helper="$w/repo/bin/helper.sh"
+  at=$(iso_epoch 2026-10-31T09:00:00Z)
+  land "$w" 'echo v2' "$at"
+  c=$(git -C "$w/repo" rev-parse origin/main)
+  declare_consumer "$w" holder "$helper" "$V1" "$V2"
+  FM_HELPER_CONSUMERS_NOW=$((at + 60)) hc "$w" log held "$w/home" "$c" "$helper" "$V2" - "held-for-helper: gate check failed" \
+    || fail "the consumer-less held line was not written"
+  alarm_at "$w" $((at + 120)) >/dev/null
+  assert_equals 0 "$(accepted_count "$w")" "a hold naming no consumer sends no note"
+
+  FM_HELPER_CONSUMERS_NOW=$((at + 180)) hc "$w" log held "$w/home" "$c" "$helper" "$V2" holder,gone "held-for-helper: awaiting holder,gone" \
+    || fail "the named held line was not written"
+  alarm_at "$w" $((at + 240)) >/dev/null
+  assert_equals 1 "$(accepted_count "$w")" "a removed declaration counts as accepting"
+  [ -e "$w/home/state/helper-unaccepted/accepted/helper.sh@$V2" ] || fail "the sent note left no marker"
+
+  rm -f -- "$w/versions/holds.log" "$w/home/state/helper-unaccepted/accepted.tsv"
+  alarm_at "$w" $((at + 300)) >/dev/null
+  [ ! -e "$w/home/state/helper-unaccepted/accepted/helper.sh@$V2" ] || fail "the sent marker outlived the hold log"
+  pass "a helper-accepted note judges only the consumers a hold names, and a removed hold log prunes its markers"
+}
+
+# The notices' own state failing to write sends nothing that pass but leaves
+# the alarm running, and the next pass judges the set again.
+test_alarm_accepted_state_failure_keeps_the_alarm() {
+  local w out at c helper key adir
+  w=$(alarm_world alarm-accepted-state)
+  helper="$w/repo/bin/helper.sh"
+  adir="$w/home/state/helper-unaccepted/accepted"
+  at=$(iso_epoch 2026-10-31T09:00:00Z)
+  land "$w" 'echo v2' "$at"
+  c=$(git -C "$w/repo" rev-parse origin/main)
+  hc "$w" log bypass "$w/home" "$c" "$helper" "$V2" holder "held-for-helper: awaiting holder" \
+    || fail "the bypass line was not written"
+  FM_HELPER_CONSUMERS_NOW=$((at + 60)) hc "$w" log held "$w/home" "$c" "$helper" "$V2" holder "held-for-helper: awaiting holder" \
+    || fail "the held line was not written"
+  alarm_at "$w" $((at + 120)) >/dev/null
+  key="helper-unaccepted-helper.sh-${V2:0:12}"
+  assert_equals "$key" "$(store_query "$w" main '.active | keys[]')" "the bypass raises its level"
+  [ -f "$w/home/state/helper-unaccepted/accepted.tsv" ] || fail "the first pass wrote no accepted set"
+
+  rm -rf -- "$adir"
+  : > "$adir"
+  declare_consumer "$w" holder "$helper" "$V1" "$V2"
+  out=$(alarm_at "$w" $((at + 180)))
+  assert_contains "$out" "cannot write $w/home/state/helper-unaccepted/accepted.tsv" "a failed accepted set prints one line"
+  assert_equals "" "$(store_query "$w" main '.active | keys[]')" "a failed accepted set still lets the alarm clear its level"
+  assert_equals 0 "$(accepted_count "$w")" "a failed accepted set sends no note"
+
+  rm -f -- "$adir"
+  alarm_at "$w" $((at + 240)) >/dev/null
+  assert_equals 1 "$(accepted_count "$w")" "the pass after a failed accepted set judges it again and sends the note"
+  pass "a failure to write the accepted set sends nothing that pass and keeps the alarm running"
+}
+
 test_no_declarations_is_silent
 test_malformed_declarations_hold_declared_helpers
 test_check_advance_outcomes
@@ -1384,6 +1469,9 @@ test_alarm_w2_raises_once_and_clears_on_acceptance
 test_alarm_supersession_owner_route_and_limit_file
 test_alarm_raises_a_bypassed_version_at_once
 test_alarm_accepted_notice_once_per_version
+test_alarm_accepted_notice_retries_a_failed_send
+test_alarm_accepted_notice_judges_named_consumers
+test_alarm_accepted_state_failure_keeps_the_alarm
 test_alarm_failed_readings_raise_naming_the_file
 test_alarm_deployed_version_reaches_each_owner_once
 test_alarm_unreadable_hold_log_and_limit_raise

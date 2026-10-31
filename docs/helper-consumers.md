@@ -182,9 +182,11 @@ An unreadable hold log or hold limit file raises its own level.
 
 The same pass reports the success that ends a hold, so a held update is rerun within minutes of acceptance rather than whenever someone looks.
 When a helper version has an open hold in [the hold log](#the-hold-log) (a `held` or `bypass` line that no `cleared` line has closed, in any home) and every consumer those holds name now accepts it, the pass appends one `note` line, `helper-accepted <helper>@<sha12>: rerun the update`, to the main home's `state/helper-unaccepted.status`, where `<helper>` is the path the hold names.
-It sends that note once per version: a rerun sends nothing, and only a new hold on the version, after its holds cleared, can send it again.
+It sends that note once per version: a rerun sends nothing, and the version can send it again only after it stops being accepted (a consumer that does not accept it joins its hold, or an acceptance is withdrawn) or its holds clear.
+The note is per helper version, so a pass held on several helpers can hold again on another after one note.
 A consumer whose declaration is removed counts as accepting, a malformed one as not, and a hold that names no consumer is never judged.
 A note that cannot be sent prints one line and is retried on the next pass.
+A failure to write the notes' own state under `state/helper-unaccepted/` prints one line and sends no note that pass, and the rest of the alarm still runs.
 
 The limit is the operator's override in `config/helper-unaccepted-max`, read on every pass: one whole number of seconds, or of minutes or hours with an `m` or `h` suffix.
 Without the file the limit is 2 hours.
