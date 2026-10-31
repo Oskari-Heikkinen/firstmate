@@ -2225,10 +2225,40 @@ SH
   pass "host: the dialog mirror, its feed, and the wake file are owner-only"
 }
 
-# Park again after a host was stopped mid-park: the new cycle's first close is
-# the watcher's downtime resurface, which main drains before the next park.
-# That close can end the park before its cycle is ever seen live, so this
-# waits for the exit itself.
+# Park again after a host was stopped mid-park. The new cycle first settles
+# the watcher's downtime recovery: when something is owed (a turn stopped
+# mid-handling leaves its wake queued) the recovery is the first close and
+# reaches main, which drains it before the next park; when nothing is owed the
+# watcher retires it with one wake-triage log line and the park goes on.
+# The owed close can end the park before its cycle is ever seen live, so this
+# waits for either outcome itself.
+recovery_retired_beyond() {  # <home> <count before>
+  [ "$(grep -cF 'rearm-resurface not woken' "$1/state/.watch-triage.log" 2>/dev/null)" -gt "$2" ]
+}
+
+recovery_settled() {  # <home> <count before>
+  host_exited "$1" || recovery_retired_beyond "$1" "$2"
+}
+
+park_after_stop() {  # <home>
+  local before
+  before=$(grep -cF 'rearm-resurface not woken' "$1/state/.watch-triage.log" 2>/dev/null)
+  before=${before:-0}
+  rm -f "$1/host.rc"
+  : > "$1/park.go"
+  wait_until 150 recovery_settled "$1" "$before" \
+    || fail "the watcher's downtime recovery was not settled: $(cat "$1/host.out")"
+  if host_exited "$1"; then
+    assert_re '^check: rearm-resurface' "$1/host.out" "fixture: the first close after the watcher stopped was not its resurface"
+    main_drain_and_ack "$1"
+    quiet_pass_through_successor "$1"
+    park_again "$1"
+    return 0
+  fi
+  wait_until 150 watcher_live "$1" \
+    || fail "the park that retired a recovery never showed a live watcher cycle: $(cat "$1/host.out")"
+}
+
 # The resurface pass-through leaves its successor running. Stop that watcher
 # and acknowledge the downtime its exit records, so the next park starts a
 # watcher it owns. Attaching instead would not observe the exit until the
@@ -2253,16 +2283,6 @@ quiet_pass_through_successor() {  # <home>
     fm_recovery_marker_ack "$2" "$3"
   ' _ "$ROOT/bin/fm-wake-lib.sh" "$home/state/.watcher-down" "$gen" \
     || fail "fixture: could not acknowledge the successor downtime"
-}
-
-park_after_stop() {  # <home>
-  rm -f "$1/host.rc"
-  : > "$1/park.go"
-  wait_until 150 host_exited "$1" || fail "the watcher's downtime resurface did not reach main: $(cat "$1/host.out")"
-  assert_re '^check: rearm-resurface' "$1/host.out" "fixture: the first close after the watcher stopped was not its resurface"
-  main_drain_and_ack "$1"
-  quiet_pass_through_successor "$1"
-  park_again "$1"
 }
 
 # Dialog counts as delivered only once the turn that carried it is accepted

@@ -708,10 +708,17 @@ busy_steer_check() {  # <case-dir> [capture]
     bash -c '. "$1" && inbox_steer_check sess:fm-t1 t1' _ "$WATCH" > "$1/check.out" 2>&1
 }
 
-busy_case() {
+busy_case() {  # <name> [busy-state]
   local dir rec
   dir=$(setup_watch_case "$1")
   printf 'some output\nBUSYTOKEN active\n' > "$dir/busy.capture"
+  if [ "${2-}" = busy-state ]; then
+    # A semantic-source task: its busy verdict and its turn boundaries both
+    # come from the record bin/fm-busy-event.sh writes, armed before the steer.
+    fm_write_meta "$dir/state/t1.meta" "window=sess:fm-t1" "kind=ship" "harness=claude"
+    "$ROOT/bin/fm-busy-event.sh" arm "$dir/state" t1 >/dev/null || fail "could not arm the busy-state record"
+    touch -t 201901010000 "$dir/state/t1.busy-state"
+  fi
   rec=$(inbox_lib "$dir/state" fm_task_inbox_write "$dir/state" t1 "please continue")
   age_path "$rec"
   printf '%s' "$dir"
@@ -737,19 +744,32 @@ test_watcher_busy_pane_defers_without_turn_boundary() {
   pass "watcher: an aged record on a pane busy in one turn stays deferred without a wake"
 }
 
+# turn_boundary <case-dir> <turn-ended|busy-state>: a turn ends and the next
+# opens while the pane stays busy, as each source records it.
+turn_boundary() {
+  case "$2" in
+    turn-ended) : > "$1/state/t1.turn-ended" ;;
+    busy-state)
+      "$ROOT/bin/fm-busy-event.sh" apply "$1/state" t1 busy --current-gen \
+        --source claude-hook --event UserPromptSubmit >/dev/null \
+        || fail "could not record the next turn in the busy-state record"
+      ;;
+  esac
+}
+
 test_watcher_busy_escalates_after_turn_boundary() {
   local source=$1 dir rec check
-  dir=$(busy_case "busy-boundary-$source")
+  dir=$(busy_case "busy-boundary-$source" "$source")
   rec="$dir/state/t1.inbox/001.msg"
   busy_steer_check "$dir"
   [ "$(wake_rows "$dir")" = 0 ] || fail "$source: escalated before any turn boundary"
-  : > "$dir/state/t1.$source"
+  turn_boundary "$dir" "$source"
   busy_steer_check "$dir"
   [ "$(wake_rows "$dir")" = 1 ] || fail "$source: a turn boundary after an aged unread record did not escalate once: $(cat "$dir/state/.wake-queue" 2>/dev/null)"
   assert_grep "unread firstmate instruction: stuck-busy across a turn boundary; $rec stays unhandled" "$dir/state/.wake-queue" "$source: the wake names the stuck record"
   assert_grep "$dir/state/t1.$source changed since" "$dir/state/.wake-queue" "$source: the wake names the boundary source"
   for check in 1 2 3; do
-    : > "$dir/state/t1.$source"
+    turn_boundary "$dir" "$source"
     busy_steer_check "$dir"
     [ "$(wake_rows "$dir")" = 1 ] || fail "$source: stuck-busy escalation repeated on check $check"
   done
@@ -762,8 +782,7 @@ test_watcher_busy_boundary_before_arrival_stays_quiet() {
   local dir
   dir=$(busy_case busy-old-boundary)
   : > "$dir/state/t1.turn-ended"
-  : > "$dir/state/t1.busy-state"
-  touch -t 201901010000 "$dir/state/t1.turn-ended" "$dir/state/t1.busy-state"
+  touch -t 201901010000 "$dir/state/t1.turn-ended"
   busy_steer_check "$dir"
   busy_steer_check "$dir"
   [ "$(wake_rows "$dir")" = 0 ] || fail "a turn boundary older than the record escalated: $(cat "$dir/state/.wake-queue")"
