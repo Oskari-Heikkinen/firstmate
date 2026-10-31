@@ -2027,9 +2027,14 @@ assert_autoarm_commits_attended_alarm_on_exhausted_continuation() {
   dir=$(make_primary_dir "$TMP_ROOT/hook-claude-autoarm-alarm-$variant")
   : > "$dir/state/task1.meta"
   install_integrated_autoarm "$dir"
+  # Each slow fixture holds its generation claim open until the stop driver
+  # releases it after the guard has run, so the guard's step-aside branch never
+  # depends on runner speed; 600 polls are only a hang guard.
+  # shellcheck disable=SC2016 # Expanded by the fixture script, not here.
+  local hold='n=0; while [ ! -e "$FM_HOME/release" ] && [ "$n" -lt 600 ]; do sleep 0.05; n=$((n + 1)); done'
   case "$variant" in
     arm|alarm-signal)
-      printf '#!/usr/bin/env bash\nsleep 1\nprintf '"'"'watcher: FAILED - persistent fixture failure\\n'"'"'\nexit 1\n' > "$dir/bin/fm-watch-arm.sh"
+      printf '#!/usr/bin/env bash\n%s\nprintf '"'"'watcher: FAILED - persistent fixture failure\\n'"'"'\nexit 1\n' "$hold" > "$dir/bin/fm-watch-arm.sh"
       ;;
     signal)
       printf '#!/usr/bin/env bash\nexec sleep 30\n' > "$dir/bin/fm-watch-arm.sh"
@@ -2040,7 +2045,7 @@ assert_autoarm_commits_attended_alarm_on_exhausted_continuation() {
       [ "$variant" != lost-handback-exit ] || marker=acked:downtime
       rm -f "$dir/config/supervision-host-off"
       {
-        printf '#!/usr/bin/env bash\nsleep 1\n'
+        printf '#!/usr/bin/env bash\n%s\n' "$hold"
         printf "printf '%s:fixture-generation\\\\n' > \"\$FM_HOME/state/.watcher-down\"\n" "$marker"
         cat <<'SH'
 printf 'signal: fixture.status\n'
@@ -2076,29 +2081,33 @@ SH
   cat > "$dir/stop-driver.sh" <<'SH'
 i=$1 variant=$2
 printf '%s\n' "$$" > "$FM_HOME/state/.lock"
+rm -f "$FM_HOME/release"
 printf '{"session_id":"sess-claude-mode","stop_hook_active":false}\n' \
   | FM_CLAUDE_AUTOARM_ATTEMPTS=1 "$FM_HOME/bin/fm-claude-stop-autoarm.sh" > "$FM_HOME/auto-$i.out" 2>&1 &
 auto_pid=$!
 # Fire the guard only once this generation's claim is observed open, so the
 # guard deterministically takes its step-aside observe branch instead of racing
-# the pre-claim ledger (the fixture still runs for ~1s).
+# the pre-claim ledger (the fixture holds the claim until the release below);
+# 600 polls are only a hang guard.
 waited=0
-while [ "$waited" -lt 100 ]; do
+while [ "$waited" -lt 600 ]; do
   [ "$(sed -n '1s/^.*outcome=\([a-z][a-z-]*\) .*$/\1/p' "$FM_HOME/state/.claude-autoarm-epoch" 2>/dev/null)" = arming ] && break
   sleep 0.05
   waited=$((waited + 1))
 done
-[ "$waited" -lt 100 ] || : > "$FM_HOME/noclaim-$i"
+[ "$waited" -lt 600 ] || : > "$FM_HOME/noclaim-$i"
 printf '{"stop_hook_active":false,"session_id":"sess-claude-mode"}' \
   | CLAUDECODE=1 FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=200 bash "$FM_HOME/bin/fm-turnend-guard.sh" --claude > "$FM_HOME/guard-$i.out" 2>&1
 printf '%s' "$?" > "$FM_HOME/guard-$i.status"
+: > "$FM_HOME/release"
 [ "$variant" != signal ] || kill -TERM "$auto_pid" 2>/dev/null || : > "$FM_HOME/nokill-$i"
 wait "$auto_pid"
 printf '%s' "$?" > "$FM_HOME/auto-$i.status"
 SH
   for i in 1 2 3 4 5 6 7; do
     FM_HOME="$(cd "$dir" && pwd)" "$dir/fake-claude" "$dir/stop-driver.sh" "$i" "$variant"
-    assert_absent "$dir/noclaim-$i" "the auto-arm never opened its generation claim ($variant, stop $i)"
+    # On a miss, keep what places the hook's exit against its claim.
+    [ ! -e "$dir/noclaim-$i" ] || fail "the auto-arm never opened its generation claim ($variant, stop $i): exit $(cat "$dir/auto-$i.status" 2>/dev/null), epoch '$(cat "$dir/state/.claude-autoarm-epoch" 2>/dev/null)', output '$(cat "$dir/auto-$i.out" 2>/dev/null)'"
     assert_absent "$dir/nokill-$i" "could not TERM the auto-arm generation owner ($variant, stop $i)"
     guard_status=$(cat "$dir/guard-$i.status")
     auto_status=$(cat "$dir/auto-$i.status")
