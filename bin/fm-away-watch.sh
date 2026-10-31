@@ -102,9 +102,10 @@ install_timer() {
   local dir env_lines
   fm_unit_safe_path "$CODE_ROOT" || die "code root has characters a unit file cannot carry: $CODE_ROOT"
   fm_unit_safe_path "$home" || die "home has characters a unit file cannot carry: $home"
-  env_lines=$(fm_unit_env PATH "$PATH") || exit 2
+  env_lines=$(fm_unit_env PATH "$PATH") || die "PATH holds a newline a unit file cannot carry"
   if [ -n "${HERDR_SOCKET_PATH:-}" ]; then
-    env_lines+=$'\n'$(fm_unit_env HERDR_SOCKET_PATH "$HERDR_SOCKET_PATH") || exit 2
+    env_lines+=$'\n'$(fm_unit_env HERDR_SOCKET_PATH "$HERDR_SOCKET_PATH") \
+      || die "HERDR_SOCKET_PATH holds a newline a unit file cannot carry"
   fi
   dir=$(unit_dir)
   mkdir -p "$dir" || die "cannot create $dir"

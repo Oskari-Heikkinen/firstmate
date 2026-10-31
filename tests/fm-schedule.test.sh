@@ -8,7 +8,8 @@
 # through main's inbox, and the fleet board's Scheduled runs panel shows the
 # rows. install-timer writes units carrying the installer's PATH into a
 # fixture unit directory beside a host drop-in it leaves alone, converges on a
-# rerun and refuses when tasks-axi is not on PATH; resume on a passed one-time
+# rerun and refuses when a scan tool is not on PATH or PATH holds a newline;
+# resume on a passed one-time
 # slot says no slot is left. Temp homes, a fake clock (--now), a fake systemctl
 # and a fixed time zone throughout.
 set -eu
@@ -28,8 +29,10 @@ chmod +x "$FAKEBIN/systemctl"
 export HOME="$TMP_ROOT/fakehome" XDG_CONFIG_HOME="$TMP_ROOT/fakehome/.config"
 export PATH="$FAKEBIN:$PATH" TZ=Europe/Berlin
 export FM_TEST_SYSTEMCTL_LOG="$TMP_ROOT/systemctl.log"
-FM_TEST_NO_AXI_PATH=$(fm_test_base_path_sans "$PATH" tasks-axi)
-export FM_TEST_NO_AXI_PATH
+for tool in tasks-axi python3 systemd-analyze; do
+  sans=$(fm_test_base_path_sans "$PATH" "$tool")
+  export "FM_TEST_PATH_SANS_${tool//-/_}=$sans"
+done
 mkdir -p "$HOME"
 unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE TASKS_AXI_FILE
 
@@ -372,11 +375,27 @@ check(calls.count("--user daemon-reload") == 2 and calls.count("--user enable --
 ok("install-timer writes the installer's PATH (tasks-axi's directory included) into the service, "
    "converges on a rerun and leaves a host drop-in alone")
 
-p = install(os.environ["FM_TEST_NO_AXI_PATH"])
-check(p.returncode == 2 and "tasks-axi is not on PATH" in p.stderr, "install-timer without tasks-axi: %d %s" % (p.returncode, p.stderr))
-check((units / "fm-schedule.service").read_text() == first[0] and sorted(os.listdir(units)) ==
-      ["fm-schedule.service", "fm-schedule.service.d", "fm-schedule.timer"], "a refused install-timer changed the units")
-ok("install-timer refuses, writing nothing, when tasks-axi is not on PATH")
+
+
+def units_unchanged():
+    return ((units / "fm-schedule.service").read_text() == first[0]
+            and (units / "fm-schedule.timer").read_text() == first[1]
+            and sorted(os.listdir(units)) == ["fm-schedule.service", "fm-schedule.service.d", "fm-schedule.timer"]
+            and dropin.read_text() == DROPIN)
+
+
+for tool in ("tasks-axi", "python3", "systemd-analyze"):
+    p = install(os.environ["FM_TEST_PATH_SANS_" + tool.replace("-", "_")])
+    check(p.returncode == 2 and "fm-schedule: %s is not on PATH" % tool in p.stderr,
+          "install-timer without %s: %d %s" % (tool, p.returncode, p.stderr))
+    check(units_unchanged(), "install-timer refused without %s but changed the units" % tool)
+ok("install-timer refuses, writing nothing, when tasks-axi, python3 or systemd-analyze is not on PATH")
+
+p = install("/nl\n/x:" + install_path)
+check(p.returncode == 2 and "fm-schedule: PATH holds a newline a unit file cannot carry" in p.stderr,
+      "install-timer with a newline in PATH: %d %s" % (p.returncode, p.stderr))
+check(units_unchanged(), "install-timer refused a newline in PATH but changed the units")
+ok("install-timer refuses, writing nothing, a PATH holding a newline")
 
 # ---------------------------------------------------------------- a main-home schedule
 for f in ("bad-kind", "bad-cal", "extra-key"):
