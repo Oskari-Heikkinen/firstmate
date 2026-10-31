@@ -760,7 +760,7 @@ cmd_park() {
   if [ -n "$wt" ] && wt=$(cd "$wt" 2>/dev/null && pwd -P); then
     case "$here/" in "$wt"/*) detached=1 ;; esac
   fi
-  if [ "$detached" -eq 1 ] && [ "$requested" -eq 0 ] && [ "$open_ended" -eq 0 ] && [ -z "$adopted" ]; then
+  if [ "$detached" -eq 1 ] && [ "$open_ended" -eq 0 ] && [ -z "$adopted" ]; then
     live_wait_rule "$expect_epoch" "$(date +%s)"
   fi
   [ "$detached" -eq 0 ] || [ "$(meta_get harness)" != claude ] || refuse_claude_background_work
