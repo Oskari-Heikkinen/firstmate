@@ -1023,10 +1023,6 @@ cmd_await() {
   case "$budget" in ''|*[!0-9]*) die "FM_PARK_ERROR_BUDGET must be a whole number: $budget" ;; esac
   case "$interval" in ''|.|*[!0-9.]*|*.*.*) die "FM_PARK_INTERVAL must be a number of seconds: $interval" ;; esac
   rc=0; out=$(cmd_check "$cond" 2>&1) || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    printf 'fm-park: %s already holds; no wait was declared\n' "$cond"
-    exit 0
-  fi
   now=$(date +%s)
   bound=$((now + threshold))
   bound_iso=$(date -u -d "@$bound" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
