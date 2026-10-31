@@ -2644,7 +2644,6 @@ open_decision_reminder_tick() {  # [now-epoch], for deterministic clock callers
     [ "$f" != "$exclude" ] || continue
     # A log with no timed cursor yet (every log on a watcher's first tick
     # after this landed) folds from byte 0, so beat per log.
-    watcher_beat
     task=${f##*/}; task=${task%.status}
     open=$(status_open_decisions_incremental "$f" '' timed) || {
       OPEN_DECISION_ERROR="the timed open-decision fold of $f failed"
