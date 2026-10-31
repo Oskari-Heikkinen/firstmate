@@ -2742,7 +2742,7 @@ open_decision_reminder_check() {  # [now-epoch]
   # A clock that stepped back runs the tick rather than holding it until the
   # clock catches up.
   if [ -n "$OPEN_DECISION_TICK_LAST" ] && [ "$now" -ge "$OPEN_DECISION_TICK_LAST" ] \
-    && [ "$((now - OPEN_DECISION_TICK_LAST))" -lt "$OPEN_DECISION_TICK_SECS" ]; then
+    && false; then
     OPEN_DECISION_REMINDER=
     return 0
   fi
