@@ -3103,6 +3103,57 @@ SH
   pass "the whole, incremental and closing-verb folds match the text fold they replaced on every log and set shape"
 }
 
+# fm_pid_descends_from walks the parent chain through /proc stat field 4 in the
+# shell and falls back to `ps -o ppid=` without /proc. Both walks must give the
+# same verdict on a real process tree, and a stat line whose comm holds ") "
+# or a newline must still yield its parent.
+test_pid_descent_proc_walk_matches_ps() {
+  local script="$TMP_ROOT/descent.sh" root="$TMP_ROOT/descent-proc" noproc="$TMP_ROOT/descent-noproc"
+  local tail='S 900000101 1 1 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 12345 1000 100'
+  mkdir -p "$root/900000102" "$root/900000103" "$root/900000104" "$root/900000105" "$noproc"
+  printf '900000102 (a) b) %s\n' "$tail" > "$root/900000102/stat"
+  printf '900000103 (a\nb) %s\n' "$tail" > "$root/900000103/stat"
+  printf '900000104 (short) S\n' > "$root/900000104/stat"
+  mkdir -p "$root/900000105/stat"
+  cat > "$script" <<'SH'
+. "$1/bin/fm-wake-lib.sh"
+root=$2 noproc=$3 dir=$4
+verdict() {  # <pid> <ancestor>
+  fm_pid_descends_from "$1" "$2" && printf yes || printf no
+}
+sleep 30 &
+child=$!
+( sleep 30 & printf '%s\n' "$!" > "$dir/grandchild.$$.tmp" && mv "$dir/grandchild.$$.tmp" "$dir/grandchild.$$"; wait ) &
+middle=$!
+grandchild=
+while [ -z "$grandchild" ]; do
+  grandchild=$(cat "$dir/grandchild.$$" 2>/dev/null || true)
+  [ -n "$grandchild" ] || sleep 0.05
+done
+for pair in "$$ $$" "$child $$" "$grandchild $$" "$grandchild $middle" "$grandchild $PPID" \
+  "$$ $child" "$middle $grandchild" "1 $$" "$child 999999999" "abc $$" " $$" "999999999 $$"; do
+  set -- $pair
+  ps_verdict=$(FM_PROC_ROOT_OVERRIDE=$noproc verdict "$@")
+  proc_verdict=$(verdict "$@")
+  [ "$proc_verdict" = "$ps_verdict" ] \
+    || printf 'descent %s -> %s: /proc %s, ps %s\n' "$1" "${2:-}" "$proc_verdict" "$ps_verdict"
+done
+kill "$child" "$grandchild" "$middle" 2>/dev/null
+wait 2>/dev/null
+rm -f "$dir/grandchild.$$"
+FM_PROC_ROOT_OVERRIDE=$root
+for pid in 900000102 900000103; do
+  [ "$(verdict "$pid" 900000101)" = yes ] || printf 'descent %s: parent not read past its comm\n' "$pid"
+done
+for pid in 900000104 900000105; do
+  [ "$(verdict "$pid" 900000101)" = no ] || printf 'descent %s: an unreadable stat proved descent\n' "$pid"
+done
+exit 0
+SH
+  run_everywhere "pid descent" "$script" "$root" "$noproc" "$TMP_ROOT"
+  pass "fm_pid_descends_from gives the ps walk's verdict and reads a parent past any comm"
+}
+
 if [ -n "${FM_TEST_ONLY:-}" ]; then
   "$FM_TEST_ONLY"
 else
@@ -3116,6 +3167,7 @@ else
   test_classify_stat_helpers_read_the_kernel_name_once
   test_file_readers_match_cat_and_od
   test_proc_identity_matches_the_forked_reader
+  test_pid_descent_proc_walk_matches_ps
   test_engine_identity_matches_the_pipeline_it_replaced
   test_path_age_helpers_match_stat_and_the_clock
   test_status_signature_reads_once_and_matches_the_forked_reader
