@@ -3003,6 +3003,7 @@ FM_LOG_KEEP_LINES=2000             # daemon log lines kept when trimming
 FM_SUPERVISION_HOST_PARK_SECONDS=27000   # the host ends its park with a cycle-boundary wake after this long, under the Stop hook's 28800 s timeout
 FM_SUPERVISION_HOST_TURN_TIMEOUT=1200    # bound on one engine turn; a turn that hits it hands its wake to main
 FM_SUPERVISION_HOST_ROTATE_TURNS=20      # the engine conversation starts fresh after this many turns (and at every main session start)
+FM_SUPERVISION_HOST_CONTEXT_CEILING=150000 # the engine conversation starts fresh once its last turn's context estimate reaches this many tokens
 FM_SUPERVISION_ENGINE_GRACE=30           # seconds between TERM and KILL when an engine turn is stopped
 # spoken interface and captain inbox; see "Spoken interface and captain inbox" above
 FM_VOICE_REGION=        # overrides config/voice-region for one relay run
