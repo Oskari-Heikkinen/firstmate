@@ -135,7 +135,7 @@ Type=oneshot
 TimeoutStartSec=120
 Environment=FM_HOME=$home
 $env_lines
-ExecStart=/usr/bin/env bash $CODE_ROOT/bin/fm-away-watch.sh run --home $home$primary_arg
+ExecStart=/usr/bin/env bash $CODE_ROOT/bin/fm-away-watch.sh run --home $home
 EOF
   cat > "$dir/$UNIT.timer.tmp" <<EOF
 [Unit]
