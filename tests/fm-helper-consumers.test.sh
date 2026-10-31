@@ -1452,6 +1452,91 @@ test_alarm_accepted_state_failure_keeps_the_alarm() {
   pass "a failure to write the accepted set sends nothing that pass and keeps the alarm running"
 }
 
+# With the hold log gone, a failed accepted set still lets the pass clear a
+# level its consumer has since accepted.
+test_alarm_accepted_state_failure_without_a_hold_log() {
+  local w out at c helper key adir v3
+  w=$(alarm_world alarm-accepted-nolog)
+  helper="$w/repo/bin/helper.sh"
+  adir="$w/home/state/helper-unaccepted/accepted"
+  v3=$(sha_of $'echo v3\n')
+  at=$(iso_epoch 2026-10-31T09:00:00Z)
+  land "$w" 'echo v2' "$at"
+  c=$(git -C "$w/repo" rev-parse origin/main)
+  declare_consumer "$w" holder "$helper" "$V1" "$v3"
+  hc "$w" log bypass "$w/home" "$c" "$helper" "$V2" holder "held-for-helper: awaiting holder" \
+    || fail "the bypass line was not written"
+  FM_HELPER_CONSUMERS_NOW=$((at + 60)) hc "$w" log held "$w/home" "$c" "$helper" "$v3" holder "held-for-helper: awaiting holder" \
+    || fail "the held line was not written"
+  alarm_at "$w" $((at + 120)) >/dev/null
+  key="helper-unaccepted-helper.sh-${V2:0:12}"
+  assert_equals "$key" "$(store_query "$w" main '.active | keys[]')" "the bypass raises its level"
+  assert_equals 1 "$(accepted_count "$w")" "the accepted held version sends its note"
+
+  rm -rf -- "$adir"
+  : > "$adir"
+  rm -f -- "$w/versions/holds.log"
+  declare_consumer "$w" holder "$helper" "$V1" "$V2" "$v3"
+  out=$(alarm_at "$w" $((at + 180)))
+  assert_contains "$out" "cannot write $w/home/state/helper-unaccepted/accepted.tsv" "a failed accepted set with no hold log prints one line"
+  assert_equals "" "$(store_query "$w" main '.active | keys[]')" "a failed accepted set with no hold log still clears the accepted level"
+  assert_equals 1 "$(accepted_count "$w")" "a failed accepted set with no hold log sends no note"
+  pass "a failure to write the accepted set with no hold log keeps the alarm running"
+}
+
+# A sent marker that cannot be pruned says so, since a later hold on that
+# version would send no note.
+test_alarm_accepted_marker_prune_failure_is_reported() {
+  local w out at c helper adir
+  w=$(alarm_world alarm-accepted-prune)
+  helper="$w/repo/bin/helper.sh"
+  adir="$w/home/state/helper-unaccepted/accepted"
+  at=$(iso_epoch 2026-10-31T09:00:00Z)
+  land "$w" 'echo v2' "$at"
+  c=$(git -C "$w/repo" rev-parse origin/main)
+  declare_consumer "$w" holder "$helper" "$V1" "$V2"
+  FM_HELPER_CONSUMERS_NOW=$((at + 60)) hc "$w" log held "$w/home" "$c" "$helper" "$V2" holder "held-for-helper: awaiting holder" \
+    || fail "the held line was not written"
+  alarm_at "$w" $((at + 120)) >/dev/null
+  [ -e "$adir/helper.sh@$V2" ] || fail "the sent note left no marker"
+  FM_HELPER_CONSUMERS_NOW=$((at + 150)) hc "$w" log cleared "$w/home" "$c" "$helper" "$V2" holder "pass advanced" \
+    || fail "the cleared line was not written"
+  chmod 555 "$adir"
+  out=$(alarm_at "$w" $((at + 180)))
+  chmod 755 "$adir"
+  assert_contains "$out" "cannot remove the sent marker $adir/helper.sh@$V2" "a marker that cannot be pruned prints one line"
+  assert_not_contains "$out" "cannot write $w/home/state/helper-unaccepted/accepted.tsv" "a marker that cannot be pruned does not fail the accepted set"
+  pass "a sent marker that cannot be pruned is reported"
+}
+
+# A sent marker that cannot be written holds the note rather than sending it
+# on every pass, and the note goes once the marker can be written.
+test_alarm_accepted_unwritable_marker_sends_no_repeat() {
+  local w out at c helper adir
+  w=$(alarm_world alarm-accepted-marker)
+  helper="$w/repo/bin/helper.sh"
+  adir="$w/home/state/helper-unaccepted/accepted"
+  at=$(iso_epoch 2026-10-31T09:00:00Z)
+  land "$w" 'echo v2' "$at"
+  c=$(git -C "$w/repo" rev-parse origin/main)
+  declare_consumer "$w" holder "$helper" "$V1" "$V2"
+  FM_HELPER_CONSUMERS_NOW=$((at + 60)) hc "$w" log held "$w/home" "$c" "$helper" "$V2" holder "held-for-helper: awaiting holder" \
+    || fail "the held line was not written"
+  mkdir -p "$adir"
+  chmod 555 "$adir"
+  out=$(alarm_at "$w" $((at + 120)))
+  alarm_at "$w" $((at + 180)) >/dev/null
+  chmod 755 "$adir"
+  assert_contains "$out" "cannot write $adir/helper.sh@$V2.new" "a marker that cannot be written prints one line"
+  assert_equals 0 "$(accepted_count "$w")" "a marker that cannot be written sends no note on any pass"
+  alarm_at "$w" $((at + 240)) >/dev/null
+  assert_equals 1 "$(accepted_count "$w")" "the pass after the marker can be written sends the note"
+  alarm_at "$w" $((at + 300)) >/dev/null
+  assert_equals 1 "$(accepted_count "$w")" "a rerun after that note sends no second note"
+  [ ! -e "$adir/helper.sh@$V2.new" ] || fail "the sent note left its pending marker"
+  pass "a helper-accepted note whose marker cannot be written is sent once, after it can"
+}
+
 test_no_declarations_is_silent
 test_malformed_declarations_hold_declared_helpers
 test_check_advance_outcomes
@@ -1472,6 +1557,9 @@ test_alarm_accepted_notice_once_per_version
 test_alarm_accepted_notice_retries_a_failed_send
 test_alarm_accepted_notice_judges_named_consumers
 test_alarm_accepted_state_failure_keeps_the_alarm
+test_alarm_accepted_state_failure_without_a_hold_log
+test_alarm_accepted_marker_prune_failure_is_reported
+test_alarm_accepted_unwritable_marker_sends_no_repeat
 test_alarm_failed_readings_raise_naming_the_file
 test_alarm_deployed_version_reaches_each_owner_once
 test_alarm_unreadable_hold_log_and_limit_raise

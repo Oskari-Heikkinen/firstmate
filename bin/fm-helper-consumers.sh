@@ -232,7 +232,8 @@
 # marked under state/helper-unaccepted/accepted/ until it stops being accepted
 # or its holds clear, so a rerun sends nothing; a notice that cannot be sent
 # prints one line and is retried on the next pass, and a failure to write the
-# notices' own state prints one line and leaves the rest of the pass running.
+# notices' own state prints one line and leaves the rest of the pass running;
+# a version whose sent marker cannot be written is not sent until it can.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1813,10 +1814,16 @@ alarm_pass() {  # <home> <state> <repo>
       [ ! -e "$f" ] || continue
       [ -n "$root" ] || root=$(root_home "$home") \
         || { problems="$problems"$'\n'"helper-unaccepted: cannot resolve the root home of $home, so no accepted notice can be sent"; break; }
-      if "$SCRIPT_DIR/fm-worker-status.sh" "$root/state/$ALARM_STATUS" "$root/config" \
+      # The marker is written as <marker>.new before the send, so a marker that
+      # cannot be written sends nothing instead of a note on every pass.
+      if ! : > "$f.new" 2>/dev/null; then
+        problems="$problems"$'\n'"helper-unaccepted: cannot write $f.new, so the accepted notice for $h@${sha:0:12} is not sent until it can"
+      elif "$SCRIPT_DIR/fm-worker-status.sh" "$root/state/$ALARM_STATUS" "$root/config" \
           "note [at=<epoch>]: helper-accepted $h@${sha:0:12}: rerun the update" >/dev/null 2>&1; then
-        : > "$f" || problems="$problems"$'\n'"helper-unaccepted: accepted notice for $h@${sha:0:12} sent, but cannot write $f, so the next pass sends it again"
+        mv -f -- "$f.new" "$f" 2>/dev/null \
+          || problems="$problems"$'\n'"helper-unaccepted: accepted notice for $h@${sha:0:12} sent, but cannot write $f, so the next pass sends it again"
       else
+        rm -f -- "$f.new"
         problems="$problems"$'\n'"helper-unaccepted: accepted notice for $h@${sha:0:12} not sent to $root/state/$ALARM_STATUS; the next pass retries it"
       fi
     done < "$dir/accepted.tsv"

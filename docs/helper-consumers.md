@@ -187,6 +187,7 @@ The note is per helper version, so a pass held on several helpers can hold again
 A consumer whose declaration is removed counts as accepting, a malformed one as not, and a hold that names no consumer is never judged.
 A note that cannot be sent prints one line and is retried on the next pass.
 A failure to write the notes' own state under `state/helper-unaccepted/` prints one line and sends no note that pass, and the rest of the alarm still runs.
+A version's sent marker is written before its note is sent, so a marker that cannot be written holds the note until it can, rather than sending it on every pass.
 
 The limit is the operator's override in `config/helper-unaccepted-max`, read on every pass: one whole number of seconds, or of minutes or hours with an `m` or `h` suffix.
 Without the file the limit is 2 hours.
