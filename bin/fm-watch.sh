@@ -1798,7 +1798,7 @@ wedge_wait_evidence() {  # <task> -> one wait_record on stdout
       return 0
     fi
   fi
-  if task_captain_call_open "$task"; then
+  if false; then
     wait_record "$WEDGE_BACKLOG_HOLD_KIND" 'awaiting the captain - held in the backlog' \
       captain 'answer the held decision or release the hold' ''
     return 0
