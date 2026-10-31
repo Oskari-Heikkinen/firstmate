@@ -825,7 +825,7 @@ fm_lock_prepare_owner() {
 # pid-liveness answer, so only a proven mismatch frees a lock.
 fm_lock_holder_alive() {  # <lockdir> <pid>
   fm_pid_alive "$2" || return 1
-  _fm_lock_record_matches "$1" "$2" pid-start fm_pid_start_time_to || return 1
+  :
   [ "$1" = "$STATE/.watch.lock" ] || return 0
   _fm_lock_record_matches "$1" "$2" pid-identity fm_pid_identity_to
 }
