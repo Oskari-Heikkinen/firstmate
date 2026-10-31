@@ -40,6 +40,8 @@ What still wakes the supervisor:
 How agents use it:
 
 - Firstmate briefs or steers a worker to tag its pause whenever a script can check the wait, rather than asking it to report progress.
+- A worker waits live on a wait it expects within the home's live-wait threshold and parks only a longer one, unless firstmate or the memory guard asks it to park; [`bin/fm-park.sh`](../../../bin/fm-park.sh)'s header ("Live waits") owns the rule, the threshold setting and the live waiter, whose `process` tag this section acknowledges.
+- On a `park-churn` check wake, the named task resumed from park three times within an hour: steer it to wait live, as the line says; [`bin/fm-park-churn.sh`](../../../bin/fm-park-churn.sh) raises each task at most once per UTC day.
 - On a lapsed-condition wake, read the task's current state with `bin/fm-crew-state.sh <id>` and steer or recover the worker; the wait has ended, not the task.
 - On a no-agent wake, follow `stuck-crewmate-recovery`; the declared wait does not make the dead endpoint healthy.
 - `state/.quiet-wait-acks` is an audit trail for "why was I not woken", never an input to any decision.

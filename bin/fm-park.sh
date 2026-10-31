@@ -5,12 +5,44 @@
 #
 # Usage:
 #   fm-park.sh <task-id> --handoff <file> [--when <condition>] [--deadline <iso>]
+#              [--expect <UTC|+seconds>] [--requested]
 #              [--adopt-merge-queue <head40>] [--open-ended] [--relocation-safe]
+#   fm-park.sh await <task-id> <condition>  live wait under the threshold below
 #   fm-park.sh release <task-id> <park-token>  bounded registered copy-return action
 #   fm-park.sh release-ready <task-id> <park-token>  cheap release condition
 #   fm-park.sh pickup <task-id>        explicit authority for an inbox-only wait
 #   fm-park.sh request-pickup <task-id>  pickup request from a sender outside the lease
 #   fm-park.sh poll <task-id> <park-token>  incarnation-bound listener condition
+#
+# Live waits. A park relaunches a fresh session, which re-reads its whole
+# context, while a live session inside the prompt cache's one-hour lifetime
+# pays a fraction of it per wake; past that lifetime both pay a full rewrite
+# and parking also frees memory. So a worker parking itself states, with
+# --expect, when it expects the condition to hold, and park refuses with exit
+# 4, installing nothing, when that is less than the home's live-wait threshold
+# away: the worker waits live instead, with `await` (or, for its own inbox, a
+# paused [wait=inbox:<id>] line and a turn end, since a steer wakes it). Only a
+# longer expected wait parks. The threshold is the whole minutes in the first
+# line of config/park-live-wait-minutes (local; 60 when absent; 0 parks every
+# wait); a present file that is empty, unreadable or not 0-1440 refuses the
+# park and names the file. A self-park without --expect refuses, naming this
+# rule, unless --requested (firstmate or the memory guard asked for this
+# park: such a request always parks), --open-ended (no expected end), an
+# adopted queue source, or a live wait on the same condition that already
+# reached its bound. A park the supervisor or the memory guard runs for a task
+# is not a self-park and always parks.
+#
+# await declares the live wait itself: it appends a paused line tagged
+# [wait=process:<own pid>:<start>:<bound>], so the watcher acknowledges the
+# idle session while the waiter runs, records live_wait_when/live_wait_until,
+# and polls the condition's check at the park cadence. It exits 0 when the
+# condition holds (at once when it already does, appending nothing), 3 when
+# the threshold passes first (park then, with the park command, which that
+# record now allows), 2 on a malformed condition, an inbox: condition, a
+# threshold of 0, or FM_PARK_ERROR_BUDGET consecutive check errors, and 1 when
+# it cannot record the wait. Run it as a command whose exit wakes the session:
+# in the background on Claude, in the foreground elsewhere. A waiter that dies
+# ends the process wait, so the watcher wakes the supervisor.
 #
 # config/park-release=on enables a per-home canary; absent/off retains copies.
 # --relocation-safe attests that no job, external producer, future result or
@@ -200,6 +232,8 @@
 #   park_spawn_gen=<token>     the task's spawn_gen when it parked
 #   park_resumed_at=<epoch>    when the latest resume relaunched the task
 #   park_source=<source-id>    adopted queue source, empty for ordinary parks
+#   live_wait_when=<condition> the latest live wait `await` declared
+#   live_wait_until=<epoch>    when that live wait reaches the threshold
 #
 # Environment knobs:
 #   FM_PARK_INTERVAL       condition poll cadence in seconds (default by kind:
@@ -212,6 +246,8 @@
 #                          results always recheck at the normal cadence.
 #   FM_PARK_STABLE         consecutive true polls required (2)
 #   FM_PARK_ERROR_BUDGET   consecutive condition errors before waking (5)
+#   FM_PARK_LIVE_WAIT_SECS live-wait threshold in seconds, in place of
+#                          config/park-live-wait-minutes (tests)
 #   FM_PARK_DEADLINE_SECS  default deadline from now (604800) for file:,
 #                          pr-merged:, inbox: and cmd:
 #   FM_PARK_DEADLINE_MERGE_RESULT_SECS  merge-result: default deadline (10800)
@@ -426,6 +462,85 @@ park_default_deadline() {
   printf '%s\n' "$secs"
 }
 
+# live_wait_threshold_to <var>: the live-wait threshold in seconds, from the
+# whole minutes on the first line of config/park-live-wait-minutes (60 minutes
+# when the file is absent). A present file that cannot be read, or that holds
+# no whole number of minutes from 0 to 1440, is a failed reading: print why on
+# stderr and return 1, never fall back to the default.
+live_wait_threshold_to() {
+  local _lwt_file="$CONFIG/park-live-wait-minutes" _lwt_line=
+  case "${FM_PARK_LIVE_WAIT_SECS-}" in
+    '') ;;
+    *[!0-9]*) printf 'fm-park: FM_PARK_LIVE_WAIT_SECS must be whole seconds: %s\n' "$FM_PARK_LIVE_WAIT_SECS" >&2; return 1 ;;
+    *) printf -v "$1" '%s' $((10#$FM_PARK_LIVE_WAIT_SECS)); return 0 ;;
+  esac
+  if [ ! -e "$_lwt_file" ] && [ ! -L "$_lwt_file" ]; then
+    printf -v "$1" '%s' 3600
+    return 0
+  fi
+  if [ -f "$_lwt_file" ]; then
+    { IFS= read -r _lwt_line < "$_lwt_file" || [ -n "$_lwt_line" ]; } 2>/dev/null || _lwt_line=
+  fi
+  _lwt_line=${_lwt_line//[[:space:]]/}
+  case "$_lwt_line" in
+    [0-9]|[0-9][0-9]|[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9])
+      if [ $((10#$_lwt_line)) -le 1440 ]; then
+        printf -v "$1" '%s' $((10#$_lwt_line * 60))
+        return 0
+      fi
+      ;;
+  esac
+  printf 'fm-park: %s must hold whole minutes from 0 to 1440 on its first line (it is empty, unreadable or out of range); fix or remove it\n' "$_lwt_file" >&2
+  return 1
+}
+
+# expect_epoch_to <var> <UTC|+seconds> <now>: the epoch a --expect value names;
+# 1 when it is malformed.
+expect_epoch_to() {
+  local _ee_value=$2 _ee_epoch
+  case "$_ee_value" in
+    +*)
+      case "${_ee_value#+}" in ''|*[!0-9]*) return 1 ;; esac
+      [ "${#_ee_value}" -le 9 ] || return 1
+      _ee_epoch=$(( $3 + 10#${_ee_value#+} ))
+      ;;
+    *) _ee_epoch=$(fm_utc_iso_to_epoch "$_ee_value") || return 1 ;;
+  esac
+  printf -v "$1" '%s' "$_ee_epoch"
+}
+
+# live_wait_rule <expect-epoch> <now>: the header's "Live waits" rule for a
+# worker parking itself. Returns when the park may go ahead; exits 4 with the
+# live-wait instructions, before anything is installed, when the worker should
+# wait live instead, and 1 when it cannot tell.
+live_wait_rule() {
+  local expect_epoch=$1 now=$2 threshold minutes await meta_live_wait_when meta_live_wait_until
+  live_wait_threshold_to threshold || die "task $ID was not parked: the live-wait threshold cannot be read"
+  [ "$threshold" -gt 0 ] || return 0
+  minutes=$((threshold / 60))
+  meta_read live_wait_when live_wait_until
+  if [ "$meta_live_wait_when" = "$HANDOFF_CONDITION" ]; then
+    case "$meta_live_wait_until" in
+      ''|*[!0-9]*) ;;
+      *) [ "$meta_live_wait_until" -gt "$now" ] || return 0 ;;
+    esac
+  fi
+  [ -n "$expect_epoch" ] || die "task $ID was not parked: a worker parking itself states when it expects $HANDOFF_CONDITION to hold, with --expect <UTC|+seconds>. A wait expected within $minutes minutes is waited live, not parked; only a longer one parks. Add --requested when firstmate or the memory guard asked for this park, which always parks, or --open-ended when the wait has no expected end."
+  [ $((expect_epoch - now)) -lt "$threshold" ] || return 0
+  case "$HANDOFF_CONDITION" in
+    inbox:*)
+      # shellcheck disable=SC2016 # Literal backticks quote commands for the reader.
+      printf 'fm-park: task %s was not parked: you expect %s within %s minutes, under this home'"'"'s live-wait threshold, so wait live: append `paused [wait=inbox:%s] [at=<epoch>]: <what you wait for>` with your brief'"'"'s status command and end your turn; a steer to your inbox wakes this session.\n' \
+        "$ID" "$HANDOFF_CONDITION" "$minutes" "$ID" >&2 ;;
+    *)
+      await="FM_HOME=$(printf '%q' "$FM_HOME") $(printf '%q' "$SCRIPT_DIR/fm-park.sh") await $ID $(printf '%q' "$HANDOFF_CONDITION")"
+      # shellcheck disable=SC2016 # Literal backticks quote commands for the reader.
+      printf 'fm-park: task %s was not parked: you expect %s within %s minutes, under this home'"'"'s live-wait threshold, so wait live: run `%s` as a command whose exit wakes this session (in the background on Claude, in the foreground elsewhere). It declares the wait itself and exits 0 when the condition holds, or 3 after %s minutes, when this same park command parks.\n' \
+        "$ID" "$HANDOFF_CONDITION" "$minutes" "$await" "$minutes" >&2 ;;
+  esac
+  exit 4
+}
+
 # heavy_job_path: the heavy slot's heavy-job.sh, from the last path= line of
 # this home's config/heavy-job, else the machine-wide one.
 heavy_job_path() {
@@ -602,12 +717,14 @@ cmd_validate() {
 
 cmd_park() {
   local handoff='' want='' deadline_iso='' deadline_epoch now rel dest wt here detached=0 detach out adopted='' sid='' tag=''
-  local open_ended=0 relocation_safe=0 started token release_name release_timeout
+  local open_ended=0 relocation_safe=0 started token release_name release_timeout expect='' expect_epoch='' requested=0
   task_resolve "${1-}"
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --open-ended) open_ended=1; shift ;;
+      --requested) requested=1; shift ;;
+      --expect) expect=${2-}; shift 2 || die "--expect needs a UTC time or +seconds" ;;
       --relocation-safe) relocation_safe=1; shift ;;
       --handoff) handoff=${2-}; shift 2 || die "--handoff needs a file" ;;
       --when) want=${2-}; shift 2 || die "--when needs a condition" ;;
@@ -620,6 +737,10 @@ cmd_park() {
   case "$release_timeout" in ''|0*|*[!0-9]*) die "copy-release action bound must be an integer of at least 5 seconds" ;; esac
   [ "${#release_timeout}" -le 6 ] && [ "$release_timeout" -ge 5 ] || die "copy-release action bound must be 5..999999 seconds"
   [ -n "$handoff" ] || die "park needs --handoff <file> (sections: Goal, Done, Waiting for, Next steps)"
+  if [ -n "$expect" ]; then
+    expect_epoch_to expect_epoch "$expect" "$(date +%s)" \
+      || die "--expect must be a UTC time like 2026-10-02T12:00Z or +<seconds>: $expect"
+  fi
   validate_handoff "$handoff" "$want"
   case "$(meta_get copy_state)" in ''|retained) ;; *) die "saved copy custody requires reconciliation or restoration, not re-park" ;; esac
   case "$HANDOFF_CONDITION" in inbox:*) [ "$HANDOFF_CONDITION" = "inbox:$ID" ] || die "inbox condition must name this task" ;; esac
@@ -638,6 +759,9 @@ cmd_park() {
   here=$(pwd -P 2>/dev/null || true)
   if [ -n "$wt" ] && wt=$(cd "$wt" 2>/dev/null && pwd -P); then
     case "$here/" in "$wt"/*) detached=1 ;; esac
+  fi
+  if [ "$detached" -eq 1 ] && [ "$requested" -eq 0 ] && [ "$open_ended" -eq 0 ] && [ -z "$adopted" ]; then
+    live_wait_rule "$expect_epoch" "$(date +%s)"
   fi
   [ "$detached" -eq 0 ] || [ "$(meta_get harness)" != claude ] || refuse_claude_background_work
   now=$(date +%s)
@@ -853,7 +977,7 @@ cmd_resume() {
       echo "This is a different copy under a fresh acquisition, even if its physical path is reused. Uncommitted state is not inherited; only the saved committed head verified by the bundle is restored."
     fi
     echo "Read the handoff at $handoff first; it records the goal, what was already done, and the next steps."
-    echo "Continue from its next steps. If you must wait on something external again, park again rather than idling."
+    echo "Continue from its next steps. If you must wait on something external again, wait live when you expect it within the live-wait threshold (fm-park.sh --help, \"Live waits\"), and park again, with --expect, only for a longer wait; never idle undeclared."
   } > "$note" || die "cannot write the resume note for task $ID"
   if ! out=$("$CONTROL" "$ID" relaunch --note-file "$note" 2>&1); then
     # A pre-allocation failure must remain directly retryable. Interrupted copy
@@ -874,7 +998,68 @@ cmd_resume() {
   park_record "park_state=resumed" "park_resumed_at=$(date +%s)" "park_release_source=$release_source" \
     || printf 'fm-park: task %s was relaunched but its park record could not be updated\n' "$ID" >&2
   status_append "working: resumed from park - $cond held; fresh session started from $handoff" || true
+  "$SCRIPT_DIR/fm-park-churn.sh" record "$ID" >/dev/null \
+    || printf 'fm-park: task %s resumed, but its resume could not be counted for the churn alarm\n' "$ID" >&2
   printf 'resumed %s: %s\n' "$ID" "$out"
+}
+
+# cmd_await <id> <condition>: the live waiter the header's "Live waits" section
+# describes.
+cmd_await() {
+  local cond=${2-} threshold now bound bound_iso tag interval out rc errors=0 budget minutes
+  task_resolve "${1-}"
+  condition_valid "$cond" || exit 2
+  case "$cond" in
+    inbox:*)
+      # shellcheck disable=SC2016 # Literal backticks quote commands for the reader.
+      printf 'fm-park: an inbox wait needs no waiter: append `paused [wait=%s] [at=<epoch>]: <what you wait for>` and end your turn; a steer wakes this session\n' "$cond" >&2
+      exit 2 ;;
+  esac
+  live_wait_threshold_to threshold || exit 2
+  [ "$threshold" -gt 0 ] || { printf 'fm-park: this home'"'"'s live-wait threshold is 0, so every wait parks; park on %s instead\n' "$cond" >&2; exit 2; }
+  minutes=$((threshold / 60))
+  budget=${FM_PARK_ERROR_BUDGET:-5}
+  interval=${FM_PARK_INTERVAL:-$(park_interval "$cond")}
+  case "$budget" in ''|*[!0-9]*) die "FM_PARK_ERROR_BUDGET must be a whole number: $budget" ;; esac
+  case "$interval" in ''|.|*[!0-9.]*|*.*.*) die "FM_PARK_INTERVAL must be a number of seconds: $interval" ;; esac
+  rc=0; out=$(cmd_check "$cond" 2>&1) || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    printf 'fm-park: %s already holds; no wait was declared\n' "$cond"
+    exit 0
+  fi
+  now=$(date +%s)
+  bound=$((now + threshold))
+  bound_iso=$(date -u -d "@$bound" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -r "$bound" +%Y-%m-%dT%H:%M:%SZ) || die "cannot format the live-wait bound"
+  tag=$(status_wait_process_tag "$$" "$bound_iso") || die "cannot read this waiter's own process identity for its wait tag"
+  park_record "live_wait_when=$cond" "live_wait_until=$bound" || die "cannot record the live wait in task $ID's record"
+  status_append "$PAUSED_VERB $tag: live wait on $cond, at most $minutes minutes (park after $bound_iso)" \
+    || die "cannot declare the live wait in task $ID's status file"
+  while :; do
+    if [ "$rc" -eq 0 ]; then
+      status_append "working: live wait over - $cond held" || true
+      printf 'fm-park: %s holds\n' "$cond"
+      exit 0
+    elif [ "$rc" -eq 1 ]; then
+      errors=0
+    else
+      errors=$((errors + 1))
+      if [ "$errors" -ge "$budget" ]; then
+        status_append "working: live wait on $cond stopped - its check failed $errors times in a row" || true
+        printf 'fm-park: the check for %s failed %s times in a row; last output: %s\n' "$cond" "$errors" "$out" >&2
+        exit 2
+      fi
+    fi
+    now=$(date +%s)
+    if [ "$now" -ge "$bound" ]; then
+      status_append "working: live wait on $cond reached the $minutes-minute live-wait threshold; parking next" || true
+      printf 'fm-park: %s did not hold within %s minutes; park now with fm-park.sh %s --handoff <file> --when %s, which this wait allows\n' \
+        "$cond" "$minutes" "$ID" "$cond" >&2
+      exit 3
+    fi
+    if [ $((bound - now)) -gt "${interval%%.*}" ]; then sleep "$interval"; else sleep $((bound - now)); fi
+    rc=0; out=$(cmd_check "$cond" 2>&1) || rc=$?
+  done
 }
 
 cmd_cancel() {
@@ -1222,6 +1407,7 @@ case "${1-}" in
   release) shift; [ "$#" = 2 ] && [ -n "$2" ] || exit 2; cmd_release "$@" ;;
   release-ready) shift; [ "$#" = 2 ] || exit 2; cmd_release_ready "$@" ;;
   poll) shift; [ "$#" = 2 ] || exit 2; cmd_poll "$@" ;;
+  await) shift; [ "$#" = 2 ] || { usage >&2; exit 2; }; cmd_await "$@" ;;
   pickup) shift; [ "$#" = 1 ] || exit 2; cmd_pickup "$1" ;;
   request-pickup) shift; [ "$#" = 1 ] || exit 2; cmd_request_pickup "$1" ;;
   ''|-h|--help|help) usage; [ -n "${1-}" ] || exit 2 ;;
