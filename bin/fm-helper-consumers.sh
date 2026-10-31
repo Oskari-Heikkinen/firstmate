@@ -1542,7 +1542,7 @@ alarm_accepted() {  # <dir> <log>
           if (cs[i] == "" || cs[i] == "-") continue
           any[v] = 1
           if (cs[i] in acc) { if (index(acc[cs[i]], " " p[3] " ") == 0) ok[v] = 0 }
-          else if (cs[i] in bad) ok[v] = 0
+          else ok[v] = 0
         }
       }
       for (j = 1; j <= m; j++) if (any[vorder[j]] && ok[vorder[j]]) print vorder[j]
