@@ -995,6 +995,38 @@ test_key_fanout_authorizes_normal_park_pickup() {
   pass 'fm-send fan-out authorizes inbox pickup only after answering; normal park conditions and tokens still govern'
 }
 
+# A delivered answer whose park pickup records neither way is a failed
+# recipient (do not resend; run the named pickup), and a fan-out run by the
+# main supervision actor picks parks up without waiting on its own guard lock.
+test_key_fanout_pickup_outcomes() {
+  local dir fb log home out rc
+  dir="$TMP_ROOT/fanout-pickup"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home fanout-pickup)
+  fm_write_meta "$home/state/t1.meta" 'window=sess:fm-t1' 'kind=ship' \
+    'park_state=parked' 'park_when=inbox:t1' 'park_token=token-t1'
+  printf 'needs-decision [key=capacity]: first\n' > "$home/state/t1.status"
+  mkdir -p "$home/state/t1.inbox/.pickup-requested"
+  out=$(FM_TASK_ID=some-worker run_send "$fb" "$home" "$log" --resolve-key-all capacity 'six slots'); rc=$?
+  expect_code 1 "$rc" "an unrecorded pickup must fail the fan-out: $out"
+  assert_contains "$out" 'reached=1 failed=1' 'the unrecorded pickup must count as failed'
+  assert_contains "$(< "$log.stderr")" 'answer delivered and closed; do not resend; authorize fm-park.sh pickup t1' \
+    'the failed pickup must name the manual pickup without a resend'
+  grep -qF 'six slots' "$home/state/t1.inbox/001.msg" || fail 't1 lost its answer'
+
+  fm_write_meta "$home/state/t2.meta" 'window=sess:fm-t2' 'kind=ship' \
+    'park_state=parked' 'park_when=inbox:t2' 'park_token=token-t2'
+  printf 'needs-decision [key=quota]: second\n' > "$home/state/t2.status"
+  rc=0
+  FM_SUPERVISION_ACTOR=main run_send "$fb" "$home" "$log" --resolve-key-all quota 'two runs' > "$dir/main.out" &
+  fm_exit_guarded_wait "$!" 'a fan-out by the main actor' || rc=$?
+  expect_code 0 "$rc" "a fan-out by the main actor failed: $(cat "$dir/main.out"); $(< "$log.stderr")"
+  assert_contains "$(cat "$dir/main.out")" 'reached=1 failed=0' 'the main actor fan-out did not reach its recipient'
+  env FM_HOME="$home" "$ROOT/bin/fm-park.sh" poll t2 token-t2 >/dev/null 2>&1; rc=$?
+  expect_code 0 "$rc" 'the main actor fan-out did not pick up the park'
+  pass 'fm-send fan-out counts an unrecorded pickup as failed and picks up under the main actor without self-waiting'
+}
+
 test_key_fanout_partial_failure_and_empty_key() {
   local dir fb log home out rc
   dir="$TMP_ROOT/fanout-partial"; mkdir -p "$dir"
@@ -1083,5 +1115,6 @@ test_remote_reserved_pending_reply_key_closes_locally
 test_decision_answer_partition_relocates_under_the_record
 test_key_fanout_reaches_all_and_only_waiters
 test_key_fanout_authorizes_normal_park_pickup
+test_key_fanout_pickup_outcomes
 test_key_fanout_partial_failure_and_empty_key
 test_key_fanout_refuses_invalid_answers_and_attended_branch

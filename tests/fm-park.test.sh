@@ -395,7 +395,9 @@ case_inbox_pickup_request() {
   handoff "$TMP_ROOT/tsr.md" "inbox:tsr"
   park "$H" tsr --handoff "$TMP_ROOT/tsr.md" >/dev/null || fail "park tsr failed"
   token=$(sed -n 's/^park_token=//p' "$H/state/tsr.meta")
-  park "$H" request-pickup tsr >/dev/null 2>&1 && fail "a request without an inbox directory was reported recorded"
+  rc=0; park "$H" request-pickup tsr > "$H/request.out" 2>&1 || rc=$?
+  expect_code 1 "$rc" "a request without an inbox directory was reported recorded"
+  assert_contains "$(cat "$H/request.out")" "has no inbox directory" "the missing inbox directory was not named"
   mkdir -p "$H/state/tsr.inbox"
   # The delivery is the event: with no unhandled record there is nothing to resume.
   rc=0; FM_TASK_ID=some-worker park "$H" request-pickup tsr 2>/dev/null || rc=$?
@@ -436,6 +438,26 @@ case_inbox_pickup_request() {
   expect_code 1 "$rc" "a request was recorded over a non-regular request path"
   [ -z "$(ls -A "$req")" ] || fail "the request was written inside a directory at its path"
   rmdir "$req"
+  # A symlink at the request path is refused both ways, even one that points at
+  # a regular file holding the current token.
+  printf '%s\n' "$token" > "$TMP_ROOT/tsr-linked-request"
+  ln -s "$TMP_ROOT/tsr-linked-request" "$req"
+  rc=0; park "$H" poll tsr "$token" > "$H/poll.out" 2>&1 || rc=$?
+  expect_code 2 "$rc" "a symlinked pickup request was not a condition error"
+  assert_contains "$(cat "$H/poll.out")" "is not a regular file" "the symlinked request was not named"
+  assert_no_grep "park_pickup=$token" "$H/state/tsr.meta" "a symlinked request picked up the park"
+  rc=0; park "$H" request-pickup tsr 2>/dev/null || rc=$?
+  expect_code 1 "$rc" "a request was recorded over a symlink at its path"
+  [ -L "$req" ] || fail "the request replaced a symlink at its path"
+  assert_equals "$token" "$(cat "$TMP_ROOT/tsr-linked-request")" "the request was written through a symlink"
+  rm -f "$req"
+  # A FIFO at the request path is a condition error that never blocks the poll.
+  mkfifo "$req"
+  rc=0; park "$H" poll tsr "$token" > "$H/poll.out" 2>&1 &
+  fm_exit_guarded_wait "$!" "a poll over a FIFO pickup request" || rc=$?
+  expect_code 2 "$rc" "a FIFO pickup request was not a condition error"
+  assert_contains "$(cat "$H/poll.out")" "is not a regular file" "the FIFO request was not named"
+  rm -f "$req"
 
   # The other supervision actor's live lease defers the pickup to a later poll.
   park "$H" request-pickup tsr || fail "the request could not be recorded again"
@@ -455,7 +477,74 @@ case_inbox_pickup_request() {
   printf '%s\n' "$token" > "$req"
   park "$H" tsr --handoff "$TMP_ROOT/tsr.md" >/dev/null || fail "re-park tsr failed"
   assert_absent "$req" "a new park kept the request for the park it replaced"
+
+  # An inbox path that is a symlink holds no request, and nothing is written
+  # through it.
+  new_task "$H" tsl
+  handoff "$TMP_ROOT/tsl.md" "inbox:tsl"
+  park "$H" tsl --handoff "$TMP_ROOT/tsl.md" >/dev/null || fail "park tsl failed"
+  mkdir -p "$TMP_ROOT/tsl-linked-inbox"; printf 'steer\n' > "$TMP_ROOT/tsl-linked-inbox/001.msg"
+  ln -s "$TMP_ROOT/tsl-linked-inbox" "$H/state/tsl.inbox"
+  rc=0; park "$H" request-pickup tsl > "$H/request.out" 2>&1 || rc=$?
+  expect_code 1 "$rc" "a request was recorded through a symlinked inbox"
+  assert_contains "$(cat "$H/request.out")" "has no inbox directory" "the symlinked inbox was not named"
+  assert_absent "$TMP_ROOT/tsl-linked-inbox/.pickup-requested" "the request was written through a symlinked inbox"
   pass "a pickup request from outside the lease resumes only its own park, through the park's lease-guarded poll"
+}
+
+# --- a park that changes while the requested pickup waits for the lease ------
+# The poll read the park, then waits on the lease guard lock another command
+# holds; the park is replaced meanwhile. The pickup must neither record the new
+# park nor turn the change into a condition error.
+case_inbox_pickup_race() {
+  local token hp pp realsleep rc i
+  H="$TMP_ROOT/h-race"; new_task "$H" tpr; mkdir -p "$H/fakebin"
+  handoff "$TMP_ROOT/tpr.md" "inbox:tpr"
+  park "$H" tpr --handoff "$TMP_ROOT/tpr.md" >/dev/null || fail "park tpr failed"
+  token=$(sed -n 's/^park_token=//p' "$H/state/tpr.meta")
+  mkdir -p "$H/state/tpr.inbox"; printf 'steer\n' > "$H/state/tpr.inbox/001.msg"
+  FM_TASK_ID=some-worker park "$H" request-pickup tpr || fail "the tpr request could not be recorded"
+  # The poll's first sleep is its wait for the held lock, after it read the park.
+  realsleep=$(command -v sleep)
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/sleep-calls"\nexec %s "$@"\n' "$H" "$realsleep" > "$H/fakebin/sleep"
+  chmod +x "$H/fakebin/sleep"
+  STATE="$H/state" bash -c '. "$1/fm-wake-lib.sh"; fm_lock_acquire_wait "$STATE/.fm-lease-command.lock"; : > "$2/held"; while [ ! -e "$2/release" ]; do sleep 0.1; done; fm_lock_release "$STATE/.fm-lease-command.lock"' _ "$ROOT/bin" "$H" &
+  hp=$!
+  i=0; while [ ! -e "$H/held" ] && [ "$i" -lt 1200 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -e "$H/held" ] || fail "the lock holder never took the lease guard lock"
+  PATH="$H/fakebin:$PATH" FM_SUPERVISION_ACTOR=main park "$H" poll tpr "$token" > "$H/poll.out" 2>&1 &
+  pp=$!
+  i=0; while [ ! -s "$H/sleep-calls" ] && kill -0 "$pp" 2>/dev/null && [ "$i" -lt 1200 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -s "$H/sleep-calls" ] || { : > "$H/release"; wait "$hp"; fail "the poll never waited on the held lock: $(cat "$H/poll.out")"; }
+  sed 's/^park_token=.*/park_token=park.next/' "$H/state/tpr.meta" > "$H/state/tpr.meta.new"
+  mv "$H/state/tpr.meta.new" "$H/state/tpr.meta"
+  : > "$H/release"
+  rc=0; fm_exit_guarded_wait "$pp" "a poll racing a new park" || rc=$?
+  wait "$hp" || fail "the lock holder failed"
+  expect_code 1 "$rc" "a park replaced under the requested pickup was not left for its next poll"
+  assert_equals 'park_pickup=' "$(grep '^park_pickup=' "$H/state/tpr.meta")" "the requested pickup recorded a park"
+  assert_present "$H/state/tpr.inbox/.pickup-requested" "the poll removed a request it did not act on"
+  pass "a park replaced while its requested pickup waits for the lease is neither picked up nor an error"
+}
+
+# --- the observation hint reads only a regular pickup request ---------------
+case_inbox_hint_request_shapes() {
+  local token req rc out
+  H="$TMP_ROOT/h-hint"; new_task "$H" tph
+  handoff "$TMP_ROOT/tph.md" "inbox:tph"
+  park "$H" tph --handoff "$TMP_ROOT/tph.md" >/dev/null || fail "park tph failed"
+  token=$(sed -n 's/^park_token=//p' "$H/state/tph.meta")
+  mkdir -p "$H/state/tph.inbox"; req="$H/state/tph.inbox/.pickup-requested"
+  printf '%s\n' "$token" > "$req"
+  out=$(STATE="$H/state" FM_HOME="$H" SCRIPT_DIR="$ROOT/bin" bash -c '. "$1/fm-wake-lib.sh"; . "$1/fm-pr-lib.sh"; . "$1/fm-park-observe-lib.sh"; fm_park_observation_to o "$SCRIPT_DIR/fm-park.sh" poll tph "$2" || exit; printf "%s\n" "$o"' _ "$ROOT/bin" "$token") \
+    || fail "the hint could not observe a regular pickup request"
+  assert_contains "$out" "inbox:$token" "the hint does not carry the request"
+  rm -f "$req"; mkfifo "$req"
+  rc=0
+  STATE="$H/state" FM_HOME="$H" SCRIPT_DIR="$ROOT/bin" bash -c '. "$1/fm-wake-lib.sh"; . "$1/fm-pr-lib.sh"; . "$1/fm-park-observe-lib.sh"; fm_park_observation_to o "$SCRIPT_DIR/fm-park.sh" poll tph "$2"' _ "$ROOT/bin" "$token" &
+  fm_exit_guarded_wait "$!" "the hint over a FIFO pickup request" || rc=$?
+  expect_code 1 "$rc" "a FIFO pickup request did not force the full poll"
+  pass "the observation hint carries a regular pickup request and leaves any other shape to the full poll"
 }
 
 # --- the cross-home condition kinds each read their own source ----------------
@@ -1409,6 +1498,7 @@ POOL_CASES+=(case_deadline_wakes_supervisor case_resume_and_repark
 POOL_CASES+=(case_handoff_validation case_park_refuses_missing_handoff case_queue_adoption_refusal
   case_park_records_and_rearms case_default_cadence case_park_resolves_its_directory
   case_poll_answers_in_the_shell case_inbox_pickup_request case_delivery_resumes_inbox_park
+  case_inbox_pickup_race case_inbox_hint_request_shapes
   case_cross_home_conditions
   case_kind_default_deadlines case_park_time_refusal case_self_park_detached_exit
   case_self_park_by_task_id case_self_park_exit_failure case_claude_background_refusal

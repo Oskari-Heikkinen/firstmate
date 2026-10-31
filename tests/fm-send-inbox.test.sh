@@ -560,6 +560,16 @@ FM_HOME="$dir/home" "$ROOT/bin/fm-park.sh" check inbox:inbox-pickup || fail 'a d
 assert_grep 'is picked up' "$dir/send.out" 'the send did not say it picked up the park'
 assert_absent "$dir/terminal-calls" 'the pickup delivery rang a parked terminal'
 assert_absent "$dir/home/state/inbox-pickup.inbox/.pickup-requested" 'a direct pickup also left a request'
+# A send whose own lease guard is engaged releases its non-reentrant guard lock
+# before fm-park.sh pickup takes it, so the pickup never waits on its caller.
+dir=$(suspend_case "$TMP_ROOT" inbox-pickup-main) || fail 'guarded inbox pickup fixture failed'
+cp "$TMP_ROOT/custody-send/fakebin/tmux" "$dir/fakebin/tmux"
+rc=0
+SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_SUPERVISION_ACTOR=main FM_HOME="$dir/home" "$SEND" inbox-pickup-main 'under the guard' > "$dir/send.out" 2> "$dir/send.err" &
+fm_exit_guarded_wait "$!" 'a guarded delivery to an inbox park' || rc=$?
+expect_code 0 "$rc" "a guarded delivery to an inbox park failed: $(cat "$dir/send.err")"
+assert_equals 'park_pickup=p1' "$(grep '^park_pickup=' "$dir/home/state/inbox-pickup-main.meta")" 'a guarded delivery did not pick up its inbox park'
+assert_grep 'is picked up' "$dir/send.out" 'the guarded send did not say it picked up the park'
 dir=$(suspend_case "$TMP_ROOT" inbox-request) || fail 'inbox request fixture failed'
 cp "$TMP_ROOT/custody-send/fakebin/tmux" "$dir/fakebin/tmux"
 FM_TASK_ID=some-worker SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" inbox-request 'from a worker' > "$dir/send.out" 2> "$dir/send.err" || fail "a worker's delivery to an inbox park failed: $(cat "$dir/send.err")"

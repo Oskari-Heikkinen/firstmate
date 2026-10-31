@@ -758,6 +758,23 @@ fm_hang_guarded_wait() {
   return "$rc"
 }
 
+# fm_exit_guarded_wait <pid> <label>
+# Wait for the background <pid> (a child of this shell) to exit and return its
+# status, for a command that must not block, such as on a lock its own caller
+# holds or on a FIFO. The 120 s cap is only a hang guard: at the cap the
+# command is killed and the case fails.
+fm_exit_guarded_wait() {
+  local pid=$1 label=$2 waited=0 rc=0
+  while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 1200 ]; do sleep 0.1; waited=$((waited + 1)); done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "$label: the command was still blocked after 120 s"
+  fi
+  wait "$pid" || rc=$?
+  return "$rc"
+}
+
 # fm_fake_claude_outside_read_gate <fakebin>
 # Drops a claude stub that models the 2.1.257 outside-read gate instead of
 # answering like a generic exit-0 tool: it resolves its own cwd and every

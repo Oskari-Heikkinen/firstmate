@@ -74,7 +74,7 @@ If duplicates went out, they differ only in their `at=` stamp: remove the extra 
 
 ## Mail for a parked worker
 
-Delivering mail to a worker parked on an `inbox:<task>` condition also picks up that park, so its listener relaunches it within about two minutes; [`bin/fm-send.sh`](../../../bin/fm-send.sh)'s header ("Inbox pickup") owns the rule.
+Delivering mail to a worker parked on an `inbox:<task>` condition also picks up that park, so its listener relaunches it within about two minutes (about five after another supervision actor's lease clears); [`bin/fm-send.sh`](../../../bin/fm-send.sh)'s header ("Inbox pickup") owns the rule.
 Mail that is purely for information goes with `--no-resume`, and old messages in a busy worker's inbox are not a reason to wake it.
 If fm-send warns that the message is delivered but the park was not picked up, do not resend: run the `bin/fm-park.sh pickup <task>` the warning names.
 For urgent work, [`bin/fm-park.sh`](../../../bin/fm-park.sh)'s header owns `resume` and what to do with the captured result afterwards.

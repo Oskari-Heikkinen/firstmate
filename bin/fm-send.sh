@@ -69,10 +69,16 @@
 # close, fm-send runs bin/fm-park.sh pickup, whose header owns the pickup
 # rule; when that is not open to this sender (a task worker, or a refused
 # lease) it runs fm-park.sh request-pickup instead, so the park's own listener
-# picks the task up. Either way the task relaunches within about two minutes,
-# its doorbell is not rung (a parked agent has exited), and a line on stdout
-# says which path ran. When neither records, a warning names the manual
-# pickup and the send still exits 0, because the message is delivered.
+# picks the task up. The task relaunches within about two minutes, or, when
+# the other supervision actor's lease refuses the pickup (a lease taken after
+# this send's own guard passed), within about five minutes of that lease
+# clearing, through the park's 300 s full-poll backstop. Its doorbell is not
+# rung (a parked agent has exited), and a line on stdout says which path ran.
+# When neither records, a warning names the manual pickup and the send still
+# exits 0, because the message is delivered. The pickup runs after this send
+# releases its lease guard lock, so when the park changes in that window the
+# doorbell rung afterwards is best-effort outside the guard: the same constant
+# line the watcher's re-ring ladder types.
 # --no-resume delivers without resuming, for a note that may wait for the
 # task's next resume; it changes nothing on the other planes.
 # The composer pre-check before the ring is ADVISORY only: when
@@ -515,6 +521,8 @@ fm_send_park_pickup() {
   [ "$park_state" = parked ] && [ "$park_when" = "inbox:$task" ] || return 2
   # fm-park.sh takes the supervisor-lease guard itself, and this send's guard
   # lock is not reentrant; the delivery that lock covered is already durable.
+  # A doorbell rung after a return 2 below is therefore outside the guard
+  # (header "Inbox pickup").
   fm_lease_guard_release
   if [ -z "${FM_TASK_ID-}" ]; then
     if err=$("$SCRIPT_DIR/fm-park.sh" pickup "$task" 2>&1 >/dev/null); then
@@ -525,7 +533,7 @@ fm_send_park_pickup() {
   req_err=$("$SCRIPT_DIR/fm-park.sh" request-pickup "$task" 2>&1 >/dev/null) || rc=$?
   case "$rc" in
   0)
-    FM_SEND_PICKUP_NOTE="pickup of the inbox park of $task is requested; its listener picks it up and relaunches it within about two minutes"
+    FM_SEND_PICKUP_NOTE="pickup of the inbox park of $task is requested; its listener picks it up and relaunches it within about two minutes, or about five after the lease clears if another supervision actor holds it"
     return 1 ;;
   3) return 2 ;;
   esac

@@ -167,9 +167,11 @@
 # The fork-free observation hint reads the request file, so the listener sees
 # it on its next tick: either path resumes the task within interval x stable
 # (about two minutes). A lease refusal leaves the request for the next full
-# poll; a request that is not a readable, nonempty regular file, or a failed
-# pickup record, is a condition error. Each new park removes an earlier request
-# before recording its own token.
+# poll, the 300 s backstop, so that pickup lands within about five minutes of
+# the lease clearing; a request that is not a readable, nonempty regular file
+# (a symlink or FIFO included), or a failed pickup record, is a condition
+# error. Each new park removes an earlier request before recording its own
+# token.
 #
 # Outcomes that need the supervisor come from the watch itself: the deadline
 # passing without the condition (never-true), repeated condition errors
