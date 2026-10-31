@@ -44,8 +44,9 @@ install_autoarm_scripts() {
   chmod +x "$dir/bin/fm-claude-stop-autoarm.sh" "$dir/bin/fm-lock.sh" "$dir/bin/fm-afk-contract.sh"
 }
 
-# An opted-in Claude home runs the supervision host unless config/supervision-host-off
-# opts it out, so the fixture home opts out: most cases exercise the plain arm,
+# A Claude home runs the supervision host unless config/supervision-host-off
+# opts it out, with or without config/supervision-host, so the fixture home
+# opts out: most cases exercise the plain arm,
 # and the supervision-host cases below remove the opt-out.
 make_primary_dir() {
   local dir=$1
@@ -1870,7 +1871,10 @@ test_host_off_flag_keeps_the_arm() {
   pass "auto-arm: config/supervision-host-off keeps the hook on the arm exactly as before"
 }
 
-test_host_absent_flag_keeps_the_arm() {
+# With neither config file a Claude home runs the host at its engine's default
+# (bin/fm-supervision-engine-lib.sh owns the gate), exactly as an empty
+# opt-in file does.
+test_host_absent_flag_runs_the_host() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/host-flag-absent")
   rm -f "$dir/config/supervision-host-off" "$dir/config/supervision-host"
@@ -1878,12 +1882,13 @@ test_host_absent_flag_keeps_the_arm() {
   write_arm_fixture "$dir" actionable
   write_host_fixture "$dir" boundary
   out=$(run_autoarm "$dir" 2>/dev/null); status=$?
-  expect_code 2 "$status" "an unopted Claude home must rewake through the plain arm"
-  assert_present "$dir/state/arm-ran" "an unopted Claude home did not run the arm"
-  assert_absent "$dir/state/host-ran" "an unopted Claude home ran the host"
-  assert_contains "$out" "stale: fixture-win actionable" "the arm's reason must reach main"
-  pass "auto-arm: absent config/supervision-host keeps Claude on the plain arm"
+  expect_code 2 "$status" "a host cycle boundary on a Claude home with no host file must rewake main"
+  assert_present "$dir/state/host-ran" "a Claude home with no host file did not run the host"
+  assert_absent "$dir/state/arm-ran" "a Claude home with no host file ran the plain arm instead of the host"
+  assert_contains "$out" "supervision-host: cycle boundary - fixture" "the rewake must carry the host's line"
+  pass "auto-arm: absent config/supervision-host runs the host on a Claude home by default"
 }
+
 test_host_boundary_rewakes_with_the_host_line() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/host-boundary")
@@ -2341,7 +2346,7 @@ test_afk_mid_cycle_suppresses_rewake
 test_active_in_marked_secondmate_home
 test_long_poll_grace_reaches_arm_wrapper
 test_host_off_flag_keeps_the_arm
-test_host_absent_flag_keeps_the_arm
+test_host_absent_flag_runs_the_host
 test_host_boundary_rewakes_with_the_host_line
 test_host_handback_under_away_record_is_not_a_return
 test_host_handback_beside_a_quiet_record_carries_no_away_note

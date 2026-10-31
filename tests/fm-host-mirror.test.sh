@@ -117,9 +117,10 @@ test_home_that_opted_out_is_untouched() {
   pass "mirror: a home opted out by config/supervision-host-off is untouched by every tracked mirror registration"
 }
 
-# Every primary requires explicit opt-in: without config/supervision-host,
-# neither Claude nor Cursor registrations write the mirror.
-test_home_without_the_file_mirrors_nothing() {
+# Without config/supervision-host the host runs only on a primary whose own
+# engine is verified (bin/fm-supervision-engine-lib.sh owns the gate), so the
+# Claude registrations write the mirror and the Cursor ones stay inert.
+test_home_without_the_file_mirrors_only_claude() {
   local home out
   home=$(make_home without-file 0)
   CLAUDE_PROMPT=$(claude_cmd UserPromptSubmit) CLAUDE_STOP=$(claude_cmd Stop) \
@@ -133,8 +134,9 @@ test_home_without_the_file_mirrors_nothing() {
     run "$CURSOR_RESPONSE" "{\"hook_event_name\":\"afterAgentResponse\",\"generation_id\":\"u1\",\"text\":\"cursor main\",\"cursor_version\":\"x\"}"
   ' || fail "a tracked mirror hook failed"
   out=$(entries "$home")
-  assert_equals "" "$out" "no registrations may write the mirror on a home without the opt-in file"
-  pass "mirror: without config/supervision-host all registrations stay inert"
+  assert_equals "captain|claude captain
+main|claude main" "$out" "without config/supervision-host only the Claude registrations may write the mirror"
+  pass "mirror: without config/supervision-host the Claude registrations write the mirror and the Cursor ones stay inert"
 }
 
 test_writers_are_inert_on_a_home_that_opted_out() {
@@ -459,7 +461,7 @@ test_every_harness_registration_writes_the_mirror
 test_writers_are_inert_on_a_home_that_opted_out
 test_only_proven_writers_are_verified
 test_home_that_opted_out_is_untouched
-test_home_without_the_file_mirrors_nothing
+test_home_without_the_file_mirrors_only_claude
 test_operational_foreign_and_unowned_input_is_dropped
 test_internal_whitespace_is_recorded_verbatim
 test_entries_are_deduplicated_and_capped

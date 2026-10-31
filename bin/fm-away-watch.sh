@@ -3,8 +3,10 @@
 # supervision has stopped and nothing inside the session can say so.
 #
 # Usage:
-#   fm-away-watch.sh run [--home DIR] [--now EPOCH]   check once and alert (the timer runs this)
-#   fm-away-watch.sh install-timer [--home DIR]       write and enable the systemd user timer
+#   fm-away-watch.sh run [--home DIR] [--primary HARNESS] [--now EPOCH]
+#                                                     check once and alert (the timer runs this)
+#   fm-away-watch.sh install-timer [--home DIR] [--primary HARNESS]
+#                                                     write and enable the systemd user timer
 #   fm-away-watch.sh uninstall-timer [--home DIR]     disable and remove that home's timer
 #   fm-away-watch.sh --help
 #
@@ -16,7 +18,11 @@
 # run does nothing unless this home holds an away record that is not quiet
 # mode's (bin/fm-afk-contract.sh fm_afk_contract_away_present). Otherwise it
 # checks five conditions and alerts on each that holds:
-#   host    the home runs the supervision host (config/supervision-host), no
+#   host    the home runs the supervision host (fm_supervision_host_enabled
+#           in bin/fm-supervision-engine-lib.sh owns the gate; with neither
+#           config file it depends on the primary harness, which --primary
+#           names, and an unnamed or unknown primary counts as running the
+#           host, fm_supervision_host_may_run), no
 #           host process is live under the identity state/.supervision-host
 #           records, and no main or host activity is newer than the host
 #           threshold (default 30 minutes). Activity is the newest of the host
@@ -50,7 +56,9 @@
 # install-timer writes fm-away-watch-<id>.service and fm-away-watch-<id>.timer
 # into ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user, where <id> is the
 # cksum of the selected home's path, so each home gets its own pair. The
-# service is pinned to this code root and that home and carries the
+# service is pinned to this code root, that home, and its primary harness
+# (--primary, else the harness the installing session runs under; an unknown
+# one is left out, so run fails toward checking the host), and carries the
 # installer's PATH (and HERDR_SOCKET_PATH when set), so herdr and command:
 # channels resolve as they do in a session. It then runs
 # `systemctl --user daemon-reload` and `systemctl --user enable --now` on the
@@ -80,10 +88,12 @@ esac
 
 home=${FM_HOME:-$CODE_ROOT}
 now=
+primary=
 while [ $# -gt 0 ]; do
   case "$1" in
     --home) [ $# -ge 2 ] || die "--home needs a directory"; home=$2; shift 2 ;;
     --now) [ $# -ge 2 ] || die "--now needs an epoch"; now=$2; shift 2 ;;
+    --primary) [ $# -ge 2 ] || die "--primary needs a harness"; primary=$2; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
@@ -91,6 +101,7 @@ done
 [ -d "$home" ] || die "home not found: $home"
 home=$(cd "$home" && pwd -P)
 case "$now" in ''|*[!0-9]*) [ -z "$now" ] || die "--now must be an integer epoch" ;; esac
+case "$primary" in *[!a-z0-9-]*) die "--primary must be a harness name: $primary" ;; esac
 UNIT="fm-away-watch-$(printf '%s' "$home" | cksum | cut -d' ' -f1)"
 
 unit_dir() { printf '%s/systemd/user\n' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
@@ -99,7 +110,13 @@ unit_dir() { printf '%s/systemd/user\n' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 . "$SCRIPT_DIR/fm-unit-file-lib.sh"
 
 install_timer() {
-  local dir env_lines
+  local dir env_lines primary_arg=
+  if [ -z "$primary" ]; then
+    # shellcheck source=bin/fm-supervision-engine-lib.sh
+    . "$SCRIPT_DIR/fm-supervision-engine-lib.sh"
+    primary=$(fm_supervision_host_primary)
+  fi
+  [ "$primary" = unknown ] || primary_arg=" --primary $primary"
   fm_unit_safe_path "$CODE_ROOT" || die "code root has characters a unit file cannot carry: $CODE_ROOT"
   fm_unit_safe_path "$home" || die "home has characters a unit file cannot carry: $home"
   env_lines=$(fm_unit_env PATH "$PATH") || die "PATH holds a newline a unit file cannot carry"
@@ -118,7 +135,7 @@ Type=oneshot
 TimeoutStartSec=120
 Environment=FM_HOME=$home
 $env_lines
-ExecStart=/usr/bin/env bash $CODE_ROOT/bin/fm-away-watch.sh run --home $home
+ExecStart=/usr/bin/env bash $CODE_ROOT/bin/fm-away-watch.sh run --home $home$primary_arg
 EOF
   cat > "$dir/$UNIT.timer.tmp" <<EOF
 [Unit]
@@ -135,7 +152,7 @@ WantedBy=timers.target
 EOF
   mv -f "$dir/$UNIT.service.tmp" "$dir/$UNIT.service"
   mv -f "$dir/$UNIT.timer.tmp" "$dir/$UNIT.timer"
-  printf 'wrote %s/%s.service and %s.timer (home %s)\n' "$dir" "$UNIT" "$UNIT" "$home"
+  printf 'wrote %s/%s.service and %s.timer (home %s, primary %s)\n' "$dir" "$UNIT" "$UNIT" "$home" "$primary"
   command -v systemctl >/dev/null 2>&1 \
     || die "systemctl not found; enable later with: systemctl --user daemon-reload && systemctl --user enable --now $UNIT.timer"
   systemctl --user daemon-reload
@@ -237,7 +254,7 @@ host_live() {
 
 check_host() {
   local last line
-  fm_supervision_host_enabled "$CONFIG" || return 0
+  fm_supervision_host_may_run "$CONFIG" "${primary:-unknown}" || return 0
   host_live && return 0
   last=0
   line=$(tail -n 1 "$STATE/.supervision-host.log" 2>/dev/null) || line=
