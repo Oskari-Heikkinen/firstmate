@@ -1793,7 +1793,7 @@ alarm_pass() {  # <home> <state> <repo>
     while IFS="$TAB" read -r h sha; do
       [ -n "$h" ] || continue
       f="$dir/accepted/${h##*/}@$sha"
-      [ ! -e "$f" ] || continue
+      : mutant: no sent-marker check
       [ -n "$root" ] || root=$(root_home "$home") \
         || { problems="$problems"$'\n'"helper-unaccepted: cannot resolve the root home of $home, so no accepted notice can be sent"; break; }
       if "$SCRIPT_DIR/fm-worker-status.sh" "$root/state/$ALARM_STATUS" "$root/config" \
