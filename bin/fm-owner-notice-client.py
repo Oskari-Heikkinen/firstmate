@@ -1,0 +1,634 @@
+#!/usr/bin/env python3
+"""fm-owner-notice-client.py - the producer side of fm-owner-notice/v1.
+
+Usage:
+  fm-owner-notice-client.py submit --config C --key K --kind T --payload-file F [--wait-seconds N]
+  fm-owner-notice-client.py query --config C --key K --kind T (--payload-file F | --payload-sha256 P)
+  fm-owner-notice-client.py pending --config C
+  fm-owner-notice-client.py prune --config C (--key K | --all-recorded)
+
+A producer hands an owner home one notice per key: submit writes the
+deterministic envelope <outbox>/<K>.envelope.json exclusively, and the owner's
+runner (or a manual fm-owner-notice.sh ingest) takes custody and writes a
+receipt under <owner_home_path>/state/owner-notices/<binding_id>/receipts/<K>/.
+Every answer, from submit and from query, comes from one answer function over
+the caller's (key, kind, payload digest) and what it reads; docs/owner-notice.md
+owns that table, the formats and the trust assumption.
+
+C is a fm-owner-notice-client-config/v1 JSON file pinning the binding_id,
+binding_sha256, recipient_home, owner_home_path, machine_id, producer_actor,
+outbox and closure (each pinned client file mapped to its sha256). An unknown
+config field is a usage error, so a stale field cannot linger.
+
+pending lists every outbox envelope that has no delivered or consumed receipt
+for its own digest. prune unlinks an envelope only when .receipts/<K>.json, the
+verified receipt copy the client recorded, matches the envelope's digest; it
+never touches owner files.
+
+Output: one JSON line on stdout. Exit codes: 0 delivered or consumed for the
+caller's digest (or a pending/prune command that succeeded); 2 usage or config
+error; 3 absent (query only; never proof of never-sent); 65 refused,
+key-conflict or not-recorded; 69 unavailable (names the path),
+owner-tree-writable, owner-tree-writable-by-mode, or binding-retired on submit;
+70 unknown or inconsistent state; 75 pending. Any other code, including 1 for
+an uncaught exception, 124 or 137 from a caller's timeout, or a signal, is
+unknown and never success.
+"""
+
+import argparse
+import errno
+import json
+import os
+import secrets
+import stat
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fm_owner_notice_format as fmt  # noqa: E402
+
+USAGE, ABSENT, REFUSED, UNAVAILABLE, UNKNOWN, PENDING = 2, 3, 65, 69, 70, 75
+WAIT_CAP = 120
+RECEIPTS_PER_KEY = 4096
+PROBE_DIRS = ("state", "owner-notices", "bindings", "receipts")
+
+
+class Answered(Exception):
+    """A row of the answer function decided; .result is the stdout object."""
+
+    # Positional-only, so a result field named code never collides.
+    def __init__(self, exit_code, state, row, /, **extra):
+        super().__init__(state)
+        self.result = dict(extra, exit=exit_code, state=state, row=row)
+
+
+def ans(exit_code, state, row, /, **extra):
+    return Answered(exit_code, state, row, **extra)
+
+
+class Context:
+    """The pinned config, the verified binding and the derived owner paths."""
+
+    def __init__(self, config, binding, binding_sha):
+        self.config = config
+        self.binding = binding
+        self.binding_sha = binding_sha
+        self.bid = config["binding_id"]
+        self.home = config["owner_home_path"]
+        self.state = os.path.join(self.home, "state")
+        self.notices = os.path.join(self.state, "owner-notices")
+        self.bindings = os.path.join(self.notices, "bindings")
+        self.binding_path = os.path.join(self.bindings, self.bid + ".json")
+        self.receipts = os.path.join(self.notices, self.bid, "receipts")
+        self.outbox = config["outbox"]
+        self.tmp = os.path.join(self.outbox, ".tmp")
+        self.records = os.path.join(self.outbox, ".receipts")
+        self.max_bytes = binding["max_bytes"]
+        self.retired = self._retired()
+
+    def _retired(self):
+        for suffix in (".retiring", ".retired"):
+            p = os.path.join(self.bindings, self.bid + suffix)
+            try:
+                os.lstat(p)
+                return True
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise ans(UNAVAILABLE, "unavailable", 1, path=p, detail=exc.strerror)
+        return False
+
+    def identity(self, key):
+        c = self.config
+        return {"binding_id": c["binding_id"], "binding_sha256": c["binding_sha256"],
+                "recipient_home": c["recipient_home"], "owner_home_path": c["owner_home_path"],
+                "machine_id": c["machine_id"], "producer_actor": c["producer_actor"],
+                "notice_key": key}
+
+    def envelope(self, key, kind, payload):
+        return fmt.envelope(self.bid, self.binding_sha, key, kind, payload)
+
+
+# ---------------------------------------------------------------- rows 1-3
+
+def read_config(path):
+    try:
+        data = fmt.read_regular_nofollow(path, fmt.CONFIG_BOUND)
+    except FileNotFoundError:
+        raise ans(UNAVAILABLE, "unavailable", 1, path=path, detail="config missing")
+    except (OSError, fmt.NotRegular) as exc:
+        raise ans(UNAVAILABLE, "unavailable", 1, path=path, detail=str(exc))
+    try:
+        config = json.loads(data.decode("utf-8"), object_pairs_hook=fmt._no_dupes)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ans(USAGE, "usage", 0, path=path, detail="config is not JSON: %s" % exc)
+    if not isinstance(config, dict):
+        raise ans(USAGE, "usage", 0, path=path, detail="config is not an object")
+    unknown = sorted(set(config) - set(fmt.CONFIG_FIELDS))
+    missing = sorted(set(fmt.CONFIG_FIELDS) - set(config))
+    if unknown or missing:
+        raise ans(USAGE, "usage", 0, path=path,
+                  detail="config fields: unknown %s, missing %s" % (unknown, missing))
+    if config["schema"] != fmt.CONFIG_SCHEMA:
+        raise ans(USAGE, "usage", 0, path=path, detail="config schema")
+    for f in fmt.CONFIG_FIELDS[1:-1]:
+        if not isinstance(config[f], str) or not config[f]:
+            raise ans(USAGE, "usage", 0, path=path, detail="config field " + f)
+    if not fmt.valid_name(config["binding_id"]) or not fmt.valid_sha(config["binding_sha256"]):
+        raise ans(USAGE, "usage", 0, path=path, detail="config binding pin")
+    for f in ("owner_home_path", "outbox"):
+        if not config[f].startswith("/"):
+            raise ans(USAGE, "usage", 0, path=path, detail=f + " must be absolute")
+    closure = config["closure"]
+    if not isinstance(closure, dict) or not all(
+            isinstance(k, str) and k.startswith("/") and fmt.valid_sha(v) for k, v in closure.items()):
+        raise ans(USAGE, "usage", 0, path=path, detail="closure must map absolute paths to sha256")
+    return config
+
+
+def check_closure(config):
+    """Every pinned file hashes to its pin, and the pin covers this client and its module."""
+    pinned = {os.path.realpath(p): v for p, v in config["closure"].items()}
+    for own in (os.path.abspath(__file__), os.path.abspath(fmt.__file__)):
+        if os.path.realpath(own) not in pinned:
+            raise ans(UNKNOWN, "unknown", 1, code="closure-mismatch", path=own,
+                      detail="closure does not pin this file")
+    for path, want in sorted(config["closure"].items()):
+        try:
+            data = fmt.read_regular_nofollow(os.path.realpath(path), 4 << 20)
+        except (OSError, fmt.NotRegular) as exc:
+            raise ans(UNAVAILABLE, "unavailable", 1, path=path, detail=str(exc))
+        if fmt.sha256_hex(data) != want:
+            raise ans(UNKNOWN, "unknown", 1, code="closure-mismatch", path=path)
+
+
+def probe_dir(path, name):
+    """Row 2: the owner directory must refuse a create with EROFS."""
+    s = fmt.seams()
+    code = s.probe_errno.get(name) if s.active else None
+    if code is None:
+        probe = os.path.join(path, ".fm-owner-notice-probe-%d-%s" % (os.getpid(), secrets.token_hex(4)))
+        try:
+            fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC, 0o600)
+        except OSError as exc:
+            code = exc.errno
+        else:
+            os.close(fd)
+            os.unlink(probe)
+    try:
+        rdonly = bool(os.statvfs(path).f_flag & os.ST_RDONLY)
+    except OSError:
+        rdonly = None
+    if code is None:
+        raise ans(UNAVAILABLE, "unavailable", 2, code="owner-tree-writable", path=path, st_rdonly=rdonly)
+    if code in (errno.EACCES, errno.EPERM):
+        raise ans(UNAVAILABLE, "unavailable", 2, code="owner-tree-writable-by-mode", path=path,
+                  st_rdonly=rdonly)
+    if code != errno.EROFS:
+        raise ans(UNKNOWN, "unknown", 2, path=path, detail="probe errno %s" % errno.errorcode.get(code, code))
+
+
+def open_context(config_path):
+    config = read_config(config_path)
+    fmt.seams().check(config_path, config["owner_home_path"], config["outbox"])
+    check_closure(config)
+    home = config["owner_home_path"]
+    state = os.path.join(home, "state")
+    bpath = os.path.join(state, "owner-notices", "bindings", config["binding_id"] + ".json")
+    if not os.path.isdir(state):
+        raise ans(UNAVAILABLE, "unavailable", 1, path=state)
+    try:
+        bdata = fmt.read_regular_nofollow(bpath, fmt.BINDING_BOUND)
+    except (OSError, fmt.NotRegular) as exc:
+        raise ans(UNAVAILABLE, "unavailable", 1, path=bpath, detail=str(exc))
+    notices = os.path.join(state, "owner-notices")
+    dirs = [(state, "state"), (notices, "owner-notices"), (os.path.dirname(bpath), "bindings")]
+    receipts = os.path.join(notices, config["binding_id"], "receipts")
+    # A missing receipts/ is rows 4 and 5's to answer, so it is probed only
+    # when it exists.
+    if os.path.isdir(receipts):
+        dirs.append((receipts, "receipts"))
+    for path, name in dirs:
+        probe_dir(path, name)
+    sha = fmt.sha256_hex(bdata)
+    if sha != config["binding_sha256"]:
+        raise ans(UNKNOWN, "unknown", 3, code="binding-mismatch", path=bpath, detail="binding digest")
+    try:
+        binding = fmt.validate_binding(fmt.parse_canonical(bdata))
+    except fmt.FormatError as exc:
+        raise ans(UNKNOWN, "unknown", 3, code="binding-mismatch", path=bpath, detail=str(exc))
+    for f in ("binding_id", "recipient_home", "owner_home_path", "machine_id", "producer_actor", "outbox"):
+        if binding[f] != config[f]:
+            raise ans(UNKNOWN, "unknown", 3, code="binding-mismatch", path=bpath, detail="binding " + f)
+    return Context(config, binding, sha)
+
+
+# ---------------------------------------------------------------- rows 4-12
+
+def read_receipts(ctx, key, payloads):
+    """Validated receipts for key, by seq; Answered for rows 4-6.
+
+    payloads maps (payload_sha256, kind) to payload bytes the caller holds, so
+    a receipt's envelope_sha256 is recomputed wherever the bytes are known.
+    """
+    if not os.path.isdir(ctx.receipts):
+        if ctx.retired:
+            raise ans(UNKNOWN, "unknown", 4, code="binding-retired", path=ctx.receipts)
+        raise ans(UNAVAILABLE, "unavailable", 5, path=ctx.receipts)
+    if not ctx.retired and not os.path.isdir(ctx.outbox):
+        raise ans(UNAVAILABLE, "unavailable", 5, path=ctx.outbox)
+    kdir = os.path.join(ctx.receipts, key)
+    try:
+        st = os.lstat(kdir)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise ans(UNKNOWN, "unknown", 6, path=kdir, detail=exc.strerror)
+    if not stat.S_ISDIR(st.st_mode):
+        raise ans(UNKNOWN, "unknown", 6, path=kdir, detail="not a directory")
+    try:
+        names = fmt.scandir_names(kdir, "client")
+    except OSError as exc:
+        raise ans(UNKNOWN, "unknown", 6, path=kdir, detail=exc.strerror)
+    if len(names) > RECEIPTS_PER_KEY:
+        raise ans(UNKNOWN, "unknown", 6, path=kdir, detail="too many receipts")
+    want = ctx.identity(key)
+    out = []
+    for name in names:
+        path = os.path.join(kdir, name)
+        seq = fmt.seq_of_name(name)
+        if seq is None:
+            raise ans(UNKNOWN, "unknown", 6, path=path, detail="file name is not a seq")
+        try:
+            data = fmt.read_regular_nofollow(path, fmt.RECORD_BOUND, "client")
+            obj = fmt.parse_canonical(data)
+            shape = fmt.validate_receipt(obj, seq)
+        except (OSError, fmt.NotRegular, fmt.FormatError) as exc:
+            raise ans(UNKNOWN, "unknown", 6, path=path, detail=str(exc))
+        for f, v in want.items():
+            if obj[f] != v:
+                raise ans(UNKNOWN, "unknown", 6, path=path, detail="receipt names another " + f)
+        digest = fmt.receipt_digest(obj)
+        if digest in payloads:
+            env = ctx.envelope(key, digest[1], payloads[digest])
+            if fmt.sha256_hex(env) != obj["envelope_sha256"]:
+                raise ans(UNKNOWN, "unknown", 6, path=path, detail="envelope_sha256 is not the envelope's")
+        out.append((obj, shape, data, path))
+    delivered = {o["seq"]: o for o, s, _, _ in out if s == "delivered"}
+    for obj, shape, _, path in out:
+        if shape == "consumed":
+            d = delivered.get(obj["delivered_seq"])
+            if d is None or fmt.receipt_digest(d) != fmt.receipt_digest(obj) \
+                    or d["envelope_sha256"] != obj["envelope_sha256"]:
+                raise ans(UNKNOWN, "unknown", 6, path=path, detail="consumed names no matching delivered")
+    return out
+
+
+def answer_receipts(ctx, key, kind, psha, payloads):
+    """Rows 4-12; returns None when no receipt answers."""
+    receipts = read_receipts(ctx, key, payloads)
+    mine = (psha, kind)
+    for obj, shape, data, path in receipts:
+        if shape == "delivered" and fmt.receipt_digest(obj) == mine:
+            consumed = [o for o, s, _, _ in receipts if s == "consumed" and o["delivered_seq"] == obj["seq"]]
+            state, row = ("consumed", 7) if consumed else ("delivered", 8)
+            return ans(0, state, row, key=key, seq=obj["seq"], payload_sha256=psha,
+                       envelope_sha256=obj["envelope_sha256"]), (data, path)
+    for obj, shape, data, path in receipts:
+        if shape == "refused-key":
+            return ans(REFUSED, "refused", 9, key=key, code=obj["code"], seq=obj["seq"]), (data, path)
+    for obj, shape, data, path in receipts:
+        if shape == "delivered":
+            return ans(REFUSED, "key-conflict", 10, key=key, code="key-conflict",
+                       digests=[psha, obj["payload_sha256"]], kinds=[kind, obj["kind"]]), (data, path)
+    for obj, shape, data, path in receipts:
+        if shape == "refused-digest" and fmt.receipt_digest(obj) == mine:
+            return ans(REFUSED, "refused", 11, key=key, code=obj["code"], seq=obj["seq"]), (data, path)
+    for obj, shape, data, path in receipts:
+        if shape == "refused-digest":
+            return ans(REFUSED, "key-conflict", 12, key=key, code="key-conflict",
+                       digests=[psha, obj["payload_sha256"]]), None
+    return None
+
+
+# ---------------------------------------------------------------- rows 13-18
+
+def envelope_path(ctx, key):
+    return os.path.join(ctx.outbox, key + fmt.ENVELOPE_SUFFIX)
+
+
+def answer_envelope(ctx, key, kind, psha):
+    """Rows 13-15 on the outbox envelope; None when there is none."""
+    path = envelope_path(ctx, key)
+    try:
+        data = fmt.read_regular_nofollow(path, fmt.envelope_cap(ctx.max_bytes), "client")
+    except FileNotFoundError:
+        return None
+    except (OSError, fmt.NotRegular) as exc:
+        raise ans(UNKNOWN, "unknown", 15, key=key, path=path, detail=str(exc))
+    try:
+        env = fmt.parse_canonical(data)
+        theirs = (env["payload_sha256"], env["kind"])
+    except (fmt.FormatError, KeyError, TypeError) as exc:
+        raise ans(UNKNOWN, "unknown", 15, key=key, path=path, detail="envelope: %s" % exc)
+    if theirs == (psha, kind):
+        return ans(PENDING, "pending", 13, key=key, payload_sha256=psha)
+    return ans(REFUSED, "key-conflict", 14, key=key, code="key-conflict", digests=[psha, theirs[0]],
+               kinds=[kind, theirs[1]])
+
+
+def record_path(ctx, key):
+    return os.path.join(ctx.records, key + ".json")
+
+
+def answer_record_missing(ctx, key):
+    """Row 17: the producer recorded an owner receipt that is no longer there."""
+    p = record_path(ctx, key)
+    if os.path.lexists(p):
+        return ans(UNKNOWN, "unknown", 17, key=key, code="owner-record-missing", path=p)
+    return None
+
+
+def record(ctx, key, source):
+    """Submit step 6: keep the verified receipt bytes, exclusively; compare on exist."""
+    if source is None:
+        return None
+    data, _ = source
+    p = record_path(ctx, key)
+    for d, ident in ((ctx.tmp, "c-mkdir-parent"), (ctx.records, "c-mkdir-parent")):
+        fmt.mkdir_durable(d, 0o755, ident)
+    try:
+        fmt.create_exclusive(p, data, ctx.tmp, "c-record-dirsync", "c-temp-fsync")
+        fmt.seams().fault("submit:after-record")
+        return None
+    except FileExistsError:
+        pass
+    try:
+        have = fmt.read_regular_nofollow(p, fmt.RECORD_BOUND, "client")
+    except (OSError, fmt.NotRegular) as exc:
+        return ans(UNKNOWN, "unknown", 6, key=key, path=p, detail=str(exc))
+    if have != data:
+        return ans(UNKNOWN, "unknown", 6, key=key, path=p, detail="recorded receipt differs")
+    return None
+
+
+def full_answer(ctx, key, kind, psha, payloads):
+    """The whole table, rows 4-18 (rows 1-3 ran in open_context)."""
+    got = answer_receipts(ctx, key, kind, psha, payloads)
+    if got is not None:
+        result, source = got
+        if result.result["row"] <= 11:
+            bad = record(ctx, key, source)
+            if bad is not None:
+                return bad
+        return result
+    env = answer_envelope(ctx, key, kind, psha)
+    if env is not None:
+        return env
+    if ctx.retired:
+        return ans(UNKNOWN, "unknown", 16, key=key, code="binding-retired")
+    missing = answer_record_missing(ctx, key)
+    if missing is not None:
+        return missing
+    return ans(ABSENT, "absent", 18, key=key)
+
+
+# ---------------------------------------------------------------- commands
+
+def read_payload(path, cap):
+    try:
+        data = fmt.read_regular_nofollow(path, cap, "client")
+    except fmt.Oversize:
+        raise ans(USAGE, "usage", 0, path=path, detail="payload over max_bytes %d" % cap)
+    except (OSError, fmt.NotRegular) as exc:
+        raise ans(USAGE, "usage", 0, path=path, detail="payload: %s" % exc)
+    return data
+
+
+def check_key_kind(key, kind):
+    if not fmt.valid_name(key):
+        raise ans(USAGE, "usage", 0, detail="key must match " + fmt.NAME_RE.pattern)
+    if kind is not None and not fmt.valid_name(kind):
+        raise ans(USAGE, "usage", 0, detail="kind must match " + fmt.NAME_RE.pattern)
+
+
+def cmd_submit(args):
+    result = submit(args)
+    result.result.setdefault("created", False)
+    return result
+
+
+def submit(args):
+    check_key_kind(args.key, args.kind)
+    if not 0 <= args.wait_seconds <= WAIT_CAP:
+        raise ans(USAGE, "usage", 0, detail="--wait-seconds is 0 to %d" % WAIT_CAP)
+    fmt.seams().check(args.payload_file)
+    ctx = open_context(args.config)
+    payload = read_payload(args.payload_file, ctx.max_bytes)
+    psha = fmt.sha256_hex(payload)
+    payloads = {(psha, args.kind): payload}
+    fmt.reap_dead_temps(ctx.tmp)
+    got = answer_receipts(ctx, args.key, args.kind, psha, payloads)
+    if got is not None:
+        result, source = got
+        if result.result["row"] <= 11:
+            bad = record(ctx, args.key, source)
+            if bad is not None:
+                return bad
+        return result
+    missing = answer_record_missing(ctx, args.key)
+    if missing is not None:
+        return missing
+    if ctx.retired:
+        return ans(UNAVAILABLE, "unavailable", 16, key=args.key, code="binding-retired")
+    fmt.seams().fault("submit:after-check")
+    env = ctx.envelope(args.key, args.kind, payload)
+    fmt.mkdir_durable(ctx.tmp, 0o755, "c-mkdir-parent")
+    try:
+        fmt.create_exclusive(envelope_path(ctx, args.key), env, ctx.tmp, "c-envelope-dirsync",
+                             "c-temp-fsync", before_link=lambda: fmt.seams().fault("submit:before-link"))
+        created = True
+        fmt.seams().fault("submit:after-create")
+    except FileExistsError:
+        created = False
+    result = None
+    if not created:
+        result = answer_envelope(ctx, args.key, args.kind, psha)
+        if result is None:
+            result = ans(UNKNOWN, "unknown", 15, key=args.key, detail="envelope vanished after EEXIST")
+    else:
+        result = ans(PENDING, "pending", 13, key=args.key, payload_sha256=psha)
+    deadline = time.monotonic() + args.wait_seconds
+    while result.result["exit"] == PENDING and time.monotonic() < deadline:
+        time.sleep(1)
+        result = full_answer(ctx, args.key, args.kind, psha, payloads)
+    result.result["created"] = created
+    result.result["envelope_sha256"] = result.result.get("envelope_sha256") or fmt.sha256_hex(env)
+    return result
+
+
+def cmd_query(args):
+    check_key_kind(args.key, args.kind)
+    if (args.payload_file is None) == (args.payload_sha256 is None):
+        raise ans(USAGE, "usage", 0, detail="give exactly one of --payload-file and --payload-sha256")
+    if args.payload_file is not None:
+        fmt.seams().check(args.payload_file)
+    ctx = open_context(args.config)
+    payloads = {}
+    if args.payload_file is not None:
+        payload = read_payload(args.payload_file, ctx.max_bytes)
+        psha = fmt.sha256_hex(payload)
+        payloads[(psha, args.kind)] = payload
+    else:
+        if not fmt.valid_sha(args.payload_sha256):
+            raise ans(USAGE, "usage", 0, detail="--payload-sha256 must be 64 lowercase hex digits")
+        psha = args.payload_sha256
+    fmt.reap_dead_temps(ctx.tmp)
+    return full_answer(ctx, args.key, args.kind, psha, payloads)
+
+
+def outbox_envelopes(ctx):
+    try:
+        names = fmt.scandir_names(ctx.outbox, "client")
+    except OSError as exc:
+        raise ans(UNAVAILABLE, "unavailable", 5, path=ctx.outbox, detail=exc.strerror)
+    keys = []
+    for name in names:
+        if name.startswith(".") or not name.endswith(fmt.ENVELOPE_SUFFIX):
+            continue
+        key = name[:-len(fmt.ENVELOPE_SUFFIX)]
+        if fmt.valid_name(key):
+            keys.append(key)
+    return keys
+
+
+def read_own_envelope(ctx, key):
+    """(env object, bytes) of the outbox envelope for key, or raise Answered 70."""
+    path = envelope_path(ctx, key)
+    try:
+        data = fmt.read_regular_nofollow(path, fmt.envelope_cap(ctx.max_bytes), "client")
+        env = fmt.parse_canonical(data)
+        payload = fmt.decode_b64(env["payload_b64"])
+        return env, data, payload
+    except FileNotFoundError:
+        return None, None, None
+    except (OSError, fmt.NotRegular, fmt.FormatError, KeyError, TypeError) as exc:
+        raise ans(UNKNOWN, "unknown", 15, key=key, path=path, detail=str(exc))
+
+
+def cmd_pending(args):
+    ctx = open_context(args.config)
+    rows = []
+    for key in outbox_envelopes(ctx):
+        try:
+            env, _, payload = read_own_envelope(ctx, key)
+            if env is None:
+                continue
+            digest = (env["payload_sha256"], env["kind"])
+            got = full_answer(ctx, key, env["kind"], env["payload_sha256"], {digest: payload})
+        except Answered as a:
+            got = a
+        if got.result["state"] not in ("delivered", "consumed"):
+            rows.append(got.result)
+    return ans(0, "listed", 0, pending=rows)
+
+
+def verify_record(ctx, key, env, payload):
+    """Whether .receipts/K.json is a valid receipt that finalizes this envelope's digest."""
+    p = record_path(ctx, key)
+    try:
+        obj = fmt.parse_canonical(fmt.read_regular_nofollow(p, fmt.RECORD_BOUND, "client"))
+        shape = fmt.validate_receipt(obj)
+    except FileNotFoundError:
+        return False
+    except (OSError, fmt.NotRegular, fmt.FormatError):
+        return False
+    if any(obj[f] != v for f, v in ctx.identity(key).items()):
+        return False
+    if shape == "refused-key":
+        return True
+    if fmt.receipt_digest(obj) != (env["payload_sha256"], env["kind"]):
+        return False
+    return obj["envelope_sha256"] == fmt.sha256_hex(ctx.envelope(key, env["kind"], payload))
+
+
+def prune_one(ctx, key):
+    env, _, payload = read_own_envelope(ctx, key)
+    if env is None:
+        return ans(0, "pruned", 0, key=key, detail="no envelope")
+    if not verify_record(ctx, key, env, payload):
+        return ans(REFUSED, "refused", 0, key=key, code="not-recorded", path=record_path(ctx, key))
+    path = envelope_path(ctx, key)
+    fmt.unlink_durable(path, "c-envelope-dirsync")
+    fmt.seams().fault("prune:after-unlink")
+    return ans(0, "pruned", 0, key=key)
+
+
+def cmd_prune(args):
+    if (args.key is None) == (not args.all_recorded):
+        raise ans(USAGE, "usage", 0, detail="give exactly one of --key and --all-recorded")
+    if args.key is not None:
+        check_key_kind(args.key, None)
+    ctx = open_context(args.config)
+    fmt.reap_dead_temps(ctx.tmp)
+    if args.key is not None:
+        return prune_one(ctx, args.key)
+    pruned, kept = [], []
+    for key in outbox_envelopes(ctx):
+        try:
+            got = prune_one(ctx, key)
+        except Answered as a:
+            got = a
+        (pruned if got.result["exit"] == 0 else kept).append(key)
+    return ans(0, "pruned", 0, pruned=pruned, kept=kept)
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ans(USAGE, "usage", 0, detail=message)
+
+
+def build_parser():
+    p = Parser(prog="fm-owner-notice-client.py", add_help=True)
+    sub = p.add_subparsers(dest="cmd", parser_class=Parser)
+    s = sub.add_parser("submit")
+    s.add_argument("--config", required=True)
+    s.add_argument("--key", required=True)
+    s.add_argument("--kind", required=True)
+    s.add_argument("--payload-file", required=True)
+    s.add_argument("--wait-seconds", type=int, default=0)
+    q = sub.add_parser("query")
+    q.add_argument("--config", required=True)
+    q.add_argument("--key", required=True)
+    q.add_argument("--kind", required=True)
+    q.add_argument("--payload-file")
+    q.add_argument("--payload-sha256")
+    pe = sub.add_parser("pending")
+    pe.add_argument("--config", required=True)
+    pr = sub.add_parser("prune")
+    pr.add_argument("--config", required=True)
+    pr.add_argument("--key")
+    pr.add_argument("--all-recorded", action="store_true")
+    return p
+
+
+COMMANDS = {"submit": cmd_submit, "query": cmd_query, "pending": cmd_pending, "prune": cmd_prune}
+
+
+def main(argv):
+    try:
+        fmt.seams()
+        args = build_parser().parse_args(argv)
+        if args.cmd is None:
+            raise ans(USAGE, "usage", 0, detail="a command is required")
+        result = COMMANDS[args.cmd](args)
+    except fmt.SeamRefused as exc:
+        result = ans(USAGE, "usage", 0, detail=str(exc))
+    except Answered as a:
+        result = a
+    fmt.emit(result.result)
+    return result.result["exit"]
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
