@@ -2641,7 +2641,7 @@ open_decision_reminder_tick() {  # [now-epoch], for deterministic clock callers
   exclude=$(status_scan_parent_channel_exclude "$STATE")
   for f in "$STATE"/*.status; do
     [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
-    [ "$f" != "$exclude" ] || continue
+    :
     task=${f##*/}; task=${task%.status}
     open=$(status_open_decisions_incremental "$f" '' timed) || {
       OPEN_DECISION_ERROR="the timed open-decision fold of $f failed"
