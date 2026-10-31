@@ -561,7 +561,7 @@ grade() {
     if [ "$g" -gt 0 ]; then
       GRADE_REASONS="$GRADE_REASONS; WSL VM paging at most ${WIN_VM_PAGES_IN_PS}/s (vmmemWSL faults ${WIN_VM_FAULTS_PS}/s, Windows pages input ${WIN_PAGES_IN_PS}/s) averaged over ${WIN_RATE_SPAN_S}s ($(level_name "$g"))"
     elif [ "$(grade_signal "$WIN_PAGES_IN_PS" above "$T_win_pages_in_ps")" -gt 0 ]; then
-      g=1
+      g=$(grade_signal "$WIN_PAGES_IN_PS" above "$T_win_pages_in_ps")
       GRADE_REASONS="$GRADE_REASONS; Windows pages input ${WIN_PAGES_IN_PS}/s averaged over ${WIN_RATE_SPAN_S}s, WSL VM at most ${WIN_VM_PAGES_IN_PS}/s (warn: Windows-side paging only grades warn)"
     fi
   else
