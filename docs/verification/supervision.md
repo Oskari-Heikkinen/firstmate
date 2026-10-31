@@ -663,7 +663,7 @@ tests/fm-turnend-guard.test.sh
 
 ## Supervision host
 
-This evidence supports [supervision-host.md](../supervision-host.md)'s Claude engine, away-wake path, and failure direction; its no-file baseline remains the fork's explicit opt-in posture.
+This evidence supports [supervision-host.md](../supervision-host.md)'s Claude engine, away-wake path, and failure direction; its no-file baseline rows record a home without the host, which a Claude home now reaches through `config/supervision-host-off`.
 It was measured on 2026-09-23 on macOS 26.6.2 arm64 with Claude Code 2.1.281 as both primary and engine (model `sonnet`), Pi 0.87.0 workers on `openai-codex/gpt-5.6-sol`, and Herdr 0.9.0, in disposable lab homes on private tmux sockets and named Herdr lab sessions.
 
 The opt-in live guard refreshes the engine evidence:
