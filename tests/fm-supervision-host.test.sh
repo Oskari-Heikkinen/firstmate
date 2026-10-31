@@ -75,7 +75,8 @@ case "$mode" in held|captain-held) printf 'ready\n' > "$FM_HOME/stub-ready" ;; e
 # Like Claude, the reported cost is the conversation's running total.
 result() {
   printf '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":%s,' "$(awk -v n="$n" 'BEGIN { print n * 0.25 }')"
-  printf '"usage":{"input_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":10,"output_tokens":20},"session_id":"stub"}\n'
+  printf '"usage":{"input_tokens":5,"cache_read_input_tokens":%s,"cache_creation_input_tokens":10,"output_tokens":20},"session_id":"stub"}\n' \
+    "$(cat "$FM_HOME/stub-cache-read" 2>/dev/null || echo 100)"
 }
 if [ "$mode" = hang ]; then
   perl -e 'setpgrp(0, 0); exec "sleep", $ARGV[0]' "$FM_TEST_STUB_MAX_BLOCK_SECONDS" &
@@ -2537,6 +2538,62 @@ test_away_wake_is_handled_on_the_engine_and_never_reaches_main() {
   pass "host: an away wake is handled on the engine through the branch contract and never reaches main"
 }
 
+# The stub's three model calls read 5 + <stub-cache-read> + 10 prompt tokens,
+# so its context estimate is ceil((15 + cache_read) / 3): 39 at the default
+# 100, and 1005 at 3000, which reaches a ceiling of 1000.
+test_engine_conversation_resets_once_at_the_context_ceiling() {
+  local home first third pid
+  home=$(make_home away-ceiling away)
+  FM_SUPERVISION_HOST_CONTEXT_CEILING=1000 start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "ceiling: the host never started a watcher cycle: $(cat "$home/host.out")"
+  append_status "$home" 'step one'
+  wait_until 2000 handled_at_least "$home" 1 || fail "ceiling: the first wake was not handled: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
+  assert_grep 'context=39' "$home/state/.supervision-host-engine" "the engine record must carry the turn's context estimate"
+  first=$(sed -n '/^arg=--session-id$/{n;s/^arg=//p;}' "$home/engine-call.1")
+  [ -n "$first" ] || fail "ceiling: the first turn opened no conversation"
+
+  echo 3000 > "$home/stub-cache-read"
+  append_status "$home" 'step two'
+  wait_until 2000 handled_at_least "$home" 2 || fail "ceiling: the second wake was not handled"
+  assert_re "^arg=$first\$" "$home/engine-call.2" "a turn under the ceiling must resume the conversation"
+  assert_re '	handled	turn=[^	]*\.2	.* context=1005	' "$home/state/.supervision-host.log" \
+    "the handled line must carry the turn's context estimate"
+  assert_no_grep 'engine-reset' "$home/state/.supervision-host.log" "a conversation under the ceiling must not be reset"
+
+  echo 100 > "$home/stub-cache-read"
+  append_status "$home" 'step three'
+  wait_until 2000 handled_at_least "$home" 3 || fail "ceiling: the wake after the ceiling was not handled: $(cat "$home/host.out"; cat "$home/state/.supervision-host.log")"
+  assert_re '^arg=--session-id$' "$home/engine-call.3" "the turn after the ceiling must open a new conversation"
+  third=$(sed -n '/^arg=--session-id$/{n;s/^arg=//p;}' "$home/engine-call.3")
+  [ -n "$third" ] && [ "$third" != "$first" ] || fail "the turn after the ceiling reused the old conversation ($first)"
+  assert_re "	engine-reset	session=$first	turns=2	context-ceiling	context=1005 ceiling=1000\$" "$home/state/.supervision-host.log" \
+    "the reset must be logged with its reason"
+  [ "$(grep -c '"task":"demo"' "$home/state/branch-outcomes.jsonl")" -eq 3 ] || fail "the wake that started the new conversation lost its outcome"
+  assert_no_grep 'demo.status' "$home/state/.wake-queue" "the wake that started the new conversation was not acknowledged"
+
+  append_status "$home" 'step four'
+  wait_until 2000 handled_at_least "$home" 4 || fail "ceiling: the fourth wake was not handled"
+  assert_re "^arg=$third\$" "$home/engine-call.4" "the new conversation must be resumed under the ceiling"
+  [ "$(grep -c '	engine-reset	' "$home/state/.supervision-host.log")" -eq 1 ] \
+    || fail "one ceiling crossing must log exactly one reset: $(cat "$home/state/.supervision-host.log")"
+
+  # A record with no context estimate, as a host before the ceiling wrote it,
+  # is unknown, never under the ceiling.
+  sed '/^context=/d' "$home/state/.supervision-host-engine" > "$home/engine-record" \
+    && mv -f "$home/engine-record" "$home/state/.supervision-host-engine"
+  append_status "$home" 'step five'
+  wait_until 2000 handled_at_least "$home" 5 || fail "ceiling: the fifth wake was not handled"
+  assert_re '^arg=--session-id$' "$home/engine-call.5" "a record with no context estimate must open a new conversation"
+  assert_re "	engine-reset	session=$third	turns=2	context-unknown	" "$home/state/.supervision-host.log" \
+    "an unknown context must be logged as its own reset reason"
+  [ ! -s "$home/host.rc" ] || fail "a ceiling reset reached main: $(cat "$home/host.out")"
+
+  pid=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
+  kill -TERM "$pid"
+  wait_until 200 host_exited "$home" || fail "ceiling: the host did not stop on TERM"
+  pass "host: the engine conversation resets once when its context estimate reaches the ceiling, keeps the wake, and treats a missing estimate as a reset"
+}
+
 test_away_turn_without_a_report_hands_the_wake_to_main() {
   local home token
   home=$(make_home away-noreport away)
@@ -4510,6 +4567,7 @@ HOST_CASES=(
   test_first_cycle_status_streams_and_owner_options_reach_it
   test_silent_outcomes_are_not_relayed_when_the_captain_returns
   test_away_wake_is_handled_on_the_engine_and_never_reaches_main
+  test_engine_conversation_resets_once_at_the_context_ceiling
   test_engine_turn_is_bounded_and_its_descendants_reaped
   test_attended_wake_carries_the_dialog_mirror
   test_primary_without_a_verified_mirror_runs_away_only
