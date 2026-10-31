@@ -6,7 +6,11 @@
 # up the parent channel, downtime catches up once, two failed runs pause the
 # schedule with a blocked line until resume, a main-home schedule reports
 # through main's inbox, and the fleet board's Scheduled runs panel shows the
-# rows. Temp homes, a fake clock (--now) and a fixed time zone throughout.
+# rows. install-timer writes units carrying the installer's PATH into a
+# fixture unit directory beside a host drop-in it leaves alone, converges on a
+# rerun and refuses when tasks-axi is not on PATH; resume on a passed one-time
+# slot says no slot is left. Temp homes, a fake clock (--now), a fake systemctl
+# and a fixed time zone throughout.
 set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -16,12 +20,16 @@ TMP_ROOT=$(fm_test_tmproot fm-schedule)
 FAKEBIN=$(fm_fakebin "$TMP_ROOT")
 cat > "$FAKEBIN/systemctl" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FM_TEST_SYSTEMCTL_LOG:-/dev/null}"
 case "$*" in *show*) printf 'LoadState=not-found\n' ;; esac
 exit 0
 EOF
 chmod +x "$FAKEBIN/systemctl"
 export HOME="$TMP_ROOT/fakehome" XDG_CONFIG_HOME="$TMP_ROOT/fakehome/.config"
 export PATH="$FAKEBIN:$PATH" TZ=Europe/Berlin
+export FM_TEST_SYSTEMCTL_LOG="$TMP_ROOT/systemctl.log"
+FM_TEST_NO_AXI_PATH=$(fm_test_base_path_sans "$PATH" tasks-axi)
+export FM_TEST_NO_AXI_PATH
 mkdir -p "$HOME"
 unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE TASKS_AXI_FILE
 
@@ -41,6 +49,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -295,6 +304,79 @@ check(r.get("paused") is None and r["consecutive_failures"] == "0" and r["next_d
 check(any(ln.startswith("resolved") and "schedule-weekly-paused" in ln for ln in parent_lines()),
       "resume did not resolve the blocked line")
 ok("resume clears the pause, resolves the blocked line and schedules from now")
+
+# ---------------------------------------------------------------- resume on a passed one-time slot
+(mate / "config/schedules.d/once.conf").write_text(
+    "schema=fm-schedule/v1\nname=once\ncalendar=2026-10-20 05:00:00\nkind=scout\n"
+    "title=One-time check\nbrief=config/weekly-brief.md\napproval=operator 2026-10-15T16:01Z\n")
+(mate / "state/schedules/once.run").write_text(
+    "schema=%s\ncalendar=2026-10-20 05:00:00\nnext_due=0\nconsecutive_failures=2\n"
+    "paused=1\npaused_reason=filing failed\npaused_at=%d\n" % (rec(mate, "weekly")["schema"], NOW - 3600))
+p = sched("resume", "mate-a", "once", now=NOW)
+check(p.stdout.strip() == "resumed mate-a/once; next run none: its calendar has no slot after now",
+      "resume of a passed one-time slot said: " + p.stdout)
+told = [ln for ln in parent_lines() if ln.startswith("resolved") and "schedule-once-paused" in ln]
+check(len(told) == 1 and "next run none: its calendar has no slot after now" in told[0] and "1970" not in told[0],
+      "resume of a passed one-time slot resolved with: %r" % told)
+check(rec(mate, "once")["next_due"] == "0" and rec(mate, "once").get("paused") is None,
+      "resume of a passed one-time slot left: %r" % rec(mate, "once"))
+v = sched("validate", rc=None).stdout
+check("once.conf (next none: its calendar has no slot after now)" in v and "1970" not in v,
+      "validate on a passed one-time slot said: " + v)
+r = rows()["once"]
+check(r["display"]["Next run"] == "-" and r["state"] == "no further runs", "list on a passed one-time slot: %r" % r)
+ok("resume, validate and list on a passed one-time slot say no slot is left, never an epoch-0 date")
+(mate / "config/schedules.d/once.conf").unlink()
+
+# ---------------------------------------------------------------- install-timer
+units = Path(os.environ["XDG_CONFIG_HOME"]) / "systemd/user"
+dropin = units / "fm-schedule.service.d/path.conf"
+dropin.parent.mkdir(parents=True)
+DROPIN = "[Service]\nEnvironment=PATH=/host/drop-in/bin:/usr/bin:/bin\n"
+dropin.write_text(DROPIN)
+axi_dir = os.path.dirname(shutil.which("tasks-axi"))
+install_path = "/opt/my tools/bin:/x%%y:/q\"uote:%s" % os.environ["PATH"]
+check(axi_dir in install_path.split(":"), "fixture PATH lacks the tasks-axi directory")
+
+
+def install(path):
+    env = dict(os.environ, PATH=path)
+    return subprocess.run([str(root / "bin/fm-schedule.sh"), "install-timer", "--home", str(main)],
+                          text=True, capture_output=True, env=env, timeout=60)
+
+
+def unit_path_values(text):
+    return [ln for ln in text.splitlines() if ln.startswith(("Environment=PATH", 'Environment="PATH'))]
+
+
+want = 'Environment="PATH=%s"' % install_path.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+for attempt in (1, 2):
+    p = install(install_path)
+    check(p.returncode == 0, "install-timer run %d failed: %s%s" % (attempt, p.stdout, p.stderr))
+    service = (units / "fm-schedule.service").read_text()
+    check(unit_path_values(service) == [want],
+          "run %d: the service does not carry the installer's PATH once: %r" % (attempt, unit_path_values(service)))
+    check("ExecStart=/usr/bin/env bash %s/bin/fm-schedule.sh scan --home %s" % (root, main.resolve()) in service,
+          "run %d: the service does not scan the home: %s" % (attempt, service))
+    check("note: drop-in %s also applies" % dropin in p.stdout, "run %d: the drop-in was not named: %s" % (attempt, p.stdout))
+    check(dropin.read_text() == DROPIN and sorted(os.listdir(dropin.parent)) == ["path.conf"],
+          "run %d: install-timer changed the drop-in directory: %r" % (attempt, os.listdir(dropin.parent)))
+    check(sorted(os.listdir(units)) == ["fm-schedule.service", "fm-schedule.service.d", "fm-schedule.timer"],
+          "run %d: unexpected unit files: %r" % (attempt, os.listdir(units)))
+    if attempt == 1:
+        first = (service, (units / "fm-schedule.timer").read_text())
+check(first == (service, (units / "fm-schedule.timer").read_text()), "a rerun of install-timer did not converge")
+calls = Path(os.environ["FM_TEST_SYSTEMCTL_LOG"]).read_text().splitlines()
+check(calls.count("--user daemon-reload") == 2 and calls.count("--user enable --now fm-schedule.timer") == 2,
+      "install-timer did not reload and enable through systemctl: %r" % calls)
+ok("install-timer writes the installer's PATH (tasks-axi's directory included) into the service, "
+   "converges on a rerun and leaves a host drop-in alone")
+
+p = install(os.environ["FM_TEST_NO_AXI_PATH"])
+check(p.returncode == 2 and "tasks-axi is not on PATH" in p.stderr, "install-timer without tasks-axi: %d %s" % (p.returncode, p.stderr))
+check((units / "fm-schedule.service").read_text() == first[0] and sorted(os.listdir(units)) ==
+      ["fm-schedule.service", "fm-schedule.service.d", "fm-schedule.timer"], "a refused install-timer changed the units")
+ok("install-timer refuses, writing nothing, when tasks-axi is not on PATH")
 
 # ---------------------------------------------------------------- a main-home schedule
 for f in ("bad-kind", "bad-cal", "extra-key"):

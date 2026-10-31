@@ -28,6 +28,7 @@ A schedule exists only on the captain's approval of that schedule: what it files
 Record who approved it and when in the file's `approval` key; never add, widen, or re-time a schedule from your own judgment or another home's request.
 Pausing, resuming after a fix, or removing a schedule is likewise the captain's decision, relayed through the main firstmate.
 The main home installs the one timer (`bin/fm-schedule.sh install-timer`) once; a second mate never installs or removes it.
+Run it from a session shell, whose `PATH` the timer's scan inherits, and run it again after that `PATH` changes rather than adding a `PATH` drop-in under `fm-schedule.service.d/`.
 
 A scheduled run is captain-routed work, not self-started work.
 A home that receives one dispatches it like any other approved task in its backlog, within that home's charter.

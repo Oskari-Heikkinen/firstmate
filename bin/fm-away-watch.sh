@@ -95,26 +95,16 @@ UNIT="fm-away-watch-$(printf '%s' "$home" | cksum | cut -d' ' -f1)"
 
 unit_dir() { printf '%s/systemd/user\n' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 
-# systemd unit lines get these paths verbatim, so only plain path characters pass.
-safe_path() { [[ "$1" =~ ^/[A-Za-z0-9._/@+-]+$ ]]; }
-
-# unit_env NAME VALUE: one quoted Environment= line, escaped for a unit file.
-unit_env() {
-  local value=$2
-  case "$value" in *$'\n'*) die "$1 holds a newline a unit file cannot carry" ;; esac
-  value=${value//\\/\\\\}
-  value=${value//\"/\\\"}
-  value=${value//%/%%}
-  printf 'Environment="%s=%s"\n' "$1" "$value"
-}
+# shellcheck source=bin/fm-unit-file-lib.sh
+. "$SCRIPT_DIR/fm-unit-file-lib.sh"
 
 install_timer() {
   local dir env_lines
-  safe_path "$CODE_ROOT" || die "code root has characters a unit file cannot carry: $CODE_ROOT"
-  safe_path "$home" || die "home has characters a unit file cannot carry: $home"
-  env_lines=$(unit_env PATH "$PATH") || exit 2
+  fm_unit_safe_path "$CODE_ROOT" || die "code root has characters a unit file cannot carry: $CODE_ROOT"
+  fm_unit_safe_path "$home" || die "home has characters a unit file cannot carry: $home"
+  env_lines=$(fm_unit_env PATH "$PATH") || exit 2
   if [ -n "${HERDR_SOCKET_PATH:-}" ]; then
-    env_lines+=$'\n'$(unit_env HERDR_SOCKET_PATH "$HERDR_SOCKET_PATH") || exit 2
+    env_lines+=$'\n'$(fm_unit_env HERDR_SOCKET_PATH "$HERDR_SOCKET_PATH") || exit 2
   fi
   dir=$(unit_dir)
   mkdir -p "$dir" || die "cannot create $dir"
