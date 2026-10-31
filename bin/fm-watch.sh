@@ -2649,7 +2649,6 @@ open_decision_reminder_tick() {  # [now-epoch], for deterministic clock callers
     }
     [ -n "$open" ] || continue
     while IFS=$'\t' read -r key verb opened note; do
-      case "$opened" in ''|*[!0-9]*) continue ;; esac
       last=0; delay=$threshold
       while IFS=$'\t' read -r old_task old_key old_opened old_last old_delay; do
         [ "$old_task" = "$task" ] && [ "$old_key" = "$key" ] && [ "$old_opened" = "$opened" ] || continue
