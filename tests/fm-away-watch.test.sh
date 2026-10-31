@@ -278,13 +278,29 @@ SH
   assert_grep 'OnCalendar=*:0/5' "$units/$unit.timer" "the timer does not run every 5 minutes"
   assert_grep "--user enable --now $unit.timer" "$dir/systemctl.log" "install-timer did not enable the timer"
   assert_grep "--user enable --now $other_unit.timer" "$dir/systemctl.log" "install-timer did not enable the second timer"
+  local before name rc nl=$'\n'
+  before=$(ls "$units"; cat "$units/$unit.service" "$units/$unit.timer")
+  for name in PATH HERDR_SOCKET_PATH; do
+    rc=0
+    if [ "$name" = PATH ]; then
+      out=$(PATH="/nl$nl/x:$fakebin:$PATH" XDG_CONFIG_HOME="$dir/xdg" "$WATCH" install-timer --home "$home" 2>&1) || rc=$?
+    else
+      out=$(PATH="$fakebin:$PATH" HERDR_SOCKET_PATH="/run/herdr.sock$nl/nl" XDG_CONFIG_HOME="$dir/xdg" \
+        "$WATCH" install-timer --home "$home" 2>&1) || rc=$?
+    fi
+    assert_equals 2 "$rc" "install-timer accepted a $name holding a newline"
+    assert_contains "$out" "fm-away-watch: $name holds a newline a unit file cannot carry" \
+      "install-timer refused a $name newline without its diagnostic"
+    assert_equals "$before" "$(ls "$units"; cat "$units/$unit.service" "$units/$unit.timer")" \
+      "a refused $name newline changed the units"
+  done
   out=$(PATH="$fakebin:$PATH" XDG_CONFIG_HOME="$dir/xdg" "$WATCH" uninstall-timer --home "$home" 2>&1) \
     || fail "uninstall-timer failed: $out"
   assert_absent "$units/$unit.service" "uninstall-timer left the service"
   assert_absent "$units/$unit.timer" "uninstall-timer left the timer"
   assert_grep "--user disable --now $unit.timer" "$dir/systemctl.log" "uninstall-timer did not disable the timer"
   assert_present "$units/$other_unit.timer" "uninstall-timer removed another home's timer"
-  pass "install-timer writes and enables a 5-minute timer per home carrying PATH, and uninstall-timer removes only that home's"
+  pass "install-timer writes and enables a 5-minute timer per home carrying PATH, refuses a newline it cannot carry, and uninstall-timer removes only that home's"
 }
 
 test_silent_when_attended_or_quiet

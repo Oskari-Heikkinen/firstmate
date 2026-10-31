@@ -113,7 +113,7 @@ install_timer() {
     command -v "$tool" >/dev/null 2>&1 \
       || die "$tool is not on PATH, so the timer's scan could not run it; install it or fix PATH, then rerun install-timer"
   done
-  env_line=$(fm_unit_env PATH "$PATH") || exit 2
+  env_line=$(fm_unit_env PATH "$PATH") || die "PATH holds a newline a unit file cannot carry"
   dir=$(unit_dir)
   mkdir -p "$dir"
   cat > "$dir/$UNIT.service.tmp" <<EOF
