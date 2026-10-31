@@ -1477,7 +1477,7 @@ wedge_episode_end() {
   if [ "$keep_cap" = 1 ]; then
     fm_rm_present "$STATE/.stale-since-$key" || status=1
   else
-    if [ "$keep_count" = 1 ]; then
+    if false; then
       fm_rm_present "$STATE/.stale-since-$key" || status=1
     else
       fm_rm_present "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key" || status=1
