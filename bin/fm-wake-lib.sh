@@ -2387,7 +2387,10 @@ fm_failure_episode_reset() {
 #     from the ledger entry alone - never substituted from any lock - so a
 #     reused pid can never authenticate someone else's stale entry. Line 3 of an
 #     arming entry that recorded owner_session_id is the pid-identity of the
-#     session-lock holder the claim was taken under, read the same way.
+#     session-lock holder the claim was taken under, read the same way. The
+#     claimant publishes its arming entry first and adds owner_session_id and
+#     line 3 just after (_fm_autoarm_claim_pin_session), so until then, or
+#     when the id cannot be proven, descent alone keeps the claim open.
 #   - A claim is OPEN (fm_autoarm_claim_open) while its outcome is "arming",
 #     its owner pid is alive, its recorded identity successfully recomputes
 #     and matches that pid, its owner is still REACHABLE by its session -
@@ -2624,7 +2627,7 @@ fm_autoarm_midturn_healthy() {  # <state-dir> [grace]
 # 1 when the micro-mutex is contended, the mandatory identity cannot be
 # computed, or the write failed.
 fm_autoarm_claim_next() {  # <state-dir> [grace]
-  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock epoch pid gen identity session_id lock_pid lock_identity tmp
+  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock epoch pid gen identity tmp
   lock="$state/.claude-autoarm.lock"
   epoch="$state/.claude-autoarm-epoch"
   FM_AUTOARM_MY_GEN=
@@ -2634,19 +2637,6 @@ fm_autoarm_claim_next() {  # <state-dir> [grace]
   pid=${BASHPID:-$$}
   identity=$(fm_pid_identity "$pid" 2>/dev/null) || return 1
   [ -n "$identity" ] || return 1
-  # The session signal fm_autoarm_claim_open accepts besides descent: this
-  # hook's trusted session id, pinned to the lock holder's identity as of now.
-  # An id that could split the ledger's space-separated fields, or a holder
-  # whose identity cannot be read, records neither, leaving descent alone.
-  _fm_wake_require_session_lock
-  session_id=$(fm_session_lock_trusted_session_id 2>/dev/null || true)
-  case "$session_id" in
-    *[![:alnum:]_.-]*) session_id= ;;
-  esac
-  fm_file_text_to lock_pid "$state/.lock" || lock_pid=
-  lock_pid=${lock_pid%%$'\n'*}
-  fm_pid_identity_to lock_identity "$lock_pid" 2>/dev/null || lock_identity=
-  [ -n "$lock_identity" ] || session_id=
   fm_lock_try_acquire "$lock" || return 1
   if fm_autoarm_claim_open "$state" "$grace"; then
     fm_lock_release "$lock"
@@ -2658,13 +2648,9 @@ fm_autoarm_claim_next() {  # <state-dir> [grace]
   esac
   gen=$((gen + 1))
   tmp="$epoch.tmp.$pid"
-  if ! {
-      printf 'epoch=%s owner_pid=%s outcome=arming updated_at=%s' \
-        "$gen" "$pid" "$(date +%s)"
-      [ -z "$session_id" ] || printf ' owner_session_id=%s' "$session_id"
-      printf '\n%s\n' "$identity"
-      [ -z "$session_id" ] || printf '%s\n' "$lock_identity"
-    } > "$tmp" 2>/dev/null || ! mv -f "$tmp" "$epoch" 2>/dev/null; then
+  if ! printf 'epoch=%s owner_pid=%s outcome=arming updated_at=%s\n%s\n' \
+      "$gen" "$pid" "$(date +%s)" "$identity" > "$tmp" 2>/dev/null \
+    || ! mv -f "$tmp" "$epoch" 2>/dev/null; then
     rm -f "$tmp" 2>/dev/null || true
     fm_lock_release "$lock"
     return 1
@@ -2672,6 +2658,47 @@ fm_autoarm_claim_next() {  # <state-dir> [grace]
   fm_lock_release "$lock"
   # shellcheck disable=SC2034 # Read by callers after the claim succeeds.
   FM_AUTOARM_MY_GEN=$gen
+  _fm_autoarm_claim_pin_session "$state" "$gen" "$pid" "$identity"
+  return 0
+}
+
+# Add the session signal fm_autoarm_claim_open accepts besides descent to this
+# process's just-published arming claim: the hook's trusted session id, pinned
+# to the lock holder's identity as of now. It runs after the publish, because
+# proving the id walks the harness ancestry with ps, and the synchronous guard
+# allows only FM_CLAUDE_AUTOARM_SYNC_WAIT_MS for the claim to appear; until it
+# lands, descent alone keeps the claim open. An id that could split the
+# ledger's space-separated fields, a holder whose identity cannot be read, a
+# busy ledger mutex, or a claim no longer this process's open generation
+# records nothing.
+_fm_autoarm_claim_pin_session() {  # <state-dir> <gen> <pid> <identity>
+  local state=$1 gen=$2 pid=$3 identity=$4 lock epoch session_id lock_pid lock_identity tmp i=0
+  lock="$state/.claude-autoarm.lock"
+  epoch="$state/.claude-autoarm-epoch"
+  _fm_wake_require_session_lock
+  session_id=$(fm_session_lock_trusted_session_id 2>/dev/null || true)
+  case "$session_id" in
+    ''|*[![:alnum:]_.-]*) return 0 ;;
+  esac
+  fm_file_text_to lock_pid "$state/.lock" || return 0
+  lock_pid=${lock_pid%%$'\n'*}
+  fm_pid_identity_to lock_identity "$lock_pid" 2>/dev/null || return 0
+  [ -n "$lock_identity" ] || return 0
+  while ! fm_lock_try_acquire "$lock"; do
+    [ "$i" -lt 20 ] || return 0
+    sleep 0.02
+    i=$((i + 1))
+  done
+  if fm_autoarm_ledger_read "$state" && [ "$FM_AUTOARM_GEN" = "$gen" ] \
+    && [ "$FM_AUTOARM_OWNER" = "$pid" ] && [ "$FM_AUTOARM_OUTCOME" = arming ]; then
+    tmp="$epoch.tmp.$pid"
+    if ! printf 'epoch=%s owner_pid=%s outcome=arming updated_at=%s owner_session_id=%s\n%s\n%s\n' \
+        "$gen" "$pid" "$(date +%s)" "$session_id" "$identity" "$lock_identity" > "$tmp" 2>/dev/null \
+      || ! mv -f "$tmp" "$epoch" 2>/dev/null; then
+      rm -f "$tmp" 2>/dev/null || true
+    fi
+  fi
+  fm_lock_release "$lock"
   return 0
 }
 
