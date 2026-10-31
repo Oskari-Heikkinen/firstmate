@@ -431,7 +431,7 @@ INBOX_DIR=$(shell_quote "$STATE/$ID.inbox")
 # reference owns the wait tags and handoff format, and fm-park.sh's header owns
 # the conditions and resume semantics.
 PARK_RULE="   Before a wait longer than a few minutes, read \`$(fm_worker_guide_ref waits-and-parking)\` for the tags that keep monitoring quiet while a declared wait holds (a long command declares its process), and for parking:
-   when the wait is on an external result that will take a while, park instead of idling with \`FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-park.sh") $ID --handoff <file>\`."
+   a wait on an external result you expect to clear within the live-wait threshold (60 minutes by default) is waited live, as that reference says; only a longer one parks, with \`FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-park.sh") $ID --handoff <file> --expect <UTC|+seconds>\`, and a park firstmate or the memory guard asks for always parks, with \`--requested\`."
 
 # The receive-and-ack half of the steering-inbox contract, included in every
 # scaffold kind. The record format, doorbell line, and re-ring ladder are

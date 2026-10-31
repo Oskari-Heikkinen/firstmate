@@ -75,7 +75,7 @@ BUILTIN_REASON = ("Firstmate built-in, installed by its own arm or install comma
                   "grandfathered until firstmate's own handoffs are registered")
 BUILTIN = [f"fm-check:{cid}" for cid in (
     "accounts", "claude-update", "contributions", "disk-room", "handoff-watch", "loop-alerts", "mail",
-    "mem-guard", "startup-growth", "tool-updates")] + [f"systemd-timer:{unit}" for unit in (
+    "mem-guard", "park-churn", "startup-growth", "tool-updates")] + [f"systemd-timer:{unit}" for unit in (
         "claude-update.timer", "fm-away-watch-*", "fm-board.timer", "fm-schedule.timer", "fm-storage.timer",
         "lattice-data-gate-report.timer")]
 FORMAT = "handoff-actors/v1"

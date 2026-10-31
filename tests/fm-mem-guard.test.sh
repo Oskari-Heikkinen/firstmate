@@ -341,6 +341,7 @@ test_park_level_parks_or_steers_idle_workers() {
   assert_equals "w-paused --handoff $C/home/data/w-paused/handoff.md" "$(cat "$C/park-calls")" "only the idle worker with a valid handoff is parked, with no guessed condition"
   assert_equals "$C/home w-invalid"$'\n'"$C/home w-nohandoff" "$(sort "$C/send-calls")" "idle workers without a valid handoff are steered once each through this home"
   assert_contains "$(cat "$C/send-text")" "park yourself with $C/home/bin/fm-park.sh w-nohandoff --handoff $C/home/data/w-nohandoff/handoff.md" "the steer names the handoff and the park command"
+  assert_contains "$(cat "$C/send-text")" "handoff.md --requested so your session is released" "the steer marks the park as requested, so it parks whatever the wait's expected time"
   assert_grep "park: $C/home w-paused parked" "$C/guard/events.log" "the park is logged"
   assert_grep "park: $C/home w-invalid steered to write its handoff and park itself" "$C/guard/events.log" "the steer is logged"
   FM_MEM_GUARD_NOW=1001100 guard tick >/dev/null

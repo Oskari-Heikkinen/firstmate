@@ -589,7 +589,7 @@ park_idle() {
         event "park: $FM_HOME $id not parked (exit $rc): $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
       fi
     else
-      out=$(FM_HOME="$FM_HOME" bounded "$SCRIPT_DIR/fm-send.sh" "$id" "memory guard: the machine is at $level and your session is idle on a declared wait. Write $handoff (Goal, Done, Waiting for, Next steps), then park yourself with $SCRIPT_DIR/fm-park.sh $id --handoff $handoff so your session is released until the result arrives." 2>&1)
+      out=$(FM_HOME="$FM_HOME" bounded "$SCRIPT_DIR/fm-send.sh" "$id" "memory guard: the machine is at $level and your session is idle on a declared wait. Write $handoff (Goal, Done, Waiting for, Next steps), stop any live waiter you started, then park yourself with $SCRIPT_DIR/fm-park.sh $id --handoff $handoff --requested so your session is released until the result arrives; this request parks whatever the wait's expected time." 2>&1)
       rc=$?
       if [ "$rc" = 0 ]; then
         steered=$((steered + 1))
