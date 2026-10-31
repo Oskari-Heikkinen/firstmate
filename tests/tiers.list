@@ -74,6 +74,7 @@ gate tests/fm-watch-arm.test.sh
 gate tests/fm-watch-checkpoint.test.sh
 gate tests/fm-watch-recovery-loop.test.sh
 gate tests/fm-watch-triage.test.sh
+gate tests/fm-watch-wedge-cap-unconfigured-parity.test.sh
 gate tests/fm-watcher-lock.test.sh
 
 # full: the rest of the landing suite, on main, ci/full/**, and changed areas on ci/**.
@@ -217,6 +218,7 @@ full tests/fm-wake-triage-replay.test.sh
 full tests/fm-watch-dated-rules.test.sh
 full tests/fm-watch-quiet-waits.test.sh
 full tests/fm-watch-reminder-group.test.sh
+full tests/fm-watch-wedge-cap.test.sh
 full tests/fm-worker-account.test.sh
 full tests/fm-wsl-reclaim.test.sh
 
@@ -299,6 +301,7 @@ live tests/fm-grok-stop-live-e2e.test.sh
 live tests/fm-harness-liveness-drift-live-e2e.test.sh
 live tests/fm-herdr-pi-stale-registration-live-e2e.test.sh
 live tests/fm-herdr-submit-confirm-live-e2e.test.sh
+live tests/fm-watch-wedge-cap-live.test.sh
 live tests/fm-herdr-version-floor-live-e2e.test.sh
 live tests/fm-host-mirror-live-e2e.test.sh
 live tests/fm-kimi-trust-prompt-live-e2e.test.sh
