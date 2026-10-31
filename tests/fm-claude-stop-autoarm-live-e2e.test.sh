@@ -208,18 +208,29 @@ fi
 # Live-owner negative control: a separate supported-harness process owns a
 # second isolated home while another Stop hook fires from the same primary
 # project. The competing hook must not replace the session lock, arm, write an
-# epoch, or rewake.
+# epoch, or rewake. The owner lives until the hook has returned (a 60 s cap is
+# only a hang guard): an owner that exits first leaves a stale lock, which the
+# hook rightly recovers when this test runs under a real harness ancestry.
 FAKE_CLAUDE="$LAB/claude"
 ln -s /bin/bash "$FAKE_CLAUDE"
 mkdir -p "$LIVE_OWNER_HOME/state" "$LIVE_OWNER_HOME/config"
 printf 'project=fixture\n' > "$LIVE_OWNER_HOME/state/task.meta"
-"$FAKE_CLAUDE" -c 'sleep 3; :' &
+# shellcheck disable=SC2016 # Expanded by the owner shell, not here.
+LIVE_OWNER_RELEASE="$LAB/live-owner-release" "$FAKE_CLAUDE" -c '
+  for _ in $(seq 1 600); do [ -e "$LIVE_OWNER_RELEASE" ] && break; sleep 0.1; done' &
 LIVE_OWNER_PID=$!
 printf '%s\n' "$LIVE_OWNER_PID" > "$LIVE_OWNER_HOME/state/.lock"
 LIVE_OWNER_RC=0
 printf '%s\n' '{"session_id":"live-owner-control"}' \
   | FM_HOME="$LIVE_OWNER_HOME" FM_ROOT_OVERRIDE="$PROJECT" "$FAKE_CLAUDE" -c '"$FM_ROOT_OVERRIDE/bin/fm-claude-stop-autoarm.sh"' \
       >"$LAB/live-owner.out" 2>"$LAB/live-owner.err" || LIVE_OWNER_RC=$?
+LIVE_OWNER_ALIVE=no
+kill -0 "$LIVE_OWNER_PID" 2>/dev/null && LIVE_OWNER_ALIVE=yes
+: > "$LAB/live-owner-release"
+printf 'evidence live-owner: rc=%s owner=%s alive-after-hook=%s lock=%s\n' \
+  "$LIVE_OWNER_RC" "$LIVE_OWNER_PID" "$LIVE_OWNER_ALIVE" "$(cat "$LIVE_OWNER_HOME/state/.lock" 2>/dev/null)"
+cat "$LAB/live-owner.out" "$LAB/live-owner.err" 2>/dev/null | cut -c1-240 | sed 's/^/evidence live-owner output: /'
+[ "$LIVE_OWNER_ALIVE" = yes ] || fail "the live-owner control's owner exited before its hook returned, so the control proved nothing"
 [ "$LIVE_OWNER_RC" -eq 0 ] || fail "competing Stop hook returned $LIVE_OWNER_RC while another live session owned the home"
 [ "$(cat "$LIVE_OWNER_HOME/state/.lock")" = "$LIVE_OWNER_PID" ] || fail "competing Stop hook replaced the live session owner"
 [ ! -e "$LIVE_OWNER_HOME/state/arm-ran" ] || fail "competing Stop hook armed while another live session owned the home"
