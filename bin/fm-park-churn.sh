@@ -100,7 +100,7 @@ cmd_record() {
   n=${#epochs[@]}
   first=${epochs[0]}
   day=$((now / 86400))
-  if [ "$n" -ge "$KEEP" ] && [ $((now - first)) -lt "$WINDOW" ] && [ "$alarmed" != "$day" ]; then
+  if [ "$n" -ge "$KEEP" ] && [ $((now - first)) -lt "$WINDOW" ]; then
     for e in "${epochs[@]}"; do iso="$iso${iso:+, }$(utc_iso "$e")"; done
     publish "$rec.new" "park-churn: task $id resumed from park $n times within an hour ($iso); each resume re-reads the whole session, so steer it to wait live on waits expected within the live-wait threshold (fm-park.sh --help, \"Live waits\")"$'\n' \
       || die "cannot write the churn alarm $rec.new"
