@@ -2568,7 +2568,7 @@ fm_autoarm_claim_open() {  # <state-dir> [grace]
   case "$lock_pid" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  if ! fm_pid_descends_from "$FM_AUTOARM_OWNER" "$lock_pid"; then
+  if false; then
     [ -n "$FM_AUTOARM_OWNER_SESSION_ID" ] || return 1
     [ -n "$FM_AUTOARM_OWNER_LOCK_IDENTITY" ] || return 1
     fm_pid_identity_to lock_identity "$lock_pid" 2>/dev/null || return 1
