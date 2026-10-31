@@ -53,4 +53,4 @@ A relaunch reuses the recorded posture, so a ship already spawned with `on` keep
 
 Append the operator's new words to the brief's `## Captain's intent`, without a label or address, then relay them to the worker with `bin/fm-send.sh`.
 The brief is updated as well as the worker because a steer is lost on a relaunch and the brief is what a relaunched worker reads.
-If the worker is parked, the relay also needs a pickup; `secondmate-coordination` owns that and the send-once rule.
+If the worker is parked on its inbox, the relay itself picks it up; `secondmate-coordination` owns that and the send-once rule.

@@ -9,6 +9,7 @@
 #   fm-park.sh release <task-id> <park-token>  bounded registered copy-return action
 #   fm-park.sh release-ready <task-id> <park-token>  cheap release condition
 #   fm-park.sh pickup <task-id>        explicit authority for an inbox-only wait
+#   fm-park.sh request-pickup <task-id>  pickup request from a sender outside the lease
 #   fm-park.sh poll <task-id> <park-token>  incarnation-bound listener condition
 #
 # config/park-release=on enables a per-home canary; absent/off retains copies.
@@ -123,8 +124,8 @@
 # evaluates file:, receipt: and inbox:, shared with declared waits:
 #   file:<absolute-path>          true once the path exists (a fetched run, a results file)
 #   pr-merged:<github-pr-url>     true once the PR is merged; closed unmerged is an error
-#   inbox:<task-id>              true only after explicit `pickup <task-id>`;
-#                                 ordinary text/reminders never authorize pickup
+#   inbox:<task-id>              true only after `pickup <task-id>` (Inbox pickup
+#                                 below); text and reminders never authorize it
 #   cmd:<executable> [args...]    run directly, arguments split on whitespace;
 #                                 exit 0 true, 1 not yet, anything else an error;
 #                                 an executable path must be absolute
@@ -149,6 +150,27 @@
 # Written without backticks, any condition but cmd: ends at the first
 # whitespace, and trailing punctuation (.,;:)) is not part of it.
 #
+# Inbox pickup. A durable bin/fm-send.sh delivery to a task parked on its own
+# inbox runs `pickup` itself unless sent --no-resume (fm-send's header owns
+# that delivery rule); `pickup` is also the supervisor's explicit command. Both
+# record park_pickup under the supervisor-lease guard, and `pickup` refuses a
+# task worker (FM_TASK_ID). A sender that cannot take that path - a task
+# worker, or a sender whose lease guard refuses - runs `request-pickup` after
+# its durable delivery instead. It needs no lease and grants nothing by
+# itself: it writes <state>/<id>.inbox/.pickup-requested holding the current
+# park_token, and exits 0 recorded, 3 when the task is not
+# parked on inbox:<id> (nothing to pick up), 1 when it cannot record or the
+# inbox holds no unhandled NNN.msg record. The listener's own poll turns a
+# request whose token is still current into the same lease-guarded pickup, so
+# a stale request never resumes a later park, and only while an unhandled
+# record is waiting, so the delivery itself stays the event.
+# The fork-free observation hint reads the request file, so the listener sees
+# it on its next tick: either path resumes the task within interval x stable
+# (about two minutes). A lease refusal leaves the request for the next full
+# poll; a request that is not a readable, nonempty regular file, or a failed
+# pickup record, is a condition error. Each new park removes an earlier request
+# before recording its own token.
+#
 # Outcomes that need the supervisor come from the watch itself: the deadline
 # passing without the condition (never-true), repeated condition errors
 # (condition-error), and a failed relaunch (action-failed) each wake firstmate
@@ -161,7 +183,7 @@
 #   park_when=<condition>
 #   park_deadline=<UTC ISO time>
 #   park_token=<token>         binds the listener to one park incarnation
-#   park_pickup=<park-token>   explicit supervisor pickup of an inbox-only wait
+#   park_pickup=<park-token>   lease-guarded pickup of an inbox-only wait
 #   park_exit_confirmed=<park-token>  verified stop receipt for release readiness
 #   park_release_source=<when-source-id>  separate bounded copy-release action
 #   park_release_attempt=<park-token>  claimed one attempt for this incarnation
@@ -486,7 +508,7 @@ cmd_check() {
 results_pointer() {  # <condition>
   local cond=$1 repo
   case "$cond" in
-    inbox:*) printf 'the supervisor explicitly authorized pickup; read ordinary inbox messages in sequence' ;;
+    inbox:*) printf 'a delivery or the supervisor picked up this inbox park; read the inbox messages in sequence' ;;
     file:*|receipt:*) printf 'the results are at %s' "${cond#*:}" ;;
     merge-result:*) printf 'the merge queue has a final result for head %s; read it with %s result %s' \
       "${cond#merge-result:}" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" "${cond#merge-result:}" ;;
@@ -639,6 +661,8 @@ cmd_park() {
     fi
   fi
 
+  # A pickup request belongs to the park it named; this park records its own.
+  rm -f -- "$STATE/$ID.inbox/.pickup-requested" || die "cannot remove an earlier inbox pickup request"
   # Re-park replaces the watch rather than adding one.
   retire_release_source || die "cannot retire the earlier copy-release source"
   ack_own_fired
@@ -1057,8 +1081,55 @@ cmd_release() (
   printf 'suspended %s: saved branch and verified bundle; no copy reserved\n' "$ID"
 )
 
+# inbox_has_unhandled <inbox-dir>: 0 when an unhandled NNN.msg record waits
+# there (bin/fm-task-inbox-lib.sh layout), read in the shell without a fork.
+inbox_has_unhandled() {
+  local m
+  for m in "$1"/[0-9]*.msg; do
+    [ -f "$m" ] && [ ! -L "$m" ] && return 0
+  done
+  return 1
+}
+
+# poll_pickup_request: turn a pickup request for this park incarnation into
+# the lease-guarded pickup (header "Inbox pickup"). A request for an earlier
+# park, or with no unhandled record to read, is left alone, because removing it
+# here could race a fresh request; the next park removes it. Exits 1 while the
+# lease refuses, so the request waits
+# for a later full poll, and 2 when the request cannot be read or the pickup
+# cannot be recorded.
+poll_pickup_request() {
+  local req="$STATE/$ID.inbox/.pickup-requested" line='' rc=0
+  [ -e "$req" ] || [ -L "$req" ] || return 0
+  if [ ! -f "$req" ] || [ -L "$req" ]; then
+    printf 'cannot evaluate inbox:%s: its pickup request %s is not a regular file\n' "$ID" "$req"
+    exit 2
+  fi
+  { IFS= read -r line < "$req"; } 2>/dev/null
+  if [ -z "$line" ]; then
+    printf 'cannot evaluate inbox:%s: its pickup request %s is empty or unreadable\n' "$ID" "$req"
+    exit 2
+  fi
+  [ "$line" = "$meta_park_token" ] || return 0
+  inbox_has_unhandled "$STATE/$ID.inbox" || return 0
+  if [ "$meta_park_pickup" != "$meta_park_token" ]; then
+    # shellcheck source=/dev/null
+    . "$SCRIPT_DIR/fm-wake-lib.sh"
+    # shellcheck source=/dev/null
+    . "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
+    pickup_record 'requested inbox pickup' "$meta_park_token" || rc=$?
+    case "$rc" in
+      0) ;;
+      3) return 0 ;; # The park changed under the request; the check reads the new record.
+      6) exit 1 ;;
+      *) exit 2 ;;
+    esac
+  fi
+  rm -f -- "$req"
+}
+
 cmd_poll() {
-  local reconcile_rc=0 meta_park_token meta_park_state meta_copy_state meta_park_when
+  local reconcile_rc=0 meta_park_token meta_park_state meta_copy_state meta_park_when meta_park_pickup
   task_resolve "${1-}"
   meta_read park_token park_state copy_state
   [ "$meta_park_token" = "${2-}" ] && [ "$meta_park_state" = parked ] || exit 2
@@ -1079,27 +1150,67 @@ cmd_poll() {
   # The separate release action owns expensive custody and its own failures.
   # Never consume this listener's error budget while a transaction is preparing;
   # it can resume only once custody is settled, regardless of condition changes.
-  meta_read copy_state park_when
+  meta_read copy_state park_when park_pickup
   case "$meta_copy_state" in
     ''|retained|released) ;;
     release-prepared|restore-prepared) exit 1 ;;
     *) exit 2 ;;
   esac
+  [ "$meta_park_when" != "inbox:$ID" ] || poll_pickup_request
   cmd_check "$meta_park_when"
 }
 
-cmd_pickup() (
-  task_resolve "${1-}"
-  [ -z "${FM_TASK_ID-}" ] || die "only the supervisor authorizes pickup"
-  # Same confused-agent-grade role/lease boundary as the existing owner tools;
-  # an unmarked owner shell remains authorized, never an ordinary inbox message.
+# pickup_record <action-label> [<park-token>]: record park_pickup for this
+# task's inbox-only park under the supervisor-lease guard (header "Inbox
+# pickup"), in a subshell so the guard's lock is released on every path. With
+# a token, only that park incarnation is picked up. Returns 0 recorded, 3 when
+# the task is not parked on inbox:<id> (or not that incarnation), 1 when the
+# guard or the record fails; a lease refusal exits 6 with the guard's message.
+pickup_record() (
+  local meta_park_state meta_park_when meta_park_token
+  # Same confused-agent-grade role/lease boundary as the existing owner tools.
   # shellcheck source=bin/fm-lease-lib.sh
   . "$SCRIPT_DIR/fm-lease-lib.sh"
   trap 'fm_lease_guard_release' EXIT
-  fm_lease_guard "$ID" 'explicit inbox pickup' || die "supervisor lease refused pickup"
-  [ "$(meta_get park_state)" = parked ] && [ "$(meta_get park_when)" = "inbox:$ID" ] || die "not an inbox-only wait"
-  park_record "park_pickup=$(meta_get park_token)" || die "cannot record explicit pickup authority"
+  fm_lease_guard "$ID" "$1" || die "supervisor lease refused $1"
+  meta_read park_state park_when park_token
+  [ "$meta_park_state" = parked ] && [ "$meta_park_when" = "inbox:$ID" ] && [ -n "$meta_park_token" ] || exit 3
+  [ -z "${2-}" ] || [ "$2" = "$meta_park_token" ] || exit 3
+  park_record "park_pickup=$meta_park_token" || die "cannot record the inbox pickup"
 )
+
+cmd_pickup() {
+  local rc=0
+  task_resolve "${1-}"
+  [ -z "${FM_TASK_ID-}" ] || die "only the supervisor authorizes pickup"
+  pickup_record 'explicit inbox pickup' || rc=$?
+  [ "$rc" != 3 ] || die "not an inbox-only wait"
+  exit "$rc"
+}
+
+# cmd_request_pickup <id>: a sender outside the lease asks for the pickup
+# (header "Inbox pickup"). Only the park's own poll acts on the request.
+cmd_request_pickup() {
+  local inbox tmp meta_park_state meta_park_when meta_park_token
+  ID=${1-}
+  fm_task_id_path_safe "$ID" || die "not a valid task id: '$ID'"
+  META="$STATE/$ID.meta"
+  [ -e "$META" ] || [ -L "$META" ] || exit 3
+  [ -f "$META" ] && [ ! -L "$META" ] && [ -r "$META" ] || die "cannot read task $ID's record ($META)"
+  meta_read park_state park_when park_token
+  [ "$meta_park_state" = parked ] && [ "$meta_park_when" = "inbox:$ID" ] && [ -n "$meta_park_token" ] || exit 3
+  inbox="$STATE/$ID.inbox"
+  [ -d "$inbox" ] && [ ! -L "$inbox" ] || die "task $ID has no inbox directory to hold a pickup request ($inbox)"
+  inbox_has_unhandled "$inbox" || die "task $ID's inbox holds no unhandled message to pick up ($inbox)"
+  if [ -d "$inbox/.pickup-requested" ] || [ -L "$inbox/.pickup-requested" ]; then
+    die "cannot record the pickup request: $inbox/.pickup-requested is not a regular file"
+  fi
+  tmp=$(mktemp "$inbox/.pickup-requested.XXXXXX") || die "cannot write a pickup request in $inbox"
+  if ! printf '%s\n' "$meta_park_token" > "$tmp" || ! mv -f -- "$tmp" "$inbox/.pickup-requested"; then
+    rm -f -- "$tmp"
+    die "cannot record the pickup request at $inbox/.pickup-requested"
+  fi
+}
 
 case "${1-}" in
   cleanup-release)
@@ -1110,6 +1221,7 @@ case "${1-}" in
   release-ready) shift; [ "$#" = 2 ] || exit 2; cmd_release_ready "$@" ;;
   poll) shift; [ "$#" = 2 ] || exit 2; cmd_poll "$@" ;;
   pickup) shift; [ "$#" = 1 ] || exit 2; cmd_pickup "$1" ;;
+  request-pickup) shift; [ "$#" = 1 ] || exit 2; cmd_request_pickup "$1" ;;
   ''|-h|--help|help) usage; [ -n "${1-}" ] || exit 2 ;;
   validate) shift; cmd_validate "$@" ;;
   check) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_check "$1" ;;

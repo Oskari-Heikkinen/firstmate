@@ -74,12 +74,11 @@ If duplicates went out, they differ only in their `at=` stamp: remove the extra 
 
 ## Mail for a parked worker
 
-A worker parked on an `inbox:<task>` condition wakes only after the supervisor runs `bin/fm-park.sh pickup <task>`; ordinary mail never grants pickup.
-fm-send says so when it records mail for a suspended task: "text is not pickup authority".
-After sending actionable work to such a worker, run the pickup in the same turn.
+Delivering mail to a worker parked on an `inbox:<task>` condition also picks up that park, so its listener relaunches it within about two minutes; [`bin/fm-send.sh`](../../../bin/fm-send.sh)'s header ("Inbox pickup") owns the rule.
+Mail that is purely for information goes with `--no-resume`, and old messages in a busy worker's inbox are not a reason to wake it.
+If fm-send warns that the message is delivered but the park was not picked up, do not resend: run the `bin/fm-park.sh pickup <task>` the warning names.
 For urgent work, [`bin/fm-park.sh`](../../../bin/fm-park.sh)'s header owns `resume` and what to do with the captured result afterwards.
-Mail that is purely for information needs no pickup, and old messages in a busy worker's inbox are not a reason to wake it.
-Shared keyed answers use fm-send's fan-out form, which runs the pickup itself.
+Shared keyed answers use fm-send's fan-out form, which picks up the same way.
 
 ## Before a restart or session end
 

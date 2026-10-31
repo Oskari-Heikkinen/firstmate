@@ -352,6 +352,112 @@ case_poll_answers_in_the_shell() {
   pass "a poll on a settled copy reads its record and checks its wait without starting a process"
 }
 
+# --- a delivery resumes the inbox park it is addressed to ---------------------
+# The real listener fires and relaunches on fm-send's own pickup, and on the
+# request a task worker's send leaves, each within the park's interval x stable.
+case_delivery_resumes_inbox_park() {
+  local id res
+  H="$TMP_ROOT/h-deliver"; mkdir -p "$H/config" "$H/fakebin"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/terminal-calls"\nexit 9\n' "$H" > "$H/fakebin/tmux"
+  chmod +x "$H/fakebin/tmux"
+  for id in tdd tdr; do
+    new_task "$H" "$id"
+    handoff "$TMP_ROOT/$id.md" "inbox:$id"
+    FM_PARK_INTERVAL=0.1 FM_PARK_STABLE=1 park "$H" "$id" --handoff "$TMP_ROOT/$id.md" >/dev/null || fail "park $id failed"
+  done
+  start_watch "$H"
+  PATH="$H/fakebin:$PATH" FM_HOME="$H" "$ROOT/bin/fm-send.sh" tdd 'the answer is in' > "$H/send.out" 2>&1 || fail "delivery to tdd failed: $(cat "$H/send.out")"
+  PATH="$H/fakebin:$PATH" FM_TASK_ID=some-worker FM_HOME="$H" "$ROOT/bin/fm-send.sh" tdr 'from a worker' > "$H/send.out" 2>&1 || fail "a worker's delivery to tdr failed: $(cat "$H/send.out")"
+  for id in tdd tdr; do
+    wait_for_result "$H" "when-park-$id" || fail "the delivery to $id never fired its inbox park"
+    res=$(first_result "$H" "when-park-$id")
+    assert_equals fired "$("$ROOT/bin/fm-procevent-when.sh" classify "$res")" "the $id watch did not fire the resume"
+    grep "^$id relaunch" "$H/control.log" >/dev/null || fail "the delivery did not relaunch $id: $(cat "$H/control.log")"
+    assert_grep "park_state=resumed" "$H/state/$id.meta" "the $id resume was not recorded"
+  done
+  assert_absent "$H/state/tdr.inbox/.pickup-requested" "the acted-on request was left behind"
+  assert_absent "$H/terminal-calls" "a delivery rang a parked terminal"
+  pass "a delivery to an inbox park relaunches it through the listener, directly or through a worker's request"
+}
+
+# --- a pickup request from outside the lease reaches the park's own poll -----
+case_inbox_pickup_request() {
+  H="$TMP_ROOT/h-request"; new_task "$H" tsr; new_task "$H" tsf
+  req="$H/state/tsr.inbox/.pickup-requested"
+  rc=0; park "$H" request-pickup tsr-missing 2>/dev/null || rc=$?
+  expect_code 3 "$rc" "a request for an unknown task recorded something"
+  handoff "$TMP_ROOT/tsf.md" "file:$TMP_ROOT/tsf-results"
+  park "$H" tsf --handoff "$TMP_ROOT/tsf.md" >/dev/null || fail "park tsf failed"
+  mkdir -p "$H/state/tsf.inbox"
+  rc=0; park "$H" request-pickup tsf || rc=$?
+  expect_code 3 "$rc" "a request for a park that does not wait on its inbox recorded something"
+  assert_absent "$H/state/tsf.inbox/.pickup-requested" "a non-inbox park took a pickup request"
+  handoff "$TMP_ROOT/tsr.md" "inbox:tsr"
+  park "$H" tsr --handoff "$TMP_ROOT/tsr.md" >/dev/null || fail "park tsr failed"
+  token=$(sed -n 's/^park_token=//p' "$H/state/tsr.meta")
+  park "$H" request-pickup tsr >/dev/null 2>&1 && fail "a request without an inbox directory was reported recorded"
+  mkdir -p "$H/state/tsr.inbox"
+  # The delivery is the event: with no unhandled record there is nothing to resume.
+  rc=0; FM_TASK_ID=some-worker park "$H" request-pickup tsr 2>/dev/null || rc=$?
+  expect_code 1 "$rc" "a request with no delivered message was recorded"
+  assert_absent "$req" "a request with no delivered message was left"
+  printf 'steer\n' > "$H/state/tsr.inbox/001.msg"
+
+  # The request needs no lease and grants nothing until the park's poll acts.
+  FM_TASK_ID=some-worker park "$H" request-pickup tsr || fail "a task worker could not request a pickup"
+  assert_equals "$token" "$(cat "$req")" "the request does not name the current park"
+  rc=0; park "$H" check inbox:tsr || rc=$?
+  expect_code 1 "$rc" "a pickup request alone satisfied the inbox wait"
+
+  # A request for an earlier park is never acted on, nor removed by the poll.
+  printf 'park.retired\n' > "$req"
+  rc=0; park "$H" poll tsr "$token" || rc=$?
+  expect_code 1 "$rc" "a stale request picked up the current park"
+  assert_present "$req" "the poll removed a request it did not act on"
+
+  # Nor does the poll act on a current request once no unhandled record waits.
+  mkdir -p "$H/state/tsr.inbox/handled"; mv "$H/state/tsr.inbox/001.msg" "$H/state/tsr.inbox/handled/"
+  printf '%s\n' "$token" > "$req"
+  rc=0; park "$H" poll tsr "$token" || rc=$?
+  expect_code 1 "$rc" "a request with every message handled picked up the park"
+  assert_present "$req" "the poll removed a request it did not act on"
+  mv "$H/state/tsr.inbox/handled/001.msg" "$H/state/tsr.inbox/"
+
+  # A request the poll cannot read is a condition error, never a silent skip.
+  : > "$req"
+  rc=0; park "$H" poll tsr "$token" > "$H/poll.out" 2>&1 || rc=$?
+  expect_code 2 "$rc" "an empty pickup request was not a condition error"
+  assert_contains "$(cat "$H/poll.out")" "empty or unreadable" "the empty request was not named"
+  rm -f "$req"; mkdir "$req"
+  rc=0; park "$H" poll tsr "$token" > "$H/poll.out" 2>&1 || rc=$?
+  expect_code 2 "$rc" "a non-regular pickup request was not a condition error"
+  assert_contains "$(cat "$H/poll.out")" "is not a regular file" "the non-regular request was not named"
+  rc=0; park "$H" request-pickup tsr 2>/dev/null || rc=$?
+  expect_code 1 "$rc" "a request was recorded over a non-regular request path"
+  [ -z "$(ls -A "$req")" ] || fail "the request was written inside a directory at its path"
+  rmdir "$req"
+
+  # The other supervision actor's live lease defers the pickup to a later poll.
+  park "$H" request-pickup tsr || fail "the request could not be recorded again"
+  printf '%s\n' "$$" > "$H/state/.lock"; printf 'branch\t%s\t1\n' "$$" > "$H/state/.lease-tsr"
+  rc=0; park "$H" poll tsr "$token" 2>/dev/null || rc=$?
+  expect_code 1 "$rc" "a refused lease did not leave the request for a later poll"
+  assert_present "$req" "a refused lease dropped the request"
+  assert_no_grep "park_pickup=$token" "$H/state/tsr.meta" "a refused lease recorded the pickup"
+  rm -f "$H/state/.lease-tsr" "$H/state/.lock"
+
+  park "$H" poll tsr "$token" || fail "the park's poll did not act on its current request"
+  assert_grep "park_pickup=$token" "$H/state/tsr.meta" "the poll did not record the pickup"
+  assert_absent "$req" "the acted-on request was left behind"
+  park "$H" check inbox:tsr || fail "the requested pickup did not satisfy the inbox wait"
+
+  # A new park drops a request for the park it replaces.
+  printf '%s\n' "$token" > "$req"
+  park "$H" tsr --handoff "$TMP_ROOT/tsr.md" >/dev/null || fail "re-park tsr failed"
+  assert_absent "$req" "a new park kept the request for the park it replaced"
+  pass "a pickup request from outside the lease resumes only its own park, through the park's lease-guarded poll"
+}
+
 # --- the cross-home condition kinds each read their own source ----------------
 case_cross_home_conditions() {
   H="$TMP_ROOT/h-kinds"; mkdir -p "$H/state" "$H/config"
@@ -1302,7 +1408,8 @@ POOL_CASES+=(case_deadline_wakes_supervisor case_resume_and_repark
   case_superseded_resume case_failed_relaunch case_notification_failure)
 POOL_CASES+=(case_handoff_validation case_park_refuses_missing_handoff case_queue_adoption_refusal
   case_park_records_and_rearms case_default_cadence case_park_resolves_its_directory
-  case_poll_answers_in_the_shell case_cross_home_conditions
+  case_poll_answers_in_the_shell case_inbox_pickup_request case_delivery_resumes_inbox_park
+  case_cross_home_conditions
   case_kind_default_deadlines case_park_time_refusal case_self_park_detached_exit
   case_self_park_by_task_id case_self_park_exit_failure case_claude_background_refusal
   case_other_harness_background case_copy_free_qualification case_wait_age)

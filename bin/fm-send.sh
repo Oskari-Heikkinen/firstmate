@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Steer a task by durable record: write the message into the task's steering
 # inbox and ring a constant doorbell line into its terminal, best-effort.
-# Usage: fm-send.sh <target> [--resolve-key <key>]... [--fire-and-forget <delivery-id> | --expect ack|answer] <text...>
+# Usage: fm-send.sh <target> [--resolve-key <key>]... [--no-resume] [--fire-and-forget <delivery-id> | --expect ack|answer] <text...>
 #        fm-send.sh --resolve-key-all <key> <answer...>
 #   --resolve-key-all explicitly answers every task in this home's state whose
 #   open needs-decision carries <key>, plus parked tasks with an open blocker
 #   on that key. Discovery uses the same status fold as OPEN DECISIONS, never
 #   another home's state. Each recipient goes through the ordinary single-task
-#   --resolve-key delivery and closure guards, once. Successful inbox-only parks
-#   receive explicit fm-park pickup authority AFTER delivery and closure; their
-#   existing listener owns relaunch. Other park conditions are not overridden.
+#   --resolve-key delivery and closure guards, once, sent --no-resume; an
+#   inbox-only park is picked up (see "Inbox pickup" below) only AFTER delivery
+#   and closure, and its existing listener owns relaunch. Other park conditions
+#   are not overridden.
 #   The answer must be ordinary text, not a parser command or send option.
 #   Prints one reached/failed line per task and a total; no matches is a clear
 #   successful no-op. Partial failure exits nonzero after attempting all tasks;
@@ -63,6 +64,17 @@
 # ordinary record by the worker's acknowledgement move into handled/.
 # bin/fm-task-inbox-lib.sh owns the record format, doorbell line, and retry and
 # escalation policy for ordinary and fire-and-forget records.
+# Inbox pickup: a durable local enqueue to a task parked on its own inbox
+# (park_when=inbox:<id>) also resumes it. After delivery and any decision
+# close, fm-send runs bin/fm-park.sh pickup, whose header owns the pickup
+# rule; when that is not open to this sender (a task worker, or a refused
+# lease) it runs fm-park.sh request-pickup instead, so the park's own listener
+# picks the task up. Either way the task relaunches within about two minutes,
+# its doorbell is not rung (a parked agent has exited), and a line on stdout
+# says which path ran. When neither records, a warning names the manual
+# pickup and the send still exits 0, because the message is delivered.
+# --no-resume delivers without resuming, for a note that may wait for the
+# task's next resume; it changes nothing on the other planes.
 # The composer pre-check before the ring is ADVISORY only: when
 # the composer visibly holds pending text the ring is skipped with a notice and
 # the watcher re-rings an ordinary record later; no composer verdict is
@@ -489,6 +501,39 @@ fm_send_resolve_target() { # <raw-target>
   return 1
 }
 
+# fm_send_park_pickup <task-id>: after a durable delivery, pick up <task-id>'s
+# inbox-only park (the header's "Inbox pickup" paragraph). Sets
+# FM_SEND_PICKUP_NOTE and returns 0 picked up, 1 pickup requested from the
+# park's own poll, 2 no inbox-only park, 3 neither recorded (a warning names
+# the manual pickup).
+fm_send_park_pickup() {
+  local task=$1 meta="$STATE/$1.meta" park_state='' park_when='' err='' req_err='' rc=0
+  FM_SEND_PICKUP_NOTE=
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 2
+  fm_meta_get_to park_state "$meta" park_state
+  fm_meta_get_to park_when "$meta" park_when
+  [ "$park_state" = parked ] && [ "$park_when" = "inbox:$task" ] || return 2
+  # fm-park.sh takes the supervisor-lease guard itself, and this send's guard
+  # lock is not reentrant; the delivery that lock covered is already durable.
+  fm_lease_guard_release
+  if [ -z "${FM_TASK_ID-}" ]; then
+    if err=$("$SCRIPT_DIR/fm-park.sh" pickup "$task" 2>&1 >/dev/null); then
+      FM_SEND_PICKUP_NOTE="the inbox park of $task is picked up; its listener relaunches it within about two minutes"
+      return 0
+    fi
+  fi
+  req_err=$("$SCRIPT_DIR/fm-park.sh" request-pickup "$task" 2>&1 >/dev/null) || rc=$?
+  case "$rc" in
+  0)
+    FM_SEND_PICKUP_NOTE="pickup of the inbox park of $task is requested; its listener picks it up and relaunches it within about two minutes"
+    return 1 ;;
+  3) return 2 ;;
+  esac
+  printf 'warning: the message to %s is delivered (do not resend), but its inbox park was not picked up: %s%s%s; run fm-park.sh pickup %s\n' \
+    "$task" "${err:+pickup: }$err" "${err:+; }" "request-pickup: ${req_err:-exit $rc}" "$task" >&2
+  return 3
+}
+
 fm_send_resolve_key_all() { # <key> <ordinary-text-answer...>
   local key=${1-} answer status task open verb meta park_state park_when
   local reached=0 failed=0 rc
@@ -541,7 +586,7 @@ fm_send_resolve_key_all() { # <key> <ordinary-text-answer...>
       continue
     fi
     rc=0
-    "$SCRIPT_DIR/fm-send.sh" "$task" --resolve-key "$key" "$answer" || rc=$?
+    "$SCRIPT_DIR/fm-send.sh" "$task" --no-resume --resolve-key "$key" "$answer" || rc=$?
     if [ "$rc" -ne 0 ]; then
       printf 'failed task=%s key=%s: send/close exit=%s; follow diagnostic above before retrying\n' "$task" "$key" "$rc" >&2
       failed=$((failed + 1))
@@ -550,7 +595,9 @@ fm_send_resolve_key_all() { # <key> <ordinary-text-answer...>
     reached=$((reached + 1))
     printf 'reached task=%s key=%s\n' "$task" "$key"
     if [ "$park_state" = parked ] && [ "$park_when" = "inbox:$task" ]; then
-      if ! "$SCRIPT_DIR/fm-park.sh" pickup "$task"; then
+      rc=0
+      fm_send_park_pickup "$task" || rc=$?
+      if [ "$rc" = 3 ]; then
         printf 'failed task=%s key=%s: answer delivered and closed; do not resend; authorize fm-park.sh pickup %s\n' "$task" "$key" "$task" >&2
         failed=$((failed + 1))
       fi
@@ -595,6 +642,7 @@ fi
 RESOLVE_KEYS=
 FIRE_AND_FORGET_ID=
 EXPECT_KIND=
+NO_RESUME=0
 fm_send_set_expect() { # <kind>
   [ -z "$EXPECT_KIND" ] || {
     echo "error: duplicate --expect" >&2
@@ -666,6 +714,10 @@ while :; do
     ;;
   --expect=*)
     fm_send_set_expect "${1#--expect=}" || exit 1
+    shift
+    ;;
+  --no-resume)
+    NO_RESUME=1
     shift
     ;;
   *) break ;;
@@ -1268,10 +1320,24 @@ else
       fm_send_close_resolved_keys "$RESOLVE_ANSWER_TEXT" || exit 1
       fm_send_feed_resolved_holds "$RESOLVE_ANSWER_TEXT" || exit 1
     fi
+    # The delivery is durable: pick up an inbox-only park now (header "Inbox
+    # pickup"). A parked task's agent has exited, so its doorbell is not rung.
+    PICKUP_RC=2
+    FM_SEND_PICKUP_NOTE=
+    if [ "$NO_RESUME" != 1 ]; then
+      PICKUP_RC=0
+      fm_send_park_pickup "$INBOX_TASK_ID" || PICKUP_RC=$?
+    fi
     if [ "${TARGET_DORMANT:-0}" = 1 ]; then
-      echo "recorded for suspended task at $INBOX_RECORD; text is not pickup authority"
+      echo "recorded for suspended task at $INBOX_RECORD${FM_SEND_PICKUP_NOTE:+; $FM_SEND_PICKUP_NOTE}"
       exit 0
     fi
+    case "$PICKUP_RC" in
+    0|1)
+      echo "fm-send: the steer is durably recorded at $INBOX_RECORD; $FM_SEND_PICKUP_NOTE"
+      exit 0 ;;
+    3) exit 0 ;;
+    esac
     # Ring the doorbell, best-effort: no ring outcome changes the exit status,
     # because the watcher owns loss detection from here, either through its
     # bounded re-ring ladder or direct unavailable-endpoint recovery.

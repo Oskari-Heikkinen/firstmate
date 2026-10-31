@@ -41,6 +41,9 @@
 #                              so later polls suppress another escalation
 #   <task>.inbox/.retry-ring   name of a fire-and-forget record still owed its
 #                              one retry ring (fm_task_inbox_mark_retry)
+#   <task>.inbox/.pickup-requested  park token of an inbox park whose pickup a
+#                              sender outside the lease requested (owner:
+#                              bin/fm-park.sh "Inbox pickup")
 #
 # Record format (fm_task_inbox_write / fm_task_inbox_body):
 #   schema=fm-task-inbox.v1

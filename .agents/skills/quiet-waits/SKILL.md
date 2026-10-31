@@ -51,11 +51,10 @@ Hand steps retired: acknowledging a no-op turn-end or stale wake for a lane whos
 Before interpreting an absent endpoint or copy as failed work, read the targeted current state with `bin/fm-crew-state.sh <id>`.
 A positively validated saved wait is still the same commissioned task, not a missing worker to respawn or a completed item to clean up.
 [`bin/fm-park.sh`](../../../bin/fm-park.sh)'s header owns the per-home canary, qualification, continuous-wait policy, explicit inbox pickup, cancellation and resume commands; [`bin/fm-suspend-lib.sh`](../../../bin/fm-suspend-lib.sh) owns saved-custody proof and interrupted transactions.
-Ordinary text, reminders, timer expiry and results that still need a captain decision never grant pickup authority.
+Timer expiry and results that still need a captain decision never grant pickup authority, and a reminder or note for a parked worker goes with `fm-send.sh --no-resume`.
 Resolve the actual decision through its existing owner before authorizing continuation; suspension and cancellation do not resolve approvals or obligations.
 Shared keyed answers use `fm-send.sh`'s explicit fan-out form; its header owns recipient discovery, delivery, closure and inbox pickup.
-An ordinary `fm-send.sh` to a worker parked on an inbox-only wait delivers the message but does not wake it: the message waits in its inbox until the supervisor runs `bin/fm-park.sh pickup <task-id>`.
-So when the message is actionable work, run that pickup right after the send; when it is only context the worker can read at its next resume, leave the park alone.
+An `fm-send.sh` delivery to a worker parked on an inbox-only wait also picks up that park unless sent with `--no-resume`, so context the worker should read only at its next resume goes with that flag; the "Inbox pickup" paragraphs of `fm-send.sh`'s and `fm-park.sh`'s headers own the rule and its failure warning.
 Use the normal owner control/park continuation, never a generic fresh spawn, a worker-chosen pickup, an old-path inspection or ordinary teardown.
 The ordinary wait condition stays cheap; the separate incarnation-bound release source owns expensive saving/return and its own bounded outcome, as described by the park owner.
 An interrupted or invalid saved transaction remains blocked with its evidence intact: reconcile only its exact acquisition, never re-run allocation blindly or edit records to manufacture a valid proof.

@@ -5,7 +5,8 @@
 # A successful observation is only a hint to skip an unchanged FALSE poll;
 # it is never a true verdict or resume authority. The runner still evaluates
 # on change and at least every 300 s, and after every true/error result.
-# Local file/receipt existence and inbox metadata are read without forks.
+# Local file/receipt existence, inbox metadata and an inbox park's pickup
+# request (bin/fm-park.sh "Inbox pickup") are read without forks.
 # Merge queues backed by queue.log use one stat; opaque result.sh providers,
 # missing/unreadable records and unknown kinds force the full bounded poll.
 # No persistent cache, new process, source, trust format or custody authority.
@@ -15,7 +16,7 @@ fm_park_observation_to() {
   [ "$2" = "$SCRIPT_DIR/fm-park.sh" ] && [ "$3" = poll ] || return 1
   fm_task_id_path_safe "$4" || return 1
   local _po_meta _po_line _po_cond='' _po_copy='' _po_config='' _po_dir=${FM_MERGE_QUEUE_DIR:-}
-  local _po_sig _po_exists=0 _po_parent
+  local _po_sig _po_exists=0 _po_parent _po_req
   [ -f "$STATE/$4.meta" ] && [ ! -L "$STATE/$4.meta" ] || return 1
   fm_file_text_to _po_meta "$STATE/$4.meta" || return 1
   while IFS= read -r _po_line || [ -n "$_po_line" ]; do
@@ -37,7 +38,16 @@ fm_park_observation_to() {
       ;;
     inbox:*)
       [ "$_po_cond" = "inbox:$4" ] || return 1
-      _po_sig=inbox ;;
+      # A pickup request changes the hint, so the next tick runs the poll that
+      # acts on it; one that is not a readable regular file forces that poll.
+      _po_req="$STATE/$4.inbox/.pickup-requested"
+      if [ -e "$_po_req" ] || [ -L "$_po_req" ]; then
+        [ -f "$_po_req" ] && [ ! -L "$_po_req" ] || return 1
+        fm_file_text_to _po_sig "$_po_req" || return 1
+        _po_sig="inbox:$_po_sig"
+      else
+        _po_sig=inbox
+      fi ;;
     merge-result:*)
       if [ -f "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/merge-queue" ]; then
         [ ! -L "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/merge-queue" ] || return 1

@@ -527,10 +527,11 @@ printf 'unexpected terminal call\n' >> "$SUSPEND_DIR/terminal-calls"
 exit 9
 SH
 chmod +x "$dir/fakebin/tmux"
-SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" custody-send 'reminder, not pickup' > "$dir/send.out" 2>&1 || fail "dormant enqueue failed: $(cat "$dir/send.out")"
+SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" custody-send --no-resume 'reminder, not pickup' > "$dir/send.out" 2>&1 || fail "dormant enqueue failed: $(cat "$dir/send.out")"
 assert_present "$dir/home/state/custody-send.inbox/001.msg" 'dormant steer was lost'
 assert_absent "$dir/terminal-calls" 'dormant enqueue inspected or rang a terminal'
-FM_HOME="$dir/home" "$ROOT/bin/fm-park.sh" check inbox:custody-send && fail 'ordinary text authorized pickup'
+FM_HOME="$dir/home" "$ROOT/bin/fm-park.sh" check inbox:custody-send && fail 'a --no-resume note picked up the inbox park'
+assert_absent "$dir/home/state/custody-send.inbox/.pickup-requested" 'a --no-resume note requested a pickup'
 if SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" custody-send --key C-c > "$dir/send.out" 2>&1; then
   fail 'a suspended task accepted a terminal key'
 fi
@@ -547,6 +548,37 @@ SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" custody
 assert_present "$dir/home/state/custody-send.inbox/002.msg" 'non-Codex dollar text was not durable'
 assert_absent "$dir/terminal-calls" 'non-Codex inbox text called a backend'
 pass 'ordinary dormant text stays durable without a terminal; keys/slash commands refuse before backend submission'
+
+# Delivery resumes an inbox park (bin/fm-park.sh "Inbox pickup"): the
+# supervisor's send records the lease-guarded pickup itself, and a task
+# worker's send, which may not, leaves a request for the park's own poll.
+dir=$(suspend_case "$TMP_ROOT" inbox-pickup) || fail 'inbox pickup fixture failed'
+cp "$TMP_ROOT/custody-send/fakebin/tmux" "$dir/fakebin/tmux"
+SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" inbox-pickup 'your answer is in' > "$dir/send.out" 2> "$dir/send.err" || fail "delivery to an inbox park failed: $(cat "$dir/send.err")"
+assert_present "$dir/home/state/inbox-pickup.inbox/001.msg" 'the delivery that resumes the park was not durable'
+FM_HOME="$dir/home" "$ROOT/bin/fm-park.sh" check inbox:inbox-pickup || fail 'a delivered message did not pick up its inbox park'
+assert_grep 'is picked up' "$dir/send.out" 'the send did not say it picked up the park'
+assert_absent "$dir/terminal-calls" 'the pickup delivery rang a parked terminal'
+assert_absent "$dir/home/state/inbox-pickup.inbox/.pickup-requested" 'a direct pickup also left a request'
+dir=$(suspend_case "$TMP_ROOT" inbox-request) || fail 'inbox request fixture failed'
+cp "$TMP_ROOT/custody-send/fakebin/tmux" "$dir/fakebin/tmux"
+FM_TASK_ID=some-worker SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" inbox-request 'from a worker' > "$dir/send.out" 2> "$dir/send.err" || fail "a worker's delivery to an inbox park failed: $(cat "$dir/send.err")"
+assert_present "$dir/home/state/inbox-request.inbox/001.msg" "the worker's delivery was not durable"
+FM_HOME="$dir/home" "$ROOT/bin/fm-park.sh" check inbox:inbox-request && fail 'a task worker recorded the pickup itself'
+assert_equals p1 "$(cat "$dir/home/state/inbox-request.inbox/.pickup-requested")" "the worker's send did not request the current park's pickup"
+assert_grep 'is requested' "$dir/send.out" 'the send did not say it requested the pickup'
+assert_absent "$dir/terminal-calls" 'the requesting delivery rang a parked terminal'
+# When neither path can record, the delivered message is not resent: the send
+# warns with the manual pickup and still exits 0.
+rm -f "$dir/home/state/inbox-request.inbox/.pickup-requested"
+mkdir "$dir/home/state/inbox-request.inbox/.pickup-requested"
+FM_TASK_ID=some-worker SUSPEND_DIR="$dir" PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" "$SEND" inbox-request 'second note' > "$dir/send.out" 2> "$dir/send.err" || fail "a delivery whose pickup failed exited nonzero: $(cat "$dir/send.err")"
+assert_present "$dir/home/state/inbox-request.inbox/002.msg" 'the delivery whose pickup failed was not durable'
+assert_grep 'is delivered (do not resend)' "$dir/send.err" 'the failed pickup did not warn against a resend'
+assert_grep 'run fm-park.sh pickup inbox-request' "$dir/send.err" 'the failed pickup did not name the manual pickup'
+FM_HOME="$dir/home" "$ROOT/bin/fm-park.sh" check inbox:inbox-request && fail 'a failed pickup satisfied the inbox wait'
+assert_absent "$dir/terminal-calls" 'the failed pickup rang a parked terminal'
+pass 'a delivery picks up its inbox park, a sender outside the lease requests the pickup instead, and a failed pickup warns without a resend'
 
 dir=$(suspend_case "$TMP_ROOT" custody-send-codex) || fail 'Codex saved fixture failed'
 suspend_lib "$dir" fm_suspend_record "$dir/home/state/custody-send-codex.meta" 'harness=codex' || fail 'Codex profile fixture failed'
