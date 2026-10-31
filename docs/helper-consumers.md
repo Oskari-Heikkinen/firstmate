@@ -180,6 +180,12 @@ A consumer whose declaration is malformed counts as not accepting, and main's le
 The level clears when every consumer accepts the version, its declaration is removed, or the helper's live bytes change.
 An unreadable hold log or hold limit file raises its own level.
 
+The same pass reports the success that ends a hold, so a held update is rerun within minutes of acceptance rather than whenever someone looks.
+When a helper version has an open hold in [the hold log](#the-hold-log) (a `held` or `bypass` line that no `cleared` line has closed, in any home) and every consumer those holds name now accepts it, the pass appends one `note` line, `helper-accepted <helper>@<sha12>: rerun the update`, to the main home's `state/helper-unaccepted.status`, where `<helper>` is the path the hold names.
+It sends that note once per version: a rerun sends nothing, and only a new hold on the version, after its holds cleared, can send it again.
+A consumer whose declaration is removed counts as accepting, a malformed one as not, and a hold that names no consumer is never judged.
+A note that cannot be sent prints one line and is retried on the next pass.
+
 The limit is the operator's override in `config/helper-unaccepted-max`, read on every pass: one whole number of seconds, or of minutes or hours with an `m` or `h` suffix.
 Without the file the limit is 2 hours.
 An empty, unreadable or malformed limit file, declaration or pending record, or an unreadable branch, raises its own level naming the file, and an unreadable limit file still counts the 2-hour default for the versions.

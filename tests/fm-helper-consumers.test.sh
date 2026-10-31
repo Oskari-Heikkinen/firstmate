@@ -49,6 +49,10 @@
 #     unaccepting consumer's owner once, in place of its branch level, and with no
 #     declarations prints and writes nothing; --arm binds its check and runs a
 #     first pass, and --disarm removes its stores and its check.
+#   - alarm sends main one helper-accepted note once every consumer a version's
+#     open holds name accepts it, none while one still refuses or its
+#     declaration is malformed, none on a rerun, and drops its sent marker once
+#     the holds clear.
 #   - pending --candidate files one record and one note for an unaccepted
 #     candidate and prints its helper-candidate line on every run, prints
 #     nothing for an accepted one, and carries prepared evidence in the note;
@@ -1303,6 +1307,66 @@ test_alarm_raises_a_bypassed_version_at_once() {
   pass "a bypass line raises the unaccepted-version alarm at once"
 }
 
+# accepted_count <w>: the helper-accepted notes in the main home's status file.
+accepted_count() {
+  local f="$1/home/state/helper-unaccepted.status"
+  if [ -e "$f" ]; then grep -c 'helper-accepted' "$f" || true; else echo 0; fi
+}
+
+# A held update waits on someone rerunning it, so the pass that sees the held
+# version accepted sends main one note to rerun it, and only one.
+test_alarm_accepted_notice_once_per_version() {
+  local w out at c helper other line
+  w=$(alarm_world alarm-accepted)
+  helper="$w/repo/bin/helper.sh"
+  other="$w/other-home"
+  mkdir -p "$other"
+  at=$(iso_epoch 2026-10-31T09:00:00Z)
+  land "$w" 'echo v2' "$at"
+  c=$(git -C "$w/repo" rev-parse origin/main)
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=lane' 'owner=lane-mate' "helper=$helper" "accept=$V1" > "$w/decl/lane.conf"
+  FM_HELPER_CONSUMERS_NOW=$((at + 60)) hc "$w" log held "$w/home" "$c" "$helper" "$V2" holder,lane "held-for-helper: awaiting holder,lane" \
+    || fail "the held line was not written"
+  FM_HELPER_CONSUMERS_NOW=$((at + 60)) hc "$w" log held "$other" "$c" "$helper" "$V2" holder "held-for-helper: awaiting holder" \
+    || fail "the second home's held line was not written"
+
+  out=$(alarm_at "$w" $((at + 120)))
+  assert_equals "" "$out" "a pass on an unaccepted version prints nothing"
+  assert_equals 0 "$(accepted_count "$w")" "a still-unaccepted version sends no note"
+
+  declare_consumer "$w" holder "$helper" "$V1" "$V2"
+  out=$(alarm_at "$w" $((at + 180)))
+  assert_equals "" "$out" "a pass accepted by one of two consumers prints nothing"
+  assert_equals 0 "$(accepted_count "$w")" "a version one held consumer still refuses sends no note"
+
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=lane' 'owner=lane-mate' "helper=$helper" "accept=$V2" 'not key value' > "$w/decl/lane.conf"
+  alarm_at "$w" $((at + 240)) >/dev/null
+  assert_equals 0 "$(accepted_count "$w")" "a malformed declaration counts as not accepting"
+
+  printf '%s\n' 'schema=fm-helper-consumer/v1' 'consumer=lane' 'owner=lane-mate' "helper=$helper" "accept=$V1" "accept=$V2" > "$w/decl/lane.conf"
+  alarm_at "$w" $((at + 300)) >/dev/null
+  assert_equals 1 "$(accepted_count "$w")" "acceptance by every held consumer sends exactly one note, for both homes' holds"
+  line=$(grep 'helper-accepted' "$w/home/state/helper-unaccepted.status")
+  assert_contains "$line" "note [at=" "the notice is a note status line"
+  assert_contains "$line" "helper-accepted $helper@${V2:0:12}: rerun the update" "the notice names the held helper version"
+
+  alarm_at "$w" $((at + 360)) >/dev/null
+  assert_equals 1 "$(accepted_count "$w")" "a rerun of the check sends no second note"
+  FM_HELPER_CONSUMERS_NOW=$((at + 400)) hc "$w" log held "$w/home" "$c" "$helper" "$V2" holder,lane "held-for-helper: awaiting holder,lane" \
+    || fail "the rerun held line was not written"
+  alarm_at "$w" $((at + 420)) >/dev/null
+  assert_equals 1 "$(accepted_count "$w")" "another held line on the open hold sends no second note"
+
+  FM_HELPER_CONSUMERS_NOW=$((at + 480)) hc "$w" log cleared "$w/home" "$c" "$helper" "$V2" holder,lane "pass advanced" \
+    || fail "the cleared line was not written"
+  FM_HELPER_CONSUMERS_NOW=$((at + 480)) hc "$w" log cleared "$other" "$c" "$helper" "$V2" holder "pass advanced" \
+    || fail "the second home's cleared line was not written"
+  alarm_at "$w" $((at + 540)) >/dev/null
+  assert_equals 1 "$(accepted_count "$w")" "clearing the holds sends nothing"
+  [ ! -e "$w/home/state/helper-unaccepted/accepted/helper.sh@$V2" ] || fail "the sent marker outlived the cleared holds"
+  pass "a held version sends one helper-accepted note once every held consumer accepts it, and none before or after"
+}
+
 test_no_declarations_is_silent
 test_malformed_declarations_hold_declared_helpers
 test_check_advance_outcomes
@@ -1319,6 +1383,7 @@ test_check_advance_hold_bound
 test_alarm_w2_raises_once_and_clears_on_acceptance
 test_alarm_supersession_owner_route_and_limit_file
 test_alarm_raises_a_bypassed_version_at_once
+test_alarm_accepted_notice_once_per_version
 test_alarm_failed_readings_raise_naming_the_file
 test_alarm_deployed_version_reaches_each_owner_once
 test_alarm_unreadable_hold_log_and_limit_raise
