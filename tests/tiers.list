@@ -72,6 +72,7 @@ gate tests/fm-update.test.sh
 gate tests/fm-wake-daemon-lifecycle-e2e.test.sh
 gate tests/fm-watch-arm.test.sh
 gate tests/fm-watch-checkpoint.test.sh
+gate tests/fm-watch-open-decisions.test.sh
 gate tests/fm-watch-recovery-loop.test.sh
 gate tests/fm-watch-triage.test.sh
 gate tests/fm-watcher-lock.test.sh

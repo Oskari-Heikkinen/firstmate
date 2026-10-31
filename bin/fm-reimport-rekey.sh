@@ -23,6 +23,7 @@
 #   $STATE/<task>.status:
 #     odc       .<task>.open-decisions-cursor (bin/fm-classify-lib.sh)
 #     osc       .<task>.snapshot-open-decisions-cursor (same owner)
+#     tdc       .<task>.timed-open-decisions-cursor (same owner)
 #     seen      .seen-<task>_status watcher marker (status_signal_seen_marker_path)
 #     hb        .hb-surfaced-<task> heartbeat marker (status_heartbeat_seen_marker_path)
 #     daemon    .subsuper-seen-status-<task> away-daemon marker (status_daemon_seen_marker_path)
@@ -76,7 +77,7 @@ RECORD="$STATE/.reimport-rekey.record"
 LOG="$STATE/.reimport-rekey.log"
 MANIFEST="$STATE/.status-presentation-cursor"
 RECORD_VERSION=fm-reimport-rekey-record-v1
-FAMILIES='odc osc seen hb daemon appends outcome manifest'
+FAMILIES='odc osc tdc seen hb daemon appends outcome manifest'
 MODE=
 RUN_TMP=
 HELD_LOCKS=()
@@ -199,6 +200,7 @@ cursor_path_to() {  # <output-variable> <family> <task> <status-file>
   case "$2" in
     odc) _cp_path=$(_fm_open_decisions_cursor_path "$4") ;;
     osc) _cp_path=$(_fm_open_decisions_snapshot_cursor_path "$4") ;;
+    tdc) _cp_path=$(_fm_open_decisions_timed_cursor_path "$4") ;;
     seen) _cp_path=$(status_signal_seen_marker_path "$STATE" "$3") ;;
     hb) _cp_path=$(status_heartbeat_seen_marker_path "$STATE" "$3") ;;
     daemon) _cp_path=$(status_daemon_seen_marker_path "$STATE" "$3") ;;
@@ -253,7 +255,7 @@ cursor_read() {  # <family> <task> <path>
   regular_file "$path" || return 2
   data=$(LC_ALL=C command cat "$path" 2>/dev/null) || return 2
   case "$family" in
-    odc|osc)
+    odc|osc|tdc)
       case "$data" in version=*$'\n'*) ;; *) return 2 ;; esac
       rest=${data#*$'\n'}
       line=${rest%%$'\n'*}
@@ -448,7 +450,7 @@ rewrite_marker() {  # <path> <status-file> <old-ident> <new-ident> <raw>
 rewrite_cursor() {  # <family> <task> <path> <status-file> <old-ident> <new-ident>
   local family=$1 task=$2 path=$3 f=$4 old=$5 new=$6 raw rc=0
   case "$family" in
-    odc|osc) rekey_rewrite "$path" n:3 0 "ident=$old" "ident=$new" || rc=$? ;;
+    odc|osc|tdc) rekey_rewrite "$path" n:3 0 "ident=$old" "ident=$new" || rc=$? ;;
     seen|hb|daemon)
       raw=$(LC_ALL=C command cat "$path" 2>/dev/null) || return 3
       rewrite_marker "$path" "$f" "$old" "$new" "$raw" || rc=$?
