@@ -2620,7 +2620,6 @@ open_decision_reminder_tick() {  # [now-epoch], for deterministic clock callers
   local -a r_task r_key r_opened r_last r_delay order order_new
   OPEN_DECISION_REMINDER=
   OPEN_DECISION_ERROR=
-  [ -e "$CONFIG/open-decision-reminders" ] || [ -L "$CONFIG/open-decision-reminders" ] || return 0
   open_decision_setting_to threshold FM_OPEN_DECISION_OVERDUE_SECS "${FM_OPEN_DECISION_OVERDUE_SECS:-}" \
     "$CONFIG/open-decision-overdue-secs" 1800 || return 1
   open_decision_setting_to cap FM_OPEN_DECISION_BACKOFF_MAX_SECS "${FM_OPEN_DECISION_BACKOFF_MAX_SECS:-}" \
