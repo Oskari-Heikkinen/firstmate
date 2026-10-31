@@ -75,3 +75,8 @@ helper-selftest test tests/fm-helper-selftest.test.sh
 
 ci-push script bin/fm-ci-push.sh
 ci-push test tests/fm-ci-push.test.sh
+
+owner-notice script bin/fm-owner-notice.sh
+owner-notice script bin/fm-owner-notice-client.py
+owner-notice script bin/fm_owner_notice_*.py
+owner-notice test tests/fm-owner-notice.test.sh
