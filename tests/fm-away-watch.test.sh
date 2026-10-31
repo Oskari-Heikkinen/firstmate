@@ -26,13 +26,15 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# make_home <name>: an away home with no supervision host configured. The test
-# shell owns the session lock, so the lock reads as held by a live process that
-# is not a harness (the lock condition stays silent) and the main-session key
-# exists for the latch.
+# make_home <name>: an away home opted out of the supervision host by
+# config/supervision-host-off, so the host condition stays silent whatever the
+# primary. The test shell owns the session lock, so the lock reads as held by a
+# live process that is not a harness (the lock condition stays silent) and the
+# main-session key exists for the latch.
 make_home() {
   local home="$TMP_ROOT/$1"
   mkdir -p "$home/state" "$home/config"
+  : > "$home/config/supervision-host-off"
   printf 'herdr\n' > "$home/config/wedge-alarm"
   printf '%s\n' "$$" > "$home/state/.lock"
   printf 'lab-session\n' > "$home/state/.lock-session"
@@ -60,6 +62,7 @@ alert_count() { wc -l < "$1/alerts.log" | tr -d ' '; }
 # A host home whose recorded activity ended at <last-epoch>.
 host_home() {  # <home> <last-epoch>
   local home=$1 f
+  rm -f "$home/config/supervision-host-off"
   printf 'claude sonnet\n' > "$home/config/supervision-host"
   for f in "$home/state/.lock" "$home/state/.lock-session" "$home/state/.afk-contract"; do
     fm_touch_epoch "$2" "$f"
@@ -131,6 +134,34 @@ test_host_threshold() {
   assert_equals 1 "$(alert_count "$home")" "a configured host threshold was not honored"
   assert_contains "$(alerts "$home")" 'for 10 minutes' "the host alert did not name the duration"
   pass "the host condition waits for its threshold, which config/away-watch sets"
+}
+
+# With neither config file the host runs by default on a primary whose engine
+# is verified (bin/fm-supervision-engine-lib.sh owns the gate), so the host
+# condition follows --primary, an unnamed primary counts as running the host,
+# and the off flag silences it whatever the primary.
+test_default_host_follows_primary() {
+  local home now case primary want
+  now=$(date +%s)
+  for case in claude:1 cursor:0 unknown:1 none:1 off-claude:0 off-none:0; do
+    primary=${case%%:*}
+    want=${case#*:}
+    home=$(make_home "default-host-$primary")
+    away "$home"
+    host_home "$home" $((now - 7200))
+    rm -f "$home/config/supervision-host"
+    case "$primary" in
+      off-*) : > "$home/config/supervision-host-off"; primary=${primary#off-} ;;
+    esac
+    if [ "$primary" = none ]; then
+      run_watch "$home" --now "$now" >/dev/null || fail "$case: run failed"
+    else
+      run_watch "$home" --now "$now" --primary "$primary" >/dev/null || fail "$case: run failed"
+    fi
+    assert_equals "$want" "$(alert_count "$home")" "$case: wrong host alert count: $(alerts "$home")"
+    [ "$want" = 0 ] || assert_contains "$(alerts "$home")" 'no live supervision host' "$case: the alert was not the host condition"
+  done
+  pass "with no config/supervision-host the host condition follows the primary, fails toward checking an unknown one, and the off flag wins"
 }
 
 test_dead_lock_owner() {
@@ -262,7 +293,7 @@ SH
   unit="fm-away-watch-$(printf '%s' "$(cd "$home" && pwd -P)" | cksum | cut -d' ' -f1)"
   other_unit="fm-away-watch-$(printf '%s' "$(cd "$other" && pwd -P)" | cksum | cut -d' ' -f1)"
   out=$(PATH="$fakebin:/opt/my tools/bin:/x%y:$PATH" HERDR_SOCKET_PATH=/run/herdr.sock XDG_CONFIG_HOME="$dir/xdg" \
-    "$WATCH" install-timer --home "$home" 2>&1) || fail "install-timer failed: $out"
+    FM_TEST_SEAM=1 FM_TEST_HARNESS=unknown "$WATCH" install-timer --home "$home" 2>&1) || fail "install-timer failed: $out"
   out=$(PATH="$fakebin:$PATH" XDG_CONFIG_HOME="$dir/xdg" "$WATCH" install-timer --home "$other" 2>&1) \
     || fail "second install-timer failed: $out"
   assert_grep "ExecStart=/usr/bin/env bash $ROOT/bin/fm-away-watch.sh run --home $(cd "$home" && pwd -P)" \
@@ -277,6 +308,15 @@ SH
   assert_no_grep HERDR_SOCKET_PATH "$units/$other_unit.service" \
     "the service carries HERDR_SOCKET_PATH the installer did not have"
   assert_grep 'OnCalendar=*:0/5' "$units/$unit.timer" "the timer does not run every 5 minutes"
+  assert_no_grep "--primary" "$units/$unit.service" "the service named a primary the installer could not detect"
+  out=$(PATH="$fakebin:$PATH" XDG_CONFIG_HOME="$dir/xdg" "$WATCH" install-timer --home "$other" --primary cursor 2>&1) \
+    || fail "install-timer --primary failed: $out"
+  assert_grep "fm-away-watch.sh run --home $(cd "$other" && pwd -P) --primary cursor" "$units/$other_unit.service" \
+    "the service does not carry the named primary"
+  out=$(PATH="$fakebin:$PATH" XDG_CONFIG_HOME="$dir/xdg" FM_TEST_SEAM=1 FM_TEST_HARNESS=claude \
+    "$WATCH" install-timer --home "$other" 2>&1) || fail "install-timer under a detected primary failed: $out"
+  assert_grep "fm-away-watch.sh run --home $(cd "$other" && pwd -P) --primary claude" "$units/$other_unit.service" \
+    "the service does not carry the installing session's primary"
   assert_grep "--user enable --now $unit.timer" "$dir/systemctl.log" "install-timer did not enable the timer"
   assert_grep "--user enable --now $other_unit.timer" "$dir/systemctl.log" "install-timer did not enable the second timer"
   local before name rc nl=$'\n'
@@ -307,6 +347,7 @@ SH
 test_silent_when_attended_or_quiet
 test_silent_with_live_host
 test_host_threshold
+test_default_host_follows_primary
 test_dead_lock_owner
 test_held_latch
 test_aged_queue_row

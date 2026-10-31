@@ -1417,7 +1417,7 @@ install_integrated_autoarm() {
   chmod +x "$dir/bin/fm-claude-stop-autoarm.sh" "$dir/bin/fm-lock.sh"
   ln -s /bin/bash "$dir/fake-claude"
   # These cases drive the watcher arm, so the home opts out of the supervision
-  # host an opted-in Claude home runs.
+  # host a Claude home runs.
   mkdir -p "$dir/config"
   : > "$dir/config/supervision-host-off"
 }
