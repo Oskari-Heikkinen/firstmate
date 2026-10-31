@@ -123,7 +123,7 @@ fm_lease_home_runs_host() {
     # shellcheck source=bin/fm-supervision-engine-lib.sh
     . "$FM_LEASE_LIB_DIR/fm-supervision-engine-lib.sh"
   fi
-  fm_supervision_host_may_run "${FM_CONFIG_OVERRIDE:-${FM_HOME:-$STATE/..}/config}"
+  fm_supervision_host_enabled "${FM_CONFIG_OVERRIDE:-${FM_HOME:-$STATE/..}/config}"
 }
 
 # fm_lease_actor: print the current actor after validating it. Returns 1 (with
