@@ -951,6 +951,41 @@ test_enriched_wedge_under_declared_wait_uses_pause_cadence() {
   pass "an enriched wedge under a declared wait uses the pause cadence and restores wedge detection on resume"
 }
 
+# Upstream kunchenguid/firstmate#6899, away-daemon half. In a home that armed
+# config/wedge-defer-worker-wait, a worker's own open newest `blocked:` line is a
+# declaration too, so an enriched wedge for its pane is not escalated on top of
+# the blocker the daemon already escalated; unarmed, the wedge escalates as before.
+test_enriched_wedge_under_worker_blocker_follows_its_flag() {
+  local dir state task win reason armed
+  for armed in 1 0; do
+    dir=$(make_supercase "enriched-wedge-worker-blocker-$armed")
+    state="$dir/state"
+    task=blocked-wedge-w$armed; win="sess:fm-$task"
+    fm_write_meta "$state/$task.meta" "window=$win" "backend=tmux"
+    printf 'working: wiring the client\nblocked: need the API key for the staging account\n' \
+      > "$state/$task.status"
+    mkdir -p "$dir/config"
+    [ "$armed" -eq 0 ] || : > "$dir/config/wedge-defer-worker-wait"
+    # The blocker's own signal is escalated first, as it is when it lands.
+    FM_CONFIG_OVERRIDE="$dir/config" LOG="$dir/daemon.log" FM_STATE_OVERRIDE="$state" \
+      FM_ESCALATE_BATCH_SECS=999 handle_wake "stale: $win" "$state"
+    grep -F 'need the API key' "$state/.subsuper-escalations" >/dev/null \
+      || fail "the fixture's blocker was never escalated, so this case pins nothing"
+    : > "$state/.subsuper-escalations"
+    reason="stale: $win (idle 250s, possible wedge, escalation 2)"
+    FM_CONFIG_OVERRIDE="$dir/config" LOG="$dir/daemon.log" FM_STATE_OVERRIDE="$state" \
+      FM_ESCALATE_BATCH_SECS=999 handle_wake "$reason" "$state"
+    if [ "$armed" -eq 1 ]; then
+      [ ! -s "$state/.subsuper-escalations" ] \
+        || fail "an armed home escalated a wedge on top of a worker blocker: $(cat "$state/.subsuper-escalations")"
+    else
+      grep -F "${reason#stale: }" "$state/.subsuper-escalations" >/dev/null \
+        || fail "an unarmed home stopped escalating a wedge under a worker blocker"
+    fi
+  done
+  pass "an enriched wedge under a worker blocker is not escalated only where config/wedge-defer-worker-wait arms it"
+}
+
 test_stale_terminal_escalates() {
   local dir state out
   dir=$(make_supercase stale-terminal)
@@ -1086,7 +1121,7 @@ test_handle_wake_paused_signal_records_pause_marker() {
 }
 
 test_handle_wake_terminal_signal_clears_pause_tracking() {
-  local dir state key watcher_key win
+  local dir state key watcher_key win marker
   dir=$(make_supercase handle-terminal-signal)
   state="$dir/state"
   win="sess:fm-held-w10-terminal"
@@ -1099,7 +1134,17 @@ test_handle_wake_terminal_signal_clears_pause_tracking() {
   : > "$state/.paused-$watcher_key"
   : > "$state/.stale-$watcher_key"
   : > "$state/.wedge-escalations-$watcher_key"
+  # The cap, validating-run and guard markers are the watcher's per-window wedge
+  # bookkeeping too, so the release that ends the episode takes them with it.
+  for marker in wedge-permanent wedge-terminal-queued wedge-rollback-failed \
+    validating-since validating-resurfaced guard-deferrals; do
+    : > "$state/.$marker-$watcher_key"
+  done
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $state/held-w10-terminal.status" "$state"
+  for marker in wedge-permanent wedge-terminal-queued wedge-rollback-failed \
+    validating-since validating-resurfaced guard-deferrals; do
+    [ ! -e "$state/.$marker-$watcher_key" ] || fail "terminal signal retained the watcher's .$marker marker"
+  done
   [ ! -e "$state/.subsuper-paused-$key" ] || fail "terminal signal retained the daemon pause marker"
   [ ! -e "$state/.subsuper-stale-$key" ] || fail "terminal signal retained daemon stale tracking"
   [ ! -e "$state/.paused-$watcher_key" ] || fail "terminal signal retained watcher pause tracking"
@@ -1107,7 +1152,7 @@ test_handle_wake_terminal_signal_clears_pause_tracking() {
   [ ! -e "$state/.wedge-escalations-$watcher_key" ] || fail "terminal signal retained watcher wedge tracking"
   FM_STATE_OVERRIDE="$state" handle_wake "stale: $win" "$state"
   [ ! -e "$state/.subsuper-stale-$key" ] || fail "terminal stale dedupe restored daemon stale tracking"
-  pass "a terminal signal clears pause and stale tracking across both supervisors"
+  pass "a terminal signal clears pause, stale, cap, validating-run and guard tracking across both supervisors"
 }
 
 test_housekeeping_migrates_watcher_pause_marker() {
@@ -3150,6 +3195,71 @@ SH
   pass "$name: TERM during the ${held}s sleep stops the daemon at once and reaps the sleep"
 }
 
+# config/watch.env reaches the away daemon's watcher child the way it reaches an
+# armed watcher (bin/fm-watch-env-lib.sh), so the wedge cap's off switch holds in
+# away mode too; a watch.env that is present but not a readable file is named on
+# stderr and the watcher still starts with its defaults.
+daemon_watcher_env_case() {  # <name> <watch.env shape: file|dir>
+  local name=$1 shape=$2 dir state bin fakebin config real_sleep f pid i seen
+  dir="$TMP_ROOT/$name"; state="$dir/state"; bin="$dir/bin"; fakebin="$dir/fakebin"
+  config="$dir/config"
+  mkdir -p "$state" "$bin" "$fakebin" "$config"
+  real_sleep=$(command -v sleep)
+  for f in "$ROOT"/bin/*; do
+    [ "${f##*/}" = fm-watch.sh ] || ln -s "$f" "$bin/${f##*/}"
+  done
+  cat > "$bin/fm-watch.sh" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\${FM_WEDGE_MAX_ESCALATIONS-unset}" > "$dir/watcher-saw.tmp"
+mv "$dir/watcher-saw.tmp" "$dir/watcher-saw"
+exec "$real_sleep" 600
+SH
+  cat > "$fakebin/tmux" <<SH
+#!/usr/bin/env bash
+[ "\${1:-}" = display-message ] || exit 0
+printf '%%1\n'
+SH
+  chmod +x "$bin/fm-watch.sh" "$fakebin/tmux"
+  case "$shape" in
+    file) printf 'export FM_WEDGE_MAX_ESCALATIONS=0\n' > "$config/watch.env" ;;
+    dir) mkdir -p "$config/watch.env" ;;
+  esac
+  env -u FM_WEDGE_MAX_ESCALATIONS PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" \
+    FM_CONFIG_OVERRIDE="$config" FM_SUPERVISOR_BACKEND=tmux FM_SUPERVISOR_TARGET=%1 \
+    FM_HOUSEKEEPING_TICK=999999 \
+    "$bin/fm-supervise-daemon.sh" > "$dir/daemon.out" 2> "$dir/daemon.err" &
+  pid=$!
+  i=0
+  while [ ! -s "$dir/watcher-saw" ] && is_live_non_zombie "$pid" && [ "$i" -lt 600 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  seen=$(cat "$dir/watcher-saw" 2>/dev/null || true)
+  kill -TERM "$pid" 2>/dev/null || true
+  wait_for_exit "$pid" 100 || { kill -KILL "$pid" 2>/dev/null || true; }
+  [ -n "$seen" ] || fail "$name: the daemon never started its watcher child: $(cat "$dir/daemon.err" "$state/.supervise-daemon.log" 2>/dev/null)"
+  case "$shape" in
+    file)
+      [ "$seen" = 0 ] || fail "$name: the daemon's watcher did not inherit config/watch.env (saw '$seen'), so the cap's off switch does not hold in away mode"
+      pass "$name: config/watch.env reaches the away daemon's watcher, so FM_WEDGE_MAX_ESCALATIONS=0 holds in away mode"
+      ;;
+    dir)
+      [ "$seen" = unset ] || fail "$name: a watch.env directory still set the watcher's cap (saw '$seen')"
+      grep -F 'config/watch.env is not a readable file' "$state/.supervise-daemon.watcher.err" >/dev/null \
+        || fail "$name: a watch.env that is not a readable file was not named: $(cat "$state/.supervise-daemon.watcher.err" 2>/dev/null)"
+      pass "$name: a watch.env that is not a readable file is named and the away watcher starts with its defaults"
+      ;;
+  esac
+}
+
+test_daemon_watcher_inherits_watch_env() {
+  daemon_watcher_env_case daemon-watch-env file
+}
+
+test_daemon_watcher_names_unreadable_watch_env() {
+  daemon_watcher_env_case daemon-watch-env-dir dir
+}
+
 test_daemon_stop_interrupts_watcher_tmpfile_retry() {
   daemon_stop_in_sleep daemon-stop-mktemp 5 live TMPDIR="$TMP_ROOT/daemon-stop-mktemp/no-such-dir"
 }
@@ -3496,6 +3606,7 @@ test_unknown_wake_ack_failure_still_clears_delivered_digest
 test_stale_transient_self_records_marker
 test_stale_diagnostic_wedge_survives_busy_housekeeping
 test_enriched_wedge_under_declared_wait_uses_pause_cadence
+test_enriched_wedge_under_worker_blocker_follows_its_flag
 test_stale_terminal_escalates
 test_stale_actionable_wait_escalates_and_keeps_pause_cadence
 test_stale_paused_classifies_pause
@@ -3617,6 +3728,8 @@ test_wedge_alarm_backgrounded_command_times_out_and_reaps_descendant
 test_wedge_alarm_hung_override_times_out_and_falls_through
 test_wedge_alarm_shutdown_stops_active_notifier_group
 test_daemon_stop_interrupts_watcher_tmpfile_retry
+test_daemon_watcher_inherits_watch_env
+test_daemon_watcher_names_unreadable_watch_env
 test_daemon_stop_interrupts_pane_gone_backoff
 test_daemon_stop_interrupts_crash_backoff
 test_daemon_stop_interrupts_non_wake_idle_tick

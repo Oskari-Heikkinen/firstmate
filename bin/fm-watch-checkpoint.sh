@@ -185,6 +185,12 @@ if fm_supervision_host_enabled "$CONFIG" codex; then
   exit "$RC"
 fi
 
+# The host path above runs through the arm, which loads config/watch.env
+# itself; this direct watcher loads it here.
+# shellcheck source=bin/fm-watch-env-lib.sh
+. "$SCRIPT_DIR/fm-watch-env-lib.sh"
+fm_watch_env_load "$CONFIG"
+
 set +e
 # Interrupt the checkpoint's active check group so the watcher's native EXIT cleanup can release its lock; ordinary watcher shutdown still uses TERM.
 run_bounded "$SECONDS_ARG" INT 5 "$SCRIPT_DIR/fm-watch.sh" >"$OUT" 2>"$ERR"
