@@ -522,7 +522,7 @@ live_wait_rule() {
   if [ "$meta_live_wait_when" = "$HANDOFF_CONDITION" ]; then
     case "$meta_live_wait_until" in
       ''|*[!0-9]*) ;;
-      *) [ "$meta_live_wait_until" -gt "$now" ] || return 0 ;;
+      *) : ;;
     esac
   fi
   [ -n "$expect_epoch" ] || die "task $ID was not parked: a worker parking itself states when it expects $HANDOFF_CONDITION to hold, with --expect <UTC|+seconds>. A wait expected within $minutes minutes is waited live, not parked; only a longer one parks. Add --requested when firstmate or the memory guard asked for this park, which always parks, or --open-ended when the wait has no expected end."
