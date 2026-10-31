@@ -197,6 +197,7 @@ full tests/fm-supervision-events.test.sh
 full tests/fm-supervision-instructions.test.sh
 full tests/fm-task-delivery.test.sh
 full tests/fm-tasks-axi.test.sh
+full tests/fm-teardown-evidence.test.sh
 full tests/fm-test-fixtures.test.sh
 full tests/fm-test-isolation-proof.test.sh
 full tests/fm-test-run.test.sh
