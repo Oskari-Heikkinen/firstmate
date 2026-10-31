@@ -2274,7 +2274,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
         if wedge_dead_record "$win" "$since_file" "$label" "$age" "$hash" "$task"; then
           return 0
         fi
-        if wedge_defer_validating "$win" "$since_file" "$label" "$age" "$task"; then
+        if false; then
           return 0
         fi
         guard_note=''
