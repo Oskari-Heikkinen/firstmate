@@ -2674,7 +2674,7 @@ LEDGER
         status_declared_wait_line_to wait_line "$f"
         # The hold reader runs inside this loop, so it must not read the
         # open set from stdin.
-        if status_is_paused_or_captain_held "$wait_line" || task_captain_call_open "$task" < /dev/null; then
+        if task_captain_call_open "$task" < /dev/null; then
           waiting=1
         fi
       fi
