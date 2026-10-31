@@ -20,13 +20,17 @@ A direct-PR worker pushes that commit to its PR branch, a direct-push worker pus
 A no-mistakes worker re-validates it with /no-mistakes so the pipeline stays the one publisher; it never pushes from its copy.
 In no-mistakes mode the earlier `done [at=<epoch>]: {summary}` is the pipeline handoff and is not gated.
 Tell the captain the PR's full `https://...` URL copied from the worker's ready line, the resolved checks-green crew-state line, or the task's `pr=` metadata, a concise outcome summary, and the no-mistakes risk level when applicable.
-Landing authority is owned by `AGENTS.md`: hard rule 2 in section 1, and the `yolo` and red-check rules in section 7; review PASS alone creates no authority.
+After an autonomous merge, tell the captain in one line with the full URL or landed commit.
+Landing authority is owned by `AGENTS.md`: hard rule 2 in section 1, and the `yolo`, red-check and merge-path rules in section 7; review PASS alone creates no authority.
 A ship brief points at this skill and at the task's recorded delivery mode, and never restates the landing mode in its own words, because a restated copy drifts from the record the tools read.
 A custom check written to watch a landing follows the `handoff-coverage` skill's custom-check rules.
 
 ## Before any merge or landing
 
 These checks exist because a passing forge reading answers a narrower question than "is this safe to land".
+
+- A direct push is a landing: require the selected delivery path's green exact-head checks on the candidate integrated with the current default branch, with the merge train owning that integration and proof.
+  Do not repeat an unchanged, fully matching proof outside that path; fix forward or revert a red default branch at once.
 
 - `mergeable`/`CLEAN` means only that git found no textual conflict, and green checks prove only the head they ran on; neither proves the head was tested with today's default branch.
   Before merging, fetch and confirm the head contains the current default branch with `git merge-base --is-ancestor origin/<default> <head>`.

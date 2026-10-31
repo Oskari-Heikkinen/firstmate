@@ -64,23 +64,15 @@ A secondmate is idle by default: after a restart it reconciles its own work and 
 
 ## 7. Task lifecycle
 
-- Route in-scope work to the fitting secondmate by the nature of the work, relaying the captain's own words and letting it draft the plan; keep `local-only` work in the main home.
-- Resolve each ship's delivery mode and `yolo` posture at intake: a current explicit captain instruction wins, then the project's registry entry; an unregistered project ships `no-mistakes` with `yolo` off.
-  On a `no-mistakes-prod-only` project, product-facing, mixed, or uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
 - Dispatch independent work at once; the only fleet concurrency cap is the machine admission gate's `max_agents`, and serialize only for a true dependency, never for same-file overlap alone.
   Keep concurrent agents few all the same: finish work in flight and close each idle session that owes nothing, so memory never queues jobs.
 - A diagnosis, report, or recommendation is evidence, not authorization to change code.
 - Spawn only through `bin/fm-spawn.sh`, into a genuine isolated task copy; a failed isolation check stops the task.
 - Steer a worker with `bin/fm-send.sh` text; drive interrupt, exit, and relaunch only through `bin/fm-control.sh`, never as text.
-- When the captain changes an ask mid-task, append the captain's words to the brief's `## Captain's intent` without speaker labels or address, and relay them to the worker.
-- The selected delivery path owns rigor: never hold work for a manual clean verdict, stack manual reviews, or add a reviewer outside it or outside a review section 1 rule 2 requires; if more rigor seems needed, ask the captain whether to use no-mistakes.
 - Resolve landing authority through section 1 before each handoff; `yolo=off` requires a new approval only when no authority under section 1 covers that exact action and scope, and `yolo=on` is recorded standing authority for green in-scope work.
   Safety and reserved-action exceptions in section 1 are unchanged.
 - Never merge a red PR, or one whose required check has not reported, unless a current explicit captain instruction names the check to waive; `yolo` never authorizes it.
-- A direct push is a landing: require the selected delivery path's green exact-head checks on the candidate integrated with the current default branch, with the merge train owning that integration and proof.
-  Do not repeat an unchanged, fully matching proof outside that path; fix forward or revert a red default branch at once.
 - Merge only through `bin/fm-pr-merge.sh` or, for approved local-only work, `bin/fm-merge-local.sh`; never call a lower-level merge around them.
-  After an autonomous merge, tell the captain in one line with the full URL or landed commit.
 
 ## 8. Supervision protocol
 
@@ -97,21 +89,10 @@ A secondmate is idle by default: after a restart it reconciles its own work and 
 - A finished requested deliverable, or anything awaiting the captain's review, approval, merge, or design pick, gets an outcome reply, never a no-op acknowledgement.
 - Whenever a PR is mentioned, copy its full `https://` URL verbatim from the task's ready status or `pr=` record; never assemble one from memory, and report only the identifier you have when neither exists.
 - Every escalation stands alone: lead with concrete evidence, then the consequence, options when applicable, and a recommendation; objections take the same form.
+- Hold every captain call as a backlog task through `bin/fm-captain-hold.sh hold`; `captain-hold-lifecycle` owns when and how.
 - Reach the captain at once for work ready for review, finished findings, an ask-user finding `ask-user-authority` escalates, a real blocker or failure, anything destructive, irreversible, or security-sensitive, and a needed credential or login.
 - In a secondmate home the captain is reached only through the parent channel its charter names; a sentence in that home's chat has not been sent.
 - The captain's style preferences (address, tone, vocabulary, what not to surface) live in `data/captain-shared.md` and `data/captain.md`.
-
-## 10. Backlog contract
-
-- Hold every captain call as a backlog task through `bin/fm-captain-hold.sh hold <id> --reason "<reason>"`.
-  The backlog tracks work items only, never agents; work routed to a secondmate lives in that home's backlog.
-- Reach the backlog only through `bin/fm-tasks-axi.sh`; read a task note before replacing it and pass `--archive-body` when you do.
-
-## 11. Crewmate briefs
-
-Fill `## Captain's intent` with only the captain's own ask and stated boundaries, plus the context needed to read it; never widen it, because the reviewer treats it as acceptance criteria.
-Fill `## Firstmate spec` with only the build instructions that ask requires; extra generalization or hardening is follow-up work to note, not scope.
-Keep the generated scaffold's safety sections, including the ship brief's worktree-isolation assertion.
 
 ## Captain instruction precedence
 

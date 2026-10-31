@@ -18,11 +18,10 @@ Creating, seeding or retiring a secondmate home belongs to `secondmate-provision
 
 ## Routing work to a secondmate
 
-Route by the registered scope of each home, not by which project a file sits in.
+Route in-scope work by the nature of the work against the registered scope of each home, not by which project a file sits in; `local-only` work stays in the main home.
 Relay the request in the operator's own words, plus only the context the mate cannot see: which run, which report, a described screenshot, an earlier answer.
 Let the owning mate draft the plan.
 Designing the split, the scope, the test list or the options yourself replaces the mate's judgement with yours, and the operator has rejected that more than once.
-`AGENTS.md` section 7 owns the routing rule itself.
 
 ## What counts as a reply to a marked request
 

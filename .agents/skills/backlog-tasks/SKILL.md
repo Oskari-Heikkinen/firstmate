@@ -1,6 +1,6 @@
 ---
 name: backlog-tasks
-description: Load before any bin/fm-tasks-axi.sh call that adds, shows, lists, updates, moves, blocks or closes a backlog task, before replacing or bulk-editing task notes, and when a backlog read comes back empty or in an unexpected shape or a backlog call is refused. Holds the verbs, what show really prints, and why replacing a note always archives the old body. Spawning or starting a queued task is bin/fm-spawn.sh's job, not a backlog edit.
+description: Load before any backlog read or write - always through bin/fm-tasks-axi.sh, never a bare tasks-axi - including a call that adds, shows, lists, updates, moves, blocks or closes a backlog task, before replacing or bulk-editing task notes, and when a backlog read comes back empty or in an unexpected shape or a backlog call is refused. Holds the verbs, what show really prints, and why replacing a note always archives the old body. Spawning or starting a queued task is bin/fm-spawn.sh's job, not a backlog edit.
 user-invocable: false
 metadata:
   internal: true
@@ -31,7 +31,7 @@ When a call is refused or a flag is unknown, read that help rather than guessing
 | Rename or move | `mv` | |
 
 A task waiting on the operator is never held with a bare `hold`: `bin/fm-captain-hold.sh hold` owns that, and `captain-hold-lifecycle` owns when to use it.
-Work routed to a secondmate lives in that home's backlog; `secondmate-provisioning` owns handing backlog between homes.
+The backlog tracks work items only, never agents, and work routed to a secondmate lives in that home's backlog; `secondmate-provisioning` owns handing backlog between homes.
 
 ## Replacing a note
 
@@ -44,7 +44,6 @@ Work routed to a secondmate lives in that home's backlog; `secondmate-provisioni
 
 For a bulk change, do one task first and check it, then loop.
 Abort the whole loop on the first empty or failed read; never carry on with an empty old body.
-`AGENTS.md` section 10 owns the read-first and `--archive-body` rule; this section is the why and the order.
 
 ## When a read looks wrong
 

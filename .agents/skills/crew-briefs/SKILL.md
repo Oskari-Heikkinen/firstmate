@@ -12,7 +12,7 @@ Why this skill exists: it prevents workers ranking options by development time (
 Each one happened because the knowledge sat where the dispatcher or the worker did not look at the moment of writing or reading the brief.
 
 [`bin/fm-brief.sh`](../../../bin/fm-brief.sh)'s header owns the flags, kinds and placeholders, and [`bin/fm-spawn.sh`](../../../bin/fm-spawn.sh)'s header owns the delivery contract it checks at launch.
-`AGENTS.md` sections 7 and 11 own how to resolve the mode and how to fill the two task subsections; this skill explains the choices around them.
+This skill owns how a ship's delivery mode and `yolo` posture are resolved at intake and how the two task subsections are filled.
 
 ## Scaffold, then fill
 
@@ -21,10 +21,10 @@ How much review a change needs, and how to brief an independent one, belong to `
 Pass `--herdr-lab` whenever the task will drive Herdr lifecycle commands, because the scaffold cannot read the task text you fill in later.
 A home's `config/brief-include.md` is appended to every brief as its own section, so standing home additions go there rather than into each brief.
 
-Fill `## Captain's intent` with the operator's own words, unparaphrased, plus the substance of any report, decision or PR those words refer to, with no speaker label or direct address.
-The reviewer reads that subsection as acceptance criteria, so widening it widens the review.
-Fill `## Firstmate spec` with only the build instructions that ask needs.
-Keep every safety section the scaffold wrote.
+Fill `## Captain's intent` with only the operator's own ask and stated boundaries, unparaphrased, plus the substance of any report, decision or PR those words refer to, with no speaker label or direct address.
+Never widen it: the reviewer reads that subsection as acceptance criteria, so widening it widens the review.
+Fill `## Firstmate spec` with only the build instructions that ask needs; extra generalization or hardening is follow-up work to note, not scope.
+Keep every safety section the scaffold wrote, including the ship brief's worktree-isolation assertion.
 
 ## What the scaffold already says
 
@@ -38,7 +38,9 @@ Every ship and scout brief's Rules carry two lines the dispatcher no longer has 
 
 ## Delivery mode and yolo posture
 
-The mode is resolved at intake, and fm-brief.sh never reads the project registry for it; pass it explicitly.
+Resolve each ship's mode and `yolo` posture at intake: a current explicit operator instruction wins, then the project's registry entry; an unregistered project ships `no-mistakes` with `yolo` off.
+On a `no-mistakes-prod-only` project, product-facing, mixed, or uncertain work ships `no-mistakes`; never infer internal-only from file location or project name.
+fm-brief.sh never reads the project registry for the mode; pass it explicitly.
 `--yolo` belongs to fm-spawn.sh, not the brief, and decides only whether landing is pre-authorized.
 
 Spawn a ship with `--yolo off` whenever its project lands through a merge queue or merge train.

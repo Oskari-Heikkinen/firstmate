@@ -23,8 +23,8 @@ Set the tier at intake, from what breaks if the change is wrong, not from its si
 - **Low** - no executable or machine-read byte changes (wording, docs, comments): a light check by a non-author where the path has reviewers, otherwise the path's own checks.
 
 When unsure, take the higher tier; tests, fixtures and config are at least Normal.
-The tier sets depth inside the delivery path, which owns rigor once it runs.
-Add an independent reviewer only where the path includes one or the operator asked; on a no-mistakes project the path's review is the review, and if more seems needed, ask rather than stack a reviewer onto it.
+The tier sets depth inside the delivery path, which owns rigor once it runs: never hold work for a manual clean verdict or stack manual reviews on it.
+Add an independent reviewer only where the path includes one, `AGENTS.md` section 1 rule 2 requires one, or the operator asked; on a no-mistakes project the path's review is the review, and if more rigor seems needed, ask the operator whether to use no-mistakes rather than stack a reviewer onto it.
 Destructive, irreversible and security-sensitive steps still go to the operator at any tier.
 
 ## One round catches everything

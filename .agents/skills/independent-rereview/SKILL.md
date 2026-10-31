@@ -23,7 +23,7 @@ Name the base the builder started from and the head it reported ready, as revisi
 
 Use this procedure only when the delivery path requires a re-review of a real blocker/major or a higher-risk changed behavior; apply `lean-review` before commissioning it.
 A low-risk PASS with minors alone does not commission another round.
-It is not for a first review or a fresh full review, and this skill commissions no review the captain has not asked for; section 7's delivery-path rules still decide whether any independent review is warranted.
+It is not for a first review or a fresh full review, and this skill commissions no review the captain has not asked for; `lean-review`'s delivery-path rules still decide whether any independent review is warranted.
 
 ## How to use it
 
