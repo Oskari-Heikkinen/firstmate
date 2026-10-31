@@ -94,6 +94,7 @@ Optional fields follow in any order, and a reader ignores keys it does not use:
 - `route=` `code` or `engine`;
 - `run=` a fingerprint of the settings that wrote the line, so lines from different settings are never mixed;
 - `evidence=` `pass`, `fail`, `unknown` or `none`, the probe result as the writer read it;
+- `passed_at=` for a pass, the epoch of the recorded event it rests on (the message handled, the alert cleared);
 - `audit=` the action a model gave for a code-routed row when asked for audit only;
 - `cost=` the engine turn's cost in USD;
 - `error=` why an engine turn fell back to relay;
