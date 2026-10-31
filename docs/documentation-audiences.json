@@ -281,6 +281,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/owner-notice/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/process-event-sources/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -610,6 +614,10 @@
     },
     {
       "path": "docs/orca-backend.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/owner-notice.md",
       "audience": "operator-current"
     },
     {
