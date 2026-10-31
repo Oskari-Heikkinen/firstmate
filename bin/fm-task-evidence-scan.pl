@@ -108,7 +108,8 @@ sub times_only {
 }
 # The first path whose presence or signature differs, or undef when none does.
 # With <retimed>, a path whose signature differs only as times_only allows is
-# pushed there instead, for the caller to prove its bytes unchanged.
+# pushed there instead, for the caller to prove its bytes match the staged
+# manifest.
 sub changed {
     my ($a, $b, $retimed) = @_;
     for my $path (sort keys %$a) {
@@ -168,7 +169,7 @@ if ($mode eq 'recheck') {
         my ($file, $name, $retimed) = @$item;
         # A file the copy did not manifest was never verified; nothing to
         # compare, so only a racy one passes: a retimed one cannot prove its
-        # bytes unchanged.
+        # bytes match the staged manifest.
         if (!exists($staged{$name})) {
             $retimed and refuse_copy("$file changed while it was copied outside the project lock");
             next;

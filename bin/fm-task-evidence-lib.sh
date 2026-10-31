@@ -39,12 +39,13 @@
 # or whose only metadata change is its mtime and ctime, and refuses with nothing
 # changed when any member was added, removed, replaced, retargeted or edited
 # since, unless the copy still holds the member's current bytes: the guarantee
-# is that the copy equals the source as rechecked, so a same-size edit made
-# before a file was copied is captured and passes, and a carried earlier copy,
-# whose staged hashes are its stored manifest's, refuses any edit
-# (bin/fm-task-evidence-scan.pl owns the comparison). No walk of a declared tree runs at finishing, so a caller's lock
-# hold does not grow with the tree; finishing refuses when its inputs differ
-# from staging's. Every other check and refusal below runs at finishing, in the
+# is that the copy equals the source as rechecked at staging's end, before any
+# lock, so a same-size edit made before a file was copied is captured and
+# passes, and a carried earlier copy, whose staged hashes are its stored
+# manifest's, refuses any edit (bin/fm-task-evidence-scan.pl owns the
+# comparison). No walk of a declared tree runs at finishing, so a caller's lock
+# hold does not grow with the tree; finishing, under that lock, consumes the
+# recheck's outcome and refuses when its inputs differ from staging's. Every other check and refusal below runs at finishing, in the
 # original order.
 #
 # Dangling references: every text file under data/<id>/ other than the
@@ -635,8 +636,8 @@ fm_task_evidence_stage() {
     echo "REFUSED: cannot record staged task evidence for $1; nothing was changed" >&2
     return 1
   fi
-  # A copy that verified when staged is still the source's only while nothing
-  # it read has changed since its snapshot.
+  # A copy that verified when staged is kept only while every source it read
+  # still equals the staged manifest baseline, rechecked here at staging's end.
   if [ -n "$FM_TE_STAGE_STAGING" ] && [ "$FM_TE_STAGE_EARLY" = 0 ] \
      && [ "$FM_TE_STAGE_REFUSED" = 0 ] \
      && ! fm_task_evidence_scan recheck "$FM_TE_STAGE_STAGING" "$6" \
