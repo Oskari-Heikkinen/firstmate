@@ -2633,7 +2633,7 @@ open_decision_reminder_tick() {  # [now-epoch], for deterministic clock callers
   [ -n "$now" ] || fm_epoch_seconds_to now
   ledger="$STATE/.open-decision-reminders"
   if [ -e "$ledger" ] || [ -L "$ledger" ]; then
-    if [ ! -f "$ledger" ] || [ ! -r "$ledger" ] || [ -L "$ledger" ] || ! fm_file_text_to old "$ledger"; then
+    if [ ! -f "$ledger" ] || [ ! -r "$ledger" ] || ! fm_file_text_to old "$ledger"; then
       OPEN_DECISION_ERROR="ledger $ledger is not a readable regular file"
       return 1
     fi
