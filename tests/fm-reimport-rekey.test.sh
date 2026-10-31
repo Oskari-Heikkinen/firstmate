@@ -69,7 +69,8 @@ cursor_digest() {  # <state>: one digest over every cursor file's name and bytes
 # seed_task <state> <task>: a log with an open decision, a note and a keyless
 # captain event, carried through every cursor family: a branch outcome, the
 # drain's fold, manifest and backstop, the watcher's seen marker, a home-append
-# range, the heartbeat and away-daemon markers and the snapshot fold cursor.
+# range, the heartbeat and away-daemon markers and the snapshot and timed fold
+# cursors.
 seed_task() {
   local state=$1 task=$2
   printf 'needs-decision [key=target]: choose the release target\nnote: release context attached\ndone: delivered the build\n' \
@@ -100,6 +101,7 @@ settle_home() {  # <state> <task>...
       status_presentation_marker_commit "$(status_heartbeat_seen_marker_path "$1" "$2")" "$f" "$size" "$ident" || exit 1
       status_presentation_marker_commit "$(status_daemon_seen_marker_path "$1" "$2")" "$f" "$size" "$ident" || exit 1
       status_open_decisions_incremental "$f" "$size" exact >/dev/null || exit 1
+      status_open_decisions_incremental "$f" "" timed >/dev/null || exit 1
     ' "$state" "$task" || fail "could not mark every cursor of $task"
   done
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "settling drain failed"
@@ -114,6 +116,8 @@ assert_rekeyed() {
     || fail "$label: the OPEN DECISIONS cursor was not rekeyed: $(cat "$state/.$task.open-decisions-cursor")"
   grep -Fx "ident=$ident" "$state/.$task.snapshot-open-decisions-cursor" >/dev/null \
     || fail "$label: the snapshot cursor was not rekeyed"
+  grep -Fx "ident=$ident" "$state/.$task.timed-open-decisions-cursor" >/dev/null \
+    || fail "$label: the timed open-decision cursor was not rekeyed"
   [ "$(awk -F '\t' -v t="$task" '$1 == t { print $2 }' "$state/.status-presentation-cursor")" = "$ident" ] \
     || fail "$label: the presentation manifest row was not rekeyed"
   [ "$(awk -F '\t' '{ print $4 }' "$state/.$task.branch-outcome-index")" = "$ident" ] \
@@ -150,7 +154,7 @@ check_rekey_reads_only_new_bytes() {  # <label> [<identity-reader>]
   seed_task "$state" keep
   settle_home "$state" keep
   FM_STATE_OVERRIDE="$state" "$REKEY" record > "$dir/record.out" || fail "$label: record failed: $(cat "$dir/record.out")"
-  expect_out "$dir/record.out" "record done: 8 cursors recorded, 0 not recorded"
+  expect_out "$dir/record.out" "record done: 9 cursors recorded, 0 not recorded"
   [ "$(stat_mode "$state/.reimport-rekey.record")" = 600 ] || fail "$label: the record is not private"
 
   copy_home "$dir" copy
@@ -160,7 +164,7 @@ check_rekey_reads_only_new_bytes() {  # <label> [<identity-reader>]
   [ "$old_ident" != "$new_ident" ] || fail "$label: the copy kept the identity $old_ident"
 
   FM_STATE_OVERRIDE="$copy" "$REKEY" apply > "$dir/apply.out" || fail "$label: apply failed: $(cat "$dir/apply.out")"
-  expect_out "$dir/apply.out" "apply done: 8 rekeyed, 0 already current, 0 left for reset, 0 skipped, 0 failed"
+  expect_out "$dir/apply.out" "apply done: 9 rekeyed, 0 already current, 0 left for reset, 0 skipped, 0 failed"
   assert_rekeyed "$label" "$copy" keep
   [ ! -e "$copy/.lock.acquire" ] && [ ! -e "$copy/.watch.lock" ] && [ ! -e "$copy/.status-presentation-lock" ] \
     || fail "$label: apply left a lock behind"
@@ -211,7 +215,7 @@ test_mismatch_and_missing_are_left_alone() {
   expect_out "$dir/apply.out" "apply odc edit left for reset: the log's first"
   expect_out "$dir/apply.out" "apply odc grow left for reset: the log is"
   expect_out "$dir/apply.out" "apply odc gone skipped: the status log is gone"
-  expect_out "$dir/apply.out" "apply done: 0 rekeyed, 0 already current, 16 left for reset, 8 skipped, 0 failed"
+  expect_out "$dir/apply.out" "apply done: 0 rekeyed, 0 already current, 18 left for reset, 9 skipped, 0 failed"
   [ "$before_edit" = "$(cat "$copy/.edit.open-decisions-cursor" "$copy/.seen-edit_status" "$copy/.edit.home-appends")" ] \
     || fail "a hash mismatch still rewrote a cursor"
   [ "$before_grow" = "$(cat "$copy/.grow.open-decisions-cursor" "$copy/.seen-grow_status" "$copy/.grow.home-appends")" ] \
@@ -230,7 +234,7 @@ test_second_apply_is_noop() {
   FM_STATE_OVERRIDE="$copy" "$REKEY" apply > "$dir/apply.out" || fail "first apply failed: $(cat "$dir/apply.out")"
   digest=$(cursor_digest "$copy")
   FM_STATE_OVERRIDE="$copy" "$REKEY" apply > "$dir/apply2.out" || fail "second apply failed: $(cat "$dir/apply2.out")"
-  expect_out "$dir/apply2.out" "apply done: 0 rekeyed, 8 already current, 0 left for reset, 0 skipped, 0 failed"
+  expect_out "$dir/apply2.out" "apply done: 0 rekeyed, 9 already current, 0 left for reset, 0 skipped, 0 failed"
   [ "$digest" = "$(cursor_digest "$copy")" ] || fail "a second apply changed a cursor"
   pass "a second apply changes nothing"
 }
@@ -260,7 +264,7 @@ test_stale_cursor_is_not_recorded() {
   mv -f "$state/old.status.new" "$state/old.status"
   FM_STATE_OVERRIDE="$state" "$REKEY" record > "$dir/record.out" || fail "record failed: $(cat "$dir/record.out")"
   expect_out "$dir/record.out" "record odc old not recorded: the cursor already does not match its log"
-  expect_out "$dir/record.out" "record done: 0 cursors recorded, 8 not recorded"
+  expect_out "$dir/record.out" "record done: 0 cursors recorded, 9 not recorded"
   pass "a cursor that already does not match its log is never carried forward"
 }
 
@@ -297,7 +301,7 @@ test_apply_refuses_while_home_is_live() {
   wait "$holder" 2>/dev/null || true
   printf '%s\n' "$holder" > "$copy/.watch.lock/pid"
   FM_STATE_OVERRIDE="$copy" "$REKEY" apply > "$dir/apply.out" 2>&1 || fail "apply after the holder exited failed: $(cat "$dir/apply.out")"
-  expect_out "$dir/apply.out" "apply done: 8 rekeyed"
+  expect_out "$dir/apply.out" "apply done: 9 rekeyed"
   pass "apply refuses while a session or watcher holds the home's lock, and proceeds once it is stale"
 }
 
