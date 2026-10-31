@@ -20,6 +20,7 @@ TMP_ROOT=$(fm_test_tmproot fm-handoff-firstmate)
 export TZ=UTC
 
 python3 - "$ROOT" "$TMP_ROOT" <<'PY'
+import fnmatch
 import json
 import os
 import subprocess
@@ -36,7 +37,8 @@ PUBLISH = str(root / "bin/fm-handoff-firstmate.py")
 R = (tmp / "machine").resolve()
 LEAD, DOCS = "lead-mate", "docs-mate"
 BASE_ENV = {k: v for k, v in os.environ.items()
-            if k not in ("FM_HOME", "FM_STATE_OVERRIDE", "FM_ROOT_OVERRIDE", "FM_CONFIG_OVERRIDE")}
+            if k not in ("FM_HOME", "FM_STATE_OVERRIDE", "FM_ROOT_OVERRIDE", "FM_CONFIG_OVERRIDE",
+                         "FM_MERGE_QUEUE_DIR")}
 
 
 def ok(msg):
@@ -54,8 +56,8 @@ def expect(cond, msg, detail=""):
     ok(msg)
 
 
-def run(*args, check=True):
-    proc = subprocess.run([*map(str, args)], capture_output=True, text=True, timeout=60, env=BASE_ENV)
+def run(*args, check=True, env=None):
+    proc = subprocess.run([*map(str, args)], capture_output=True, text=True, timeout=60, env=env or BASE_ENV)
     if check and proc.returncode != 0:
         fail(f"{' '.join(map(str, args))} exited {proc.returncode}: {proc.stderr}")
     return proc
@@ -246,8 +248,23 @@ def mq_protocols():
 
 mq_config.write_text("dir=queue\n")
 proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS)
-expect(not mq_protocols() and "is not absolute" in proc.stderr, "a relative queue dir is skipped with a warning",
+expect(not mq_protocols() and "is not an absolute path" in proc.stderr, "a relative queue dir is skipped with a warning",
        proc.stderr)
+mq_config.write_text(f"dir={QUEUE}\r\n")
+proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS)
+expect(not mq_protocols() and "without control characters" in proc.stderr,
+       "a queue dir ending in a carriage return is skipped with a warning", proc.stderr)
+mq_config.write_bytes(b"dir=\xff\n")
+proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS)
+expect(not mq_protocols() and "is unreadable" in proc.stderr, "a config that is not UTF-8 is skipped with a warning",
+       proc.stderr)
+mq_config.unlink()
+real_config = tmp / "real-merge-queue"
+real_config.write_text(f"dir={QUEUE}\n")
+mq_config.symlink_to(real_config)
+proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS)
+expect(not mq_protocols() and proc.stderr == "", "a symlinked config names no queue and warns nothing", proc.stderr)
+mq_config.unlink()
 mq_config.write_text(f"dir={QUEUE}\nhome=docs\n")
 proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS)
 expect(not mq_protocols() and "names no train owner home" in proc.stderr,
@@ -265,6 +282,14 @@ for bad in ("", "{", json.dumps({"owner": {"home": "../x"}}), json.dumps({"owner
 (QUEUE / "owner.json").write_text(json.dumps({"owner": {"home": LEAD, "task": "merge-agent"}}))
 proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS)
 expect(proc.stderr == "", "a queue with a readable owner publishes without a warning", proc.stderr)
+mq_config.write_text("dir=elsewhere\n")
+proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS,
+           env={**BASE_ENV, "FM_MERGE_QUEUE_DIR": str(QUEUE)})
+expect(proc.stderr == "" and [p["stages"][0]["input"]["path"] for p in mq_protocols()]
+       == [f"{os.path.normpath(str(QUEUE))}/watches"],
+       "FM_MERGE_QUEUE_DIR names the queue before dir=, as the arming adapter reads it", proc.stderr)
+mq_config.write_text(f"dir={QUEUE}\nhome=docs\n")
+proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS)
 valid = run(sys.executable, root / "bin/fm-handoff-validate.py", "fragment", docs_frag, check=False)
 expect(valid.returncode == 0, "the fragment with the watch receipts validates", valid.stdout + valid.stderr)
 mq = mq_protocols()
@@ -274,8 +299,8 @@ expect(len(mq) == 1 and mq[0]["id"] == f"fm-mq-watch.{DOCS}" and mq[0]["senders"
        "arming home, with their versioned record type", json.dumps(mq))
 train = mq[0]["stages"]
 expect(len(train) == 1 and train[0]["name"] == "train" and train[0]["owner"] == LEAD and train[0]["planned"] is True
-       and train[0]["input"] == {"path": f"{qdir}/watches", "reach": {"kind": "local"}, "match": "*.json",
-                                  "type_field": "schema"}
+       and train[0]["input"] == {"path": f"{qdir}/watches", "reach": {"kind": "local"},
+                                  "match": f"*.{DOCS}.json", "type_field": "schema"}
        and train[0]["outbox"]["path"] == f"{qdir}/watch-receipts/{DOCS}",
        "its one planned stage is owned by the train's home, reads the queue's watches and has a per-home outbox",
        json.dumps(train))
@@ -285,17 +310,26 @@ run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / LEAD)
 lead_mq = [p for p in json.loads(frag.read_text())["protocols"] if p["id"].startswith("fm-mq-watch.")]
 expect(lead_mq and lead_mq[0]["stages"][0]["outbox"]["path"] == f"{qdir}/watch-receipts/{LEAD}",
        "a second home on the same queue gets its own outbox", json.dumps(lead_mq))
-receipt = QUEUE / "watches" / ("a" * 40 + ".merge-queue-t1-aaaaaaaa.json")
-receipt.write_text(json.dumps({"schema": "lattice.merge-queue.watch.v1", "head": "a" * 40, "task": "t1",
-                               "source_id": "merge-queue-t1-aaaaaaaa", "home": str(R / DOCS),
-                               "armed_at": "2026-10-30T00:00:00Z", "registration": "/nonexistent"}))
-at(receipt, T3)
+# Both homes arm the same task and head: one receipt each, and each protocol's input selects only its own.
+receipts = {}
+for hid in (DOCS, LEAD):
+    receipts[hid] = QUEUE / "watches" / ("a" * 40 + f".merge-queue-t1-aaaaaaaa.{hid}.json")
+    receipts[hid].write_text(json.dumps({"schema": "lattice.merge-queue.watch.v1", "head": "a" * 40, "task": "t1",
+                                         "source_id": "merge-queue-t1-aaaaaaaa", "home": str(R / hid),
+                                         "armed_at": "2026-10-30T00:00:00Z", "registration": "/nonexistent"}))
+    at(receipts[hid], T3)
+matches = {DOCS: mq[0]["stages"][0]["input"]["match"], LEAD: lead_mq[0]["stages"][0]["input"]["match"]}
+selected = {hid: sorted(p.name for p in receipts.values() if fnmatch.fnmatchcase(p.name, m))
+            for hid, m in matches.items()}
+expect(selected == {hid: [receipts[hid].name] for hid in (DOCS, LEAD)},
+       "two homes on one queue each declare only their own receipts", json.dumps(selected))
+receipt = receipts[DOCS]
 for hid in (LEAD, DOCS):
     tick(hid, T3 + 8 * 24 * H)
 raised = {f"{o}->{t}": list(active(o, t)) for o in (LEAD, DOCS) for t in ("main", LEAD, DOCS)}
 expect(not any(k for ks in raised.values() for k in ks if "mq-watch" in k or "unregistered" in k),
        "a receipt in the planned stage's input raises nothing, even past its accepted bound", json.dumps(raised))
-foreign = QUEUE / "watches/foreign.json"
+foreign = QUEUE / "watches" / ("b" * 40 + f".merge-queue-t1-bbbbbbbb.{DOCS}.json")
 foreign.write_text(json.dumps({"schema": "lattice.merge-queue.watch.v9"}))
 tick(LEAD, T3 + 8 * 24 * H + 60)
 expect(any("unregistered-type" in k for k in active(LEAD, LEAD)),

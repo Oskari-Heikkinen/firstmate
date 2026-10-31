@@ -2590,6 +2590,13 @@ Under the default ordering, this happens after the initial `check` publication.
 - A source that has ended therefore captures at most one terminal result, is never restarted, and leaves no recurring poll work.
 - Explicit `retire` stays the supported and idempotent path afterwards.
 
+**Run retirement cleanup**
+
+Some built-in adapters keep a record outside this home's state whose life must match the source's, such as the merge queue's watch receipt.
+Once a built-in source's registration is gone, whether by `retire`, by its runner on a terminal verdict, or by reconciliation finishing a terminal retirement, the runner calls `bin/fm-procevent-<adapter>.sh retired <source-id>`.
+The call is best-effort and silenced: a missing command, an error or any other exit changes nothing, because the registration is already gone.
+External bindings receive no such operation.
+
 **Apply built-in results automatically**
 
 Applying a captured result through code is a built-in adapter seam, and some built-in results carry no judgement at all: they must simply be applied idempotently to this home's own durable state.

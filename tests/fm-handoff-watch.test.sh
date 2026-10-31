@@ -401,3 +401,67 @@ expect(subprocess.run([str(shim)], capture_output=True, text=True).stdout == "",
 expect(cmd("disarm") == "disarmed: state/handoff-watch.check.sh\n" and not shim.exists() and not trust.exists()
        and not (home / "state/handoff-watch/heartbeat").exists(), "disarm removes the check, trust and heartbeat")
 PY
+
+# A typed record removed between its listing and its read is gone, not
+# unreadable; a dangling symlink in its place still is.
+python3 - "$ROOT" "$TMP_ROOT" <<'PY'
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+
+root, tmp = Path(sys.argv[1]), Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location("fm_handoff_watch", root / "bin/fm-handoff-watch.py")
+watch = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(watch)
+
+
+class Probe:
+    record_types = {"t.v1"}
+    incomplete = set()
+
+    def unreadable(self, *args):
+        raise AssertionError(f"place unreadable: {args}")
+
+
+def scan(place_dir):
+    st = {"place": {}}
+    stage = {"input": {"path": str(place_dir), "match": "*.json", "type_field": "schema"}}
+    watch.Watch.read_place(Probe(), stage, "scope", st, False)
+    return st["place"]["entries"]
+
+
+def check(cond, msg, detail=""):
+    if not cond:
+        print(f"not ok - {msg}\n{detail}")
+        sys.exit(1)
+    print("ok - " + msg)
+
+
+place = tmp / "race-place"
+place.mkdir()
+(place / "kept.json").write_text(json.dumps({"schema": "t.v1"}))
+(place / "vanish.json").write_text(json.dumps({"schema": "t.v1"}))
+real_lstat = os.lstat
+
+
+def racing_lstat(path, *args, **kwargs):
+    result = real_lstat(path, *args, **kwargs)
+    if str(path).endswith("vanish.json"):
+        os.unlink(path)
+    return result
+
+
+os.lstat = racing_lstat
+try:
+    entries = scan(place)
+finally:
+    os.lstat = real_lstat
+check(sorted(entries) == ["kept.json"] and entries["kept.json"][1] is None,
+      "a record removed between its listing and its read is gone, not source-unreadable", json.dumps(entries))
+os.symlink(place / "missing-target.json", place / "dangling.json")
+entries = scan(place)
+check(entries.get("dangling.json", [None, None])[1] == "source-unreadable",
+      "a dangling symlink in a typed input place is still source-unreadable", json.dumps(entries))
+PY

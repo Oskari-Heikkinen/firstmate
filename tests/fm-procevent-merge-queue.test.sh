@@ -122,6 +122,7 @@ wait_for() {  # <command...>: poll up to 15s
   return 1
 }
 source_gone() { [ ! -e "$1/state/procevent/$2.source" ]; }
+path_gone() { [ ! -e "$1" ] && [ ! -L "$1" ]; }
 wake_payloads() { awk -F '\t' '{print $5}' "$1/state/.wake-queue" 2>/dev/null; }
 handled_count() { find "$1/state/procevent-inbox" -name '*.handled' 2>/dev/null | wc -l | tr -d ' '; }
 handled_is() { [ "$(handled_count "$1")" = "$2" ]; }
@@ -136,7 +137,8 @@ assert_grep "HANDOFF 2026-09-27T18:00:00Z home=test-home task=t1 branch=fm/t1 he
 sid=$(mq "$H" source-id t1 "$HEAD_A")
 assert_equals "merge-queue-t1-aaaaaaaa" "$sid" "the source id names the task and head"
 assert_present "$H/state/procevent/$sid.source" "handoff arms the watch"
-assert_present "$Q/watches/$HEAD_A.$sid.json" "handoff leaves the watch receipt for the train"
+assert_present "$Q/watches/$HEAD_A.$sid.main.json" \
+  "handoff leaves the watch receipt, named by this home's id and not its configured queue name"
 assert_grep "paused [key=merge-queue] [wait=merge-result:$HEAD_A] [at=" "$H/state/t1.status" "handoff declares the existing wait tag"
 assert_grep "result-ready $HEAD_A" "$H/state/t1.status" "the paused wait names the configured result check"
 assert_grep "park_state=parked" "$H/state/t1.meta" "handoff parks through the existing mechanism"
@@ -151,6 +153,7 @@ assert_no_grep "relaunch" "$CALLS" "adopted park resume never invokes the contro
 assert_present "$H/state/procevent/$sid.source" "refused resume preserves the owning queue source"
 FM_HOME="$H" "$ROOT/bin/fm-park.sh" cancel t1 >/dev/null
 assert_absent "$H/state/procevent/$sid.source" "ordinary cancel retires the adopted source"
+assert_absent "$Q/watches/$HEAD_A.$sid.main.json" "park cancel's retirement removes the watch receipt"
 pass "handoff hands the head over, arms its watch, and declares the wait"
 
 touch "$Q/refuse"
@@ -159,7 +162,7 @@ if mq "$H" handoff t1 fm/t1 "$HEAD_B" --resume-note 'must not replace earlier in
 fi
 assert_grep "refused the handoff" "$TMP_ROOT/refused.err" "the refusal is reported"
 assert_absent "$H/state/procevent/merge-queue-t1-bbbbbbbb.source" "a refused handoff arms nothing"
-assert_absent "$Q/watches/$HEAD_B.merge-queue-t1-bbbbbbbb.json" "a refused handoff writes no watch receipt"
+assert_absent "$Q/watches/$HEAD_B.merge-queue-t1-bbbbbbbb.main.json" "a refused handoff writes no watch receipt"
 assert_no_grep "$HEAD_B" "$H/state/t1.status" "a refused handoff declares no wait"
 assert_equals 'rebase onto main and rerun the gate' "$(cat "$H/state/merge-queue/t1.resume")" 'queue refusal preserves the previous head continuation'
 assert_grep "$HEAD_A" "$H/data/t1/handoff.md" 'queue refusal preserves the previous handoff'
@@ -337,6 +340,7 @@ P="$TMP_ROOT/p-clean"; make_secondmate "$H" "$P" mate1
 : > "$CALLS"
 mq "$H" handoff t1 fm/t1 "$HEAD_A" -- clean >/dev/null
 sid=$(mq "$H" source-id t1 "$HEAD_A")
+assert_present "$Q/watches/$HEAD_A.$sid.mate1.json" "a secondmate home names its watch receipt by its own id"
 pe "$H" reconcile >/dev/null
 printf 'RESULT 2026-09-27T18:02:00Z head=%s outcome=taken main=- note=car-9\n' "$HEAD_A" >> "$Q/queue.log"
 printf 'RESULT 2026-09-27T18:05:00Z head=%s outcome=landed main=%s files=15 identical=15 differ=- dropped=- note=car-9; gate green; evidence .merge-agent/evidence/fbd6f77b\n' "$HEAD_A" "$MAIN" >> "$Q/queue.log"
@@ -344,6 +348,7 @@ wait_for source_gone "$H" "$sid" || {
   pe "$H" list >&2
   fail "the landed watch did not end"
 }
+wait_for path_gone "$Q/watches/$HEAD_A.$sid.mate1.json" || fail "a watch that ends on its result removes its receipt"
 wait_for handled_is "$H" 1 || fail "cleanup killed its runner before acknowledgement"
 assert_grep "cleanup-returned t1" "$CALLS" "cancelling the adopted watch during cleanup returns without killing its own runner"
 assert_present "$(compgen -G "$H/state/procevent-inbox/$sid.*.result" | head -1)" "terminal retirement preserves captured evidence"
@@ -1092,7 +1097,7 @@ queue_expiry_regressions
 Q="$TMP_ROOT/q-receipt"; new_queue "$Q"
 H="$TMP_ROOT/h-receipt"; new_home "$H" "$Q" t1
 sid=merge-queue-t1-aaaaaaaa
-receipt="$Q/watches/$HEAD_A.$sid.json"
+receipt="$Q/watches/$HEAD_A.$sid.main.json"
 mq "$H" arm t1 "$HEAD_A" >/dev/null 2>"$TMP_ROOT/receipt-arm.err" || fail "arm with a writable queue must succeed"
 assert_equals "" "$(cat "$TMP_ROOT/receipt-arm.err")" "a receipt that was written prints no warning"
 assert_present "$receipt" "arm writes the receipt named by head and source id"
@@ -1110,7 +1115,7 @@ assert_present "$(jq -r .registration "$receipt")" "the named registration exist
 receipt_mode=$(stat -c %a "$receipt" 2>/dev/null || stat -f %Lp "$receipt")
 assert_equals 644 "$receipt_mode" "the train's home can read the receipt"
 mq "$H" arm t1 "$HEAD_A" >/dev/null || fail "re-arm must succeed"
-assert_equals "$HEAD_A.$sid.json" "$(ls -A "$Q/watches")" "a re-arm keeps exactly one receipt and leaves no temporary file"
+assert_equals "$HEAD_A.$sid.main.json" "$(ls -A "$Q/watches")" "a re-arm keeps exactly one receipt and leaves no temporary file"
 mq "$H" retire t1 "$HEAD_A" >/dev/null
 assert_absent "$receipt" "retire removes the receipt"
 assert_absent "$H/state/procevent/$sid.source" "retire stops the watch"
@@ -1144,3 +1149,76 @@ assert_equals "inner" "$(ls -A "$receipt")" "no receipt is moved into the direct
 rm -rf "$receipt"
 mq "$H" retire t1 "$HEAD_A" >/dev/null
 pass "a directory in the receipt's place is never written into"
+
+JQ_FAIL_BIN=$(fm_fakebin "$TMP_ROOT/jq-fail-bin")
+printf '#!/bin/sh\nexit 1\n' > "$JQ_FAIL_BIN/jq"; chmod +x "$JQ_FAIL_BIN/jq"
+PATH="$JQ_FAIL_BIN:$PATH" mq "$H" arm t1 "$HEAD_A" >/dev/null 2>"$TMP_ROOT/receipt-jq.err" \
+  || fail "a receipt whose JSON cannot be built must not fail the arm"
+assert_grep "could not write its watch receipt" "$TMP_ROOT/receipt-jq.err" "a failed receipt write is warned about"
+assert_equals "" "$(ls -A "$Q/watches")" "a failed receipt write leaves neither a receipt nor its temporary file"
+mq "$H" retire t1 "$HEAD_A" >/dev/null
+pass "a receipt write that fails part way leaves nothing behind"
+
+# --- watch receipts: per-home names, the arm sweep, removal when a watch ends --
+Q="$TMP_ROOT/q-sweep"; new_queue "$Q"
+H="$TMP_ROOT/h-sweep"; new_home "$H" "$Q" t1
+sid=merge-queue-t1-aaaaaaaa
+receipt="$Q/watches/$HEAD_A.$sid.main.json"
+stale="$Q/watches/$HEAD_B.merge-queue-t9-bbbbbbbb.main.json"
+foreign="$Q/watches/$HEAD_B.merge-queue-t9-bbbbbbbb.mate1.json"
+odd="$Q/watches/gggggggggggggggggggggggggggggggggggggggg.merge-queue-t9-bbbbbbbb.main.json"
+mkdir -p "$Q/watches"
+for f in "$stale" "$foreign" "$odd"; do printf '{}\n' > "$f"; done
+mq "$H" arm t1 "$HEAD_A" >/dev/null 2>"$TMP_ROOT/sweep-arm.err" || fail "arm must succeed beside stale receipts"
+assert_equals "" "$(cat "$TMP_ROOT/sweep-arm.err")" "a sweep that removed what it should prints no warning"
+assert_absent "$stale" "arm removes this home's receipt whose watch is no longer registered"
+assert_present "$foreign" "arm never removes another home's receipt"
+assert_present "$odd" "arm never removes a file whose name does not start with a head"
+assert_present "$receipt" "arm keeps the receipt of a registered watch"
+if mq "$H" retired ../escape 2>/dev/null; then fail "retired must refuse a source id that is not this adapter's"; fi
+mq "$H" retired "$sid" || fail "retired must succeed"
+assert_present "$receipt" "retired keeps the receipt of a watch registered again since"
+pe "$H" retire "$sid" >/dev/null
+assert_absent "$receipt" "retiring the source, as teardown and park cancel do, removes its receipt"
+pass "each home sweeps only its own receipts whose watch is gone"
+
+if [ "$(id -u)" -ne 0 ]; then
+  mq "$H" arm t1 "$HEAD_A" >/dev/null || fail "arm must succeed before the unremovable retire"
+  printf '{}\n' > "$stale"
+  chmod 555 "$Q/watches"
+  mq "$H" retire t1 "$HEAD_A" >/dev/null 2>"$TMP_ROOT/retire-stuck.err"; rc=$?
+  stuck_source_left=0; [ -e "$H/state/procevent/$sid.source" ] && stuck_source_left=1
+  mq "$H" arm t1 "$HEAD_A" >/dev/null 2>"$TMP_ROOT/sweep-stuck.err" || rc=1
+  chmod 755 "$Q/watches"
+  assert_equals 0 "$rc" "an unremovable receipt fails neither retire nor arm"
+  assert_grep "could not remove the watch receipt $receipt" "$TMP_ROOT/retire-stuck.err" \
+    "retire warns about a receipt it could not remove"
+  assert_equals 0 "$stuck_source_left" "the watch still retires behind an unremovable receipt"
+  assert_grep "could not remove the stale watch receipt $stale" "$TMP_ROOT/sweep-stuck.err" \
+    "the arm sweep warns about a stale receipt it could not remove"
+  mq "$H" retire t1 "$HEAD_A" >/dev/null
+  rm -f -- "$stale"
+  pass "a receipt that cannot be removed is warned about and never blocks the watch"
+fi
+
+printf 'Mate.One\n' > "$H/.fm-secondmate-home"
+mq "$H" arm t1 "$HEAD_A" >"$TMP_ROOT/receipt-noid.out" 2>"$TMP_ROOT/receipt-noid.err" \
+  || fail "a home id unusable in a receipt name must not fail the arm"
+rm -f "$H/.fm-secondmate-home"
+assert_grep "armed: $sid" "$TMP_ROOT/receipt-noid.out" "the watch is armed without its receipt"
+assert_grep "wrote no watch receipt" "$TMP_ROOT/receipt-noid.err" "a home id unusable in a receipt name is warned about"
+assert_equals "" "$(compgen -G "$Q/watches/*$sid*")" "no receipt is written under a name the fragment cannot match"
+mq "$H" retire t1 "$HEAD_A" >/dev/null
+(cd "$H" && FM_MERGE_QUEUE_DIR=relative/queue mq "$H" arm t1 "$HEAD_A") >/dev/null 2>"$TMP_ROOT/receipt-rel.err" \
+  || fail "a relative queue dir must not fail the arm"
+assert_grep "wrote no watch receipt: the queue dir relative/queue is not absolute" "$TMP_ROOT/receipt-rel.err" \
+  "a relative queue dir is warned about"
+assert_present "$H/state/procevent/$sid.source" "the watch is armed under a relative queue dir"
+assert_absent "$H/relative" "no receipt is written relative to the working directory"
+FM_MERGE_QUEUE_DIR=relative/queue mq "$H" retire t1 "$HEAD_A" >/dev/null
+FM_MERGE_QUEUE_DIR="$Q"$'\r' mq "$H" arm t1 "$HEAD_A" >/dev/null 2>"$TMP_ROOT/receipt-cr.err" \
+  || fail "a queue dir with a control character must not fail the arm"
+assert_grep "wrote no watch receipt" "$TMP_ROOT/receipt-cr.err" "a queue dir with a control character is warned about"
+assert_absent "$Q"$'\r' "no receipt folder is created under a name with a control character"
+FM_MERGE_QUEUE_DIR="$Q"$'\r' mq "$H" retire t1 "$HEAD_A" >/dev/null
+pass "a receipt the fragment could not declare is never written"

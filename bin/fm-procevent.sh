@@ -113,7 +113,8 @@
 #            result file, or the inbox's handled-record log once the result was
 #            consolidated there. Exit 1 when no such result exists, 2 when it
 #            cannot be read.
-# retire     Drop a registration, stop a runner this home owns, release the claim.
+# retire     Drop a registration, stop a runner this home owns, release the claim,
+#            then run the adapter's retirement cleanup (header note below).
 #            Idempotent, and still the supported explicit path after a source has
 #            already retired itself on its adapter's terminal verdict. Existing
 #            unconditional built-in retirement remains compatible. An external
@@ -196,6 +197,16 @@
 # command is unchanged. A missing command, an error, or any other exit releases
 # the claim after that one result, exactly as before. The runner still does not
 # refresh the owner lease, so a home that has gone still ends the poll.
+#
+# Retirement cleanup is adapter-owned through one more seam of the same kind. Some
+# built-in adapters keep a record outside this home's state whose life must match
+# the source's (the merge queue's watch receipt). So once a built-in source's
+# registration is gone - by `retire`, by this runner on a terminal verdict, or by
+# reconcile finishing a terminal retirement - this runner calls
+# `bin/fm-procevent-<adapter>.sh retired <source-id>`. It is best-effort and
+# silenced: a missing command, an error, or any other exit changes nothing, and
+# the registration is already gone either way. External bindings receive no
+# retired operation.
 #
 # Keyed captain answers from built-in adapters use one more seam of the same kind,
 # and this runner still decides nothing about them. Some sources carry the
@@ -448,6 +459,16 @@ adapter_autohandle() {  # <adapter> <source-id> <result-file>
   "$script" autohandle "$id" "$seq" "$result" >/dev/null 2>&1
 }
 
+# Tell a built-in adapter its source's registration is gone (retirement cleanup
+# note in the header). Silenced and best-effort like the seams above.
+adapter_retired() {  # <adapter> <source-id>
+  local script
+  fm_procevent_adapter_valid "$1" || return 0
+  script=$(adapter_script "$1")
+  [ -f "$script" ] && [ ! -L "$script" ] || return 0
+  "$script" retired "$2" >/dev/null 2>&1 || true
+}
+
 # Pass a bound source's captured result to the one keyed-answer intake. The
 # adapter turns its own format into keyed lines; the intake owns everything those
 # lines mean. Silenced and best-effort exactly like the seams above: an unbound
@@ -477,6 +498,17 @@ feed_reconcile_requests() {  # <adapter> <source-id> <result-file>
   printf '%s\n' "$rows" \
     | "$SCRIPT_DIR/fm-captain-hold.sh" reconcile-requests \
         --source-id "$id" --source "the captured result $id sequence $seq" >/dev/null 2>&1
+}
+
+# The adapter of a built-in registration, read in the shell; fails for an
+# extension registration (its second line is owner=extension) or a missing one.
+builtin_adapter_to() {  # <out-var> <source-id>
+  local file="$REG/$2.source" first second
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  { IFS= read -r first && IFS= read -r second; } 2>/dev/null < "$file" || return 1
+  case "$first" in adapter=?*) ;; *) return 1 ;; esac
+  case "$second" in argc=*) ;; *) return 1 ;; esac
+  printf -v "$1" '%s' "${first#adapter=}"
 }
 
 read_adapter() {  # <source-id>
@@ -1259,6 +1291,7 @@ EOF
       && fm_procevent_merge_queue_park_record_matches "$STATE" "$queue_task" "$queue_head" "$SCRIPT_DIR/fm-procevent-merge-queue.sh"; then
       if retire_owned_terminal_source "$id"; then
         queue_retired=1
+        adapter_retired "$adapter" "$id"
       else
         publish_result "$durable" || true
         publish_pending "$durable" >/dev/null
@@ -1309,7 +1342,10 @@ EOF
   if [ "$queue_retired" -eq 0 ] && adapter_result_is_terminal "$adapter" "$durable"; then
     retire_owned_terminal_source "$id"
     case "$?" in
-      0) printf 'retired: %s (adapter classified the captured result terminal)\n' "$id" ;;
+      0)
+        [ "$extension_owner" -eq 1 ] || adapter_retired "$adapter" "$id"
+        printf 'retired: %s (adapter classified the captured result terminal)\n' "$id"
+        ;;
       *) printf 'cannot retire terminal source; it remains registered: %s\n' "$id" >&2 ;;
     esac
   fi
@@ -1579,6 +1615,7 @@ stranded_leaderless_detail() {  # <source-id>
 cmd_reconcile() {
   fm_supervision_tick_entry "$STATE" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" procevent-reconcile
   local rec id published started=0 stopped=0 uncertain=0 failed=0 claim claim_root owner pid token identity claim_state stop_state
+  local adapter_name retired_adapter
   local failed_mark entry
   local -a launched=()
   # Rejected before anything is launched, and by name. A window this command
@@ -1666,6 +1703,7 @@ cmd_reconcile() {
         continue
       fi
       fm_procevent_source_lock_acquire "$id" || continue
+      retired_adapter=
       if [ -f "$rec" ] && [ ! -L "$rec" ]; then
         fm_procevent_claim_state_locked "$id"
         claim_state=$?
@@ -1695,12 +1733,14 @@ cmd_reconcile() {
           owner=$FM_PROCEVENT_CLAIM_HOME
           pid=$FM_PROCEVENT_CLAIM_PID
           token=$FM_PROCEVENT_CLAIM_TOKEN
+          builtin_adapter_to adapter_name "$id" || adapter_name=
           if fm_procevent_claim_owned_by_state "$STATE" "$FM_HOME" \
             && rm -f -- "$(source_file "$id")" \
             && [ ! -e "$(source_file "$id")" ] \
             && [ ! -L "$(source_file "$id")" ] \
             && fm_procevent_claim_reclaim_locked "$id" "$owner" "$pid" "$token" 2>/dev/null; then
             stopped=$((stopped + 1))
+            retired_adapter=$adapter_name
           else
             uncertain=$((uncertain + 1))
           fi
@@ -1724,6 +1764,7 @@ cmd_reconcile() {
         fi
       fi
       fm_procevent_source_lock_release "$id"
+      [ -z "$retired_adapter" ] || adapter_retired "$retired_adapter" "$id"
     done
   fi
   if [ "${#launched[@]}" -gt 0 ]; then
@@ -2284,7 +2325,7 @@ cmd_show() {
 
 cmd_retire() {
   local id=${1-} condition=${2-} adapter='' sep='' expected_owner='' owner='' pid='' token='' identity='' stop_state owner_state
-  local extension_binding_digest=''
+  local extension_binding_digest='' retired_adapter=''
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   case "$condition" in
     '') [ "$#" -eq 1 ] || usage ;;
@@ -2381,6 +2422,7 @@ cmd_retire() {
     fm_procevent_source_lock_release "$id"
     die "cannot prove external adapter cleanup; source remains registered: $id"
   fi
+  builtin_adapter_to retired_adapter "$id" || retired_adapter=
   rm -f -- "$(source_file "$id")"
   rm -f -- "$(runner_file "$id")"
   rm -f -- "$(stranded_file "$id")"
@@ -2391,6 +2433,7 @@ cmd_retire() {
   # carried. Generic and idempotent: the binding owner is asked to forget this
   # source id, and an unbound source is unaffected.
   "$SCRIPT_DIR/fm-captain-hold.sh" unbind "$id" >/dev/null 2>&1 || true
+  [ -z "$retired_adapter" ] || adapter_retired "$retired_adapter" "$id"
   printf 'retired: %s\n' "$id"
 }
 

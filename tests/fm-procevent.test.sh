@@ -228,9 +228,11 @@ hold_source_lock_then_handle() {  # <home> <source-id> <sequence> <ready-file> <
 # follow the adapter rather than any condition built into the runner.
 cat > "$ADAPTER_ROOT/bin/fm-procevent-endnow.sh" <<'SH'
 #!/usr/bin/env bash
-# Fixture adapter: every captured result ends this source.
+# Fixture adapter: every captured result ends this source. Its retirement
+# cleanup records each source id it is told about.
 case "${1-}" in
   terminal) [ -f "${2-}" ] && exit 0 || exit 1 ;;
+  retired) printf '%s\n' "${2-}" >> "$FM_HOME/state/retired-calls"; exit 0 ;;
 esac
 exit 2
 SH
@@ -773,6 +775,8 @@ pe_adapter "$HTERM" register endnow ends-src -- /bin/echo "terminal payload" >/d
 out=$(pe_adapter "$HTERM" start ends-src)
 assert_contains "$out" "captured:" "a terminal result is still captured durably"
 assert_contains "$out" "retired: ends-src" "the runner reports the adapter-driven retirement"
+assert_equals ends-src "$(cat "$HTERM/state/retired-calls" 2>/dev/null)" \
+  "the runner's terminal retirement runs the adapter's retirement cleanup once"
 assert_absent "$HTERM/state/procevent/ends-src.source" "an adapter-classified terminal result retires its registration"
 assert_absent "$FM_PROCEVENT_CLAIM_ROOT/ends-src.claim" "terminal retirement releases this runner's own claim"
 assert_contains "$(wake_payloads "$HTERM")" "procevent endnow ends-src 1" "the terminal result is still announced"
@@ -785,6 +789,7 @@ assert_contains "$out" "published=1" "an unhandled terminal result is still re-a
 [ "$(count_results "$HTERM" ends-src)" = 1 ] || fail "a retired terminal source ran its poll again"
 out=$(pe_adapter "$HTERM" retire ends-src)
 assert_contains "$out" "retired: ends-src" "explicit retirement stays supported and idempotent after automatic retirement"
+assert_equals ends-src "$(cat "$HTERM/state/retired-calls")" "retiring an already retired source runs no second cleanup"
 ack_out=$(pe_adapter "$HTERM" handled ends-src 1)
 assert_contains "$ack_out" "handled: ends-src 1" "a terminal result is acknowledged through the owned interface"
 out=$(pe_adapter "$HTERM" reconcile)
@@ -846,6 +851,7 @@ assert_present "$HRETFAIL/state/procevent/retire-fail-src.source" \
   "failed retirement preserves the exact registration"
 assert_present "$FM_PROCEVENT_CLAIM_ROOT/retire-fail-src.claim" \
   "failed retirement preserves its terminal ownership claim"
+assert_absent "$HRETFAIL/state/retired-calls" "a retirement that failed runs no retirement cleanup"
 out=$(PATH="$FAIL_RM_BIN:$PATH" pe_adapter "$HRETFAIL" reconcile)
 assert_contains "$out" "started=0" "failed terminal retirement never restarts the poll"
 [ "$(count_results "$HRETFAIL" retire-fail-src)" = 1 ] \
@@ -855,9 +861,20 @@ assert_absent "$HRETFAIL/state/procevent/retire-fail-src.source" \
   "repeated retirement removes the same registration once removal recovers"
 assert_absent "$FM_PROCEVENT_CLAIM_ROOT/retire-fail-src.claim" \
   "the claim releases only after that registration is removed"
+assert_equals retire-fail-src "$(cat "$HRETFAIL/state/retired-calls" 2>/dev/null)" \
+  "reconcile's finished terminal retirement runs the adapter's retirement cleanup once"
 [ "$(count_results "$HRETFAIL" retire-fail-src)" = 1 ] \
   || fail "retirement recovery reran the terminal source"
 pass "failed terminal retirement is fail-closed and idempotently recoverable"
+
+HRETLIVE="$TMP_ROOT/hretlive"; new_home "$HRETLIVE"
+fm_test_track_procevent_home "$HRETLIVE" "$FM_PROCEVENT_CLAIM_ROOT"
+pe_adapter "$HRETLIVE" register endnow live-src -- /bin/echo "never run" >/dev/null
+out=$(pe_adapter "$HRETLIVE" retire live-src)
+assert_contains "$out" "retired: live-src" "an armed source retires"
+assert_equals live-src "$(cat "$HRETLIVE/state/retired-calls" 2>/dev/null)" \
+  "retire, as teardown and park cancel run it, runs the adapter's retirement cleanup"
+pass "every way a built-in source's registration ends runs its adapter's retirement cleanup"
 
 # --- end-user-aligned regression: the exact drain-before-handling restart cut
 # Reproduces the confirmed defect through the public interface end to end: a

@@ -408,6 +408,10 @@ class Watch:
             field = place.get("type_field")
             if field:
                 doc = read_json(path)
+                if doc is None and not os.path.lexists(path):
+                    # Removed since it was listed: gone, not unreadable.
+                    del entries[name]
+                    continue
                 if not isinstance(doc, dict):
                     entries[name][1:] = ["source-unreadable", "is not a readable JSON object"]
                 elif doc.get(field) not in self.record_types:

@@ -18,6 +18,7 @@
 #   fm-procevent-merge-queue.sh classify <result-file>
 #   fm-procevent-merge-queue.sh settle <result-file>
 #   fm-procevent-merge-queue.sh retire <task-id> <head40>
+#   fm-procevent-merge-queue.sh retired <source-id>
 #   fm-procevent-merge-queue.sh watch <task-id> <head40>
 #   fm-procevent-merge-queue.sh terminal|self-announcing|autohandle ...
 #
@@ -49,8 +50,10 @@
 #            to re-arm after an `error` outcome or when a head was handed over
 #            by hand. The source id is merge-queue-<task-id>-<head8>, so a new
 #            head for the same task gets its own watch. Once registered, it
-#            writes the watch receipt <queue dir>/watches/<head40>.<source-id>.json
-#            by rename (docs/handoff-coverage.md "Merge-queue watch receipts"
+#            writes the watch receipt
+#            <queue dir>/watches/<head40>.<source-id>.<home-id>.json by rename
+#            and removes this home's receipts whose watch is no longer
+#            registered (docs/handoff-coverage.md "Merge-queue watch receipts"
 #            owns the format). An arm that cannot register leaves no receipt
 #            for that watch, and a receipt that cannot be written leaves the
 #            watch armed with a stderr warning.
@@ -73,6 +76,9 @@
 #            rechecks it there, so competing handlers cannot duplicate delivery.
 # retire     Remove the head's watch receipt, then stop its watch. Captured
 #            results are never touched.
+# retired    The runner's retirement-cleanup seam (bin/fm-procevent.sh header):
+#            once <source-id> is no longer registered, remove this home's
+#            receipt for it. Every way a watch ends reaches it.
 # watch      The blocking child the generic runner executes; never run it in a
 #            conversational turn. It emits one outcome document on stdout.
 #            While pending it calls the park owner's expire-queue under the
@@ -381,20 +387,64 @@ default_branch_of() {  # <repo>
 
 # --- watch receipts ------------------------------------------------------------
 
-watch_receipt_path() {  # <dir> <head> <sid>
-  printf '%s/watches/%s.%s.json\n' "$1" "$2" "$3"
+watch_receipt_path() {  # <dir> <head> <sid> <home-id>
+  printf '%s/watches/%s.%s.%s.json\n' "$1" "$2" "$3" "$4"
+}
+
+# The queue folder receipts go under: only an absolute path with no control
+# character, which is what bin/fm-handoff-firstmate.py declares.
+receipt_dir() {
+  local dir
+  dir=$(queue_dir) || return 1
+  case "$dir" in /*) ;; *) return 1 ;; esac
+  case "$dir" in *[[:cntrl:]]*) return 1 ;; esac
+  printf '%s\n' "$dir"
+}
+
+# This home's id in receipt names, as bin/fm_handoff_registry.py derives it
+# (a valid .fm-secondmate-home marker, else main), so the fragment's match
+# selects exactly this home's receipts. An unusable marker yields none.
+receipt_home_id() {
+  local id rc=0
+  id=$(fm_parent_channel_home_id "$FM_HOME" 2>/dev/null) || rc=$?
+  case "$rc" in 0) ;; 1) id=main ;; *) return 1 ;; esac
+  [[ "$id" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || return 1
+  printf '%s\n' "$id"
+}
+
+# Remove this home's receipts for <sid>, or for every source when <sid> is
+# empty, whose watch is no longer registered. Prints each receipt that stays.
+sweep_watch_receipts() {  # <dir> <home-id> [<sid>]
+  local dir=$1 hid=$2 sid=${3-} reg f name rest
+  reg=$(fm_procevent_registry_dir "$STATE")
+  if [ -n "$sid" ]; then
+    set -- "$dir/watches/"*".$sid.$hid.json"
+  else
+    set -- "$dir/watches/"*".$hid.json"
+  fi
+  for f in "$@"; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    name=${f##*/}
+    head_valid "${name:0:40}" && [ "${name:40:1}" = . ] || continue
+    rest=${name:41}
+    rest=${rest%".$hid.json"}
+    fm_procevent_source_id_valid "$rest" && [ "$rest" != "${rest#"$ADAPTER"-}" ] || continue
+    [ ! -e "$reg/$rest.source" ] && [ ! -L "$reg/$rest.source" ] || continue
+    rm -f -- "$f" 2>/dev/null
+    [ ! -e "$f" ] && [ ! -L "$f" ] || printf '%s\n' "$f"
+  done
 }
 
 # Publish the receipt that tells the train this home's own watch covers <head>.
 # Written to a dot name in the same folder and renamed, so a reader sees a whole
 # receipt or none.
-write_watch_receipt() {  # <dir> <task> <head> <sid>
+write_watch_receipt() {  # <dir> <task> <head> <sid> <home-id>
   local dir=$1 home state final tmp at
   shift
   home=$(CDPATH='' cd -P -- "$FM_HOME" 2>/dev/null && pwd -P) || return 1
   fm_procevent_state_root_resolve_to state "$STATE" || return 1
   at=$(date -u +%Y-%m-%dT%H:%M:%SZ) || return 1
-  final=$(watch_receipt_path "$dir" "$2" "$3")
+  final=$(watch_receipt_path "$dir" "$2" "$3" "$4")
   # mv would move the receipt into a directory standing in its place and report success.
   [ ! -d "$final" ] || return 1
   (umask 022; mkdir -p "$dir/watches") 2>/dev/null || return 1
@@ -403,11 +453,19 @@ write_watch_receipt() {  # <dir> <task> <head> <sid>
       --arg home "$home" --arg armed_at "$at" --arg registration "$state/procevent/$3.source" \
       '{schema: $schema, head: $head, task: $task, source_id: $source_id, home: $home,
         armed_at: $armed_at, registration: $registration}' > "$tmp" 2>/dev/null \
-    && chmod 0644 "$tmp" && mv -f -- "$tmp" "$final" 2>/dev/null; then
+    && chmod 0644 "$tmp" && flush_file "$tmp" && mv -f -- "$tmp" "$final" 2>/dev/null; then
     return 0
   fi
   rm -f -- "$tmp"
   return 1
+}
+
+# Flush a file's bytes before it is renamed into place, so a crash cannot leave
+# a whole-named but empty receipt. GNU sync takes a file; a sync that takes
+# none fails here and the write goes on unflushed. A lost rename only loses
+# the receipt, which keeps the member in the train's line.
+flush_file() {  # <file>
+  sync -- "$1" 2>/dev/null || :
 }
 
 # --- commands ------------------------------------------------------------------
@@ -419,17 +477,27 @@ cmd_source_id() {
 }
 
 cmd_arm() {
-  local task=${1-} head=${2-} sid dir
+  local task=${1-} head=${2-} sid dir rdir='' hid='' left
   sid=$(cmd_source_id "$task" "$head") || exit 1
   [ -f "$STATE/$task.meta" ] || die "no task record for $task in this home"
   dir=$(queue_dir) || die "no merge queue is configured: set dir= in $CONFIG/merge-queue"
+  if rdir=$(receipt_dir) && hid=$(receipt_home_id); then :; else rdir=; fi
   if ! "$SCRIPT_DIR/fm-procevent.sh" register "$ADAPTER" "$sid" -- "$SELF" watch "$task" "$head" >/dev/null; then
     # An earlier arm's receipt must not outlive a watch this arm could not renew.
-    rm -f -- "$(watch_receipt_path "$dir" "$head" "$sid")" 2>/dev/null
+    [ -z "$rdir" ] || rm -f -- "$(watch_receipt_path "$rdir" "$head" "$sid" "$hid")" 2>/dev/null
     die "cannot register the watch $sid"
   fi
-  write_watch_receipt "$dir" "$task" "$head" "$sid" \
-    || printf 'warning: armed %s, but could not write its watch receipt under %s/watches\n' "$sid" "$dir" >&2
+  if [ -z "$rdir" ]; then
+    printf 'warning: armed %s, but wrote no watch receipt: the queue dir %s is not absolute or this home has no usable id\n' "$sid" "$dir" >&2
+  elif ! write_watch_receipt "$rdir" "$task" "$head" "$sid" "$hid"; then
+    printf 'warning: armed %s, but could not write its watch receipt under %s/watches\n' "$sid" "$rdir" >&2
+  fi
+  if [ -n "$rdir" ]; then
+    # A watch that ended while its retirement cleanup could not run leaves a
+    # receipt behind; each arm removes this home's leftovers.
+    left=$(sweep_watch_receipts "$rdir" "$hid")
+    [ -z "$left" ] || printf 'warning: could not remove the stale watch receipt %s\n' "$left" >&2
+  fi
   printf 'armed: %s\n' "$sid"
 }
 
@@ -821,16 +889,27 @@ cmd_pending_result() {
 }
 
 cmd_retire() {
-  local sid dir receipt
+  local sid dir hid receipt
   sid=$(cmd_source_id "${1-}" "${2-}") || exit 1
   # Receipt first: a receipt without a watch would hide a landing from the
   # train's line, while a watch without a receipt only keeps the line.
-  if dir=$(queue_dir); then
-    receipt=$(watch_receipt_path "$dir" "$2" "$sid")
+  if dir=$(receipt_dir) && hid=$(receipt_home_id); then
+    receipt=$(watch_receipt_path "$dir" "$2" "$sid" "$hid")
     rm -f -- "$receipt" 2>/dev/null
     [ ! -e "$receipt" ] || printf 'warning: could not remove the watch receipt %s\n' "$receipt" >&2
   fi
   "$SCRIPT_DIR/fm-procevent.sh" retire "$sid"
+}
+
+# The runner calls this once <sid>'s registration is gone. A watch armed again
+# since then is registered, and its receipt stays.
+cmd_retired() {
+  local sid=${1-} dir hid left
+  fm_procevent_source_id_valid "$sid" && [ "$sid" != "${sid#"$ADAPTER"-}" ] || usage
+  dir=$(receipt_dir) && hid=$(receipt_home_id) || return 0
+  left=$(sweep_watch_receipts "$dir" "$hid" "$sid")
+  [ -z "$left" ] || printf 'warning: could not remove the watch receipt %s\n' "$left" >&2
+  return 0
 }
 
 case "${1-}" in
@@ -844,6 +923,7 @@ case "${1-}" in
   classify)        shift; cmd_classify "$@" ;;
   settle)          shift; cmd_settle "$@" ;;
   retire)          shift; cmd_retire "$@" ;;
+  retired)         shift; cmd_retired "$@" ;;
   watch)           shift; cmd_watch "$@" ;;
   terminal)        shift; cmd_terminal "$@" ;;
   self-announcing) exit 0 ;;

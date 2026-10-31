@@ -43,7 +43,7 @@ A fragment with `"example": true` is never loaded; never mark a live fragment th
 Briefs, marked `fm-send` requests, secondmate status lines and merge-queue watch receipts are registered by `bin/fm-handoff-firstmate.py`, never by hand; the doc's "Firstmate's own handoffs" section owns what it declares.
 
 - To adopt it in a home, run `bin/fm-handoff-firstmate.py publish --home <home>`, then `bin/fm-handoff-watch.sh arm`.
-- Rerun `publish` after adding or retiring a secondmate, after `config/merge-queue` changes (and, in tooling-mate, after a home joins or leaves); an unchanged publish writes nothing.
+- Rerun `publish` after adding or retiring a secondmate, after `config/merge-queue` or the queue's `owner.json` changes (and, in tooling-mate, after a home joins or leaves); an unchanged publish writes nothing.
 - Its stages read the existing records through receipt adapters (`bin/fm_handoff_adapters.py`): never write receipt files for them, and never add a second writer of a pending reply, inbox message or status line to feed the watcher.
 - A new adapter is a reader only, is named in the stage's `<owner>.receipt-adapter` ext key, and reads each file once per change.
 - Before adopting a native observation adapter, follow the doc's "Native observation adapters" contract: confirm its identity/version/state mapping, historical-versus-logical scope, observation bounds, freshness and retention with the native writer's owner, and never claim whole-service coverage from a terminal output alone.
