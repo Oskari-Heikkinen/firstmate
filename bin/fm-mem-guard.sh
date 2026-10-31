@@ -336,7 +336,7 @@ vm_cache_line() {
     ;;
   esac
   { read -ra prev <"$VM_FILE"; } 2>/dev/null
-  if [ "${#prev[@]}" = 9 ] && [ "${prev[1]}" = "$pid" ] && [ "${prev[4]}" = "$freq" ] && is_uint "${prev[2]}" && is_uint "${prev[3]}"; then
+  if [ "${#prev[@]}" = 9 ] && [ "${prev[4]}" = "$freq" ] && is_uint "${prev[2]}" && is_uint "${prev[3]}"; then
     b_f=${prev[2]} b_perf=${prev[3]}
     if [ $((perf - prev[3])) -lt $((RATE_WINDOW_S * freq)) ] && is_uint "${prev[5]}" && is_uint "${prev[6]}" \
       && [ $((perf - prev[6])) -le $((R_win_stale_max_s * freq)) ]; then
