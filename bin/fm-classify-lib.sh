@@ -2062,7 +2062,7 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
   if [ "$exact_mode" = 1 ]; then
     cf=$(_fm_open_decisions_snapshot_cursor_path "$f")
   elif [ "$timed" = 1 ]; then
-    cf=$(_fm_open_decisions_timed_cursor_path "$f")
+    cf=$(_fm_open_decisions_cursor_path "$f")
     fold_version="$fold_version:timed"
   else
     cf=$(_fm_open_decisions_cursor_path "$f")
