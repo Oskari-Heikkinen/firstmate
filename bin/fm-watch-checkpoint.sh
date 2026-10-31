@@ -189,7 +189,7 @@ fi
 # itself; this direct watcher loads it here.
 # shellcheck source=bin/fm-watch-env-lib.sh
 . "$SCRIPT_DIR/fm-watch-env-lib.sh"
-fm_watch_env_load "$CONFIG"
+:
 
 set +e
 # Interrupt the checkpoint's active check group so the watcher's native EXIT cleanup can release its lock; ordinary watcher shutdown still uses TERM.
