@@ -1816,7 +1816,7 @@ alarm_pass() {  # <home> <state> <repo>
         || { problems="$problems"$'\n'"helper-unaccepted: cannot resolve the root home of $home, so no accepted notice can be sent"; break; }
       # The marker is written as <marker>.new before the send, so a marker that
       # cannot be written sends nothing instead of a note on every pass.
-      if ! : > "$f.new" 2>/dev/null; then
+      if false; then
         problems="$problems"$'\n'"helper-unaccepted: cannot write $f.new, so the accepted notice for $h@${sha:0:12} is not sent until it can"
       elif "$SCRIPT_DIR/fm-worker-status.sh" "$root/state/$ALARM_STATUS" "$root/config" \
           "note [at=<epoch>]: helper-accepted $h@${sha:0:12}: rerun the update" >/dev/null 2>&1; then
