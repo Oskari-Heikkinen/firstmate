@@ -186,7 +186,8 @@
 #
 # STATE (all under state/, owned here): .supervision-host (this host's pid and
 # the processes it runs), .supervision-host-engine (the engine conversation:
-# engine, model, session id, main-session key, turn count, running cost),
+# engine, model, session id, main-session key, turn count, running cost, and
+# the context estimate of its last turn),
 # .supervision-host-turn and .supervision-host-receipts (the current turn's
 # report scope and the reports it recorded), .supervision-host-prompt and
 # .supervision-host-wake (the prompt and wake text of the current turn),
@@ -204,7 +205,10 @@
 # registration lets turns run past the boundary up to it, any other value is
 # the boundary), FM_SUPERVISION_HOST_TURN_TIMEOUT (1200), FM_SUPERVISION_HOST_ROTATE_TURNS (20:
 # a new engine conversation after this many turns; every main session start
-# also opens a new one), FM_SUPERVISION_HOST_READY_TIMEOUT (25: how long a
+# also opens a new one), FM_SUPERVISION_HOST_CONTEXT_CEILING (150000: a new
+# engine conversation once the last turn's context estimate reaches this many
+# tokens; fm_supervision_engine_result owns the estimate),
+# FM_SUPERVISION_HOST_READY_TIMEOUT (25: how long a
 # successor cycle may take to verify), FM_SUPERVISION_HOST_POLL (1),
 # FM_SUPERVISION_HOST_STOP_WAIT (120: how long the stop verb waits for the
 # host to end its park on request before it escalates; read by the verb).
@@ -277,6 +281,7 @@ PARK_LIMIT=$(numeric_or "${FM_SUPERVISION_HOST_PARK_LIMIT:-}" "$PARK_SECONDS")
 { [ "$PARK_LIMIT" -lt 28800 ] && [ "$PARK_LIMIT" -ge "$PARK_SECONDS" ]; } 2>/dev/null || PARK_LIMIT=$PARK_SECONDS
 TURN_TIMEOUT=$(numeric_or "${FM_SUPERVISION_HOST_TURN_TIMEOUT:-}" 1200)
 ROTATE_TURNS=$(numeric_or "${FM_SUPERVISION_HOST_ROTATE_TURNS:-}" 20)
+CONTEXT_CEILING=$(numeric_or "${FM_SUPERVISION_HOST_CONTEXT_CEILING:-}" 150000)
 READY_TIMEOUT=$(numeric_or "${FM_SUPERVISION_HOST_READY_TIMEOUT:-}" 25)
 POLL=$(numeric_or "${FM_SUPERVISION_HOST_POLL:-}" 1)
 COOLDOWN=$FM_SUPERVISION_HOST_COOLDOWN
@@ -1117,26 +1122,49 @@ leave_successor_for_main() {
 }
 
 # The engine conversation for this turn: the recorded one while it belongs to
-# this main session and has turns left, otherwise a new one. Sets ENGINE_SESSION
-# and ENGINE_MODE (new|resume).
+# this main session, has turns left, and its context is under the ceiling,
+# otherwise a new one. Sets ENGINE_SESSION and ENGINE_MODE (new|resume). A
+# recorded conversation it replaces is logged once with the reason and its
+# record removed, so a turn that then fails to start logs no second reset.
+# Only the next turn's conversation changes: the wake and its grant stay as
+# they are, and no turn is running when this is called.
 choose_conversation() {
-  local key recorded_key recorded_session recorded_engine recorded_model turns
+  local key recorded_key recorded_session recorded_engine recorded_model turns context reset
   key=$(fm_supervision_host_main_key "$STATE") || key=
   recorded_key=$(sed -n 's/^key=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)
   recorded_session=$(sed -n 's/^session=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)
   recorded_engine=$(sed -n 's/^engine=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)
   recorded_model=$(sed -n 's/^model=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)
   turns=$(numeric_or "$(sed -n 's/^turns=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)" 0)
-  if [ -n "$key" ] && [ -n "$recorded_session" ] && [ "$recorded_key" = "$key" ] \
-    && [ "$recorded_engine" = "$FM_SUPERVISION_ENGINE" ] \
-    && [ "$recorded_model" = "$FM_SUPERVISION_ENGINE_MODEL" ] \
-    && [ "$turns" -lt "$ROTATE_TURNS" ] && [ -s "$PROMPT_FILE" ]; then
+  context=$(sed -n 's/^context=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)
+  case "$context" in ''|*[!0-9]*) context=unknown ;; esac
+  reset=
+  if [ -z "$recorded_session" ]; then
+    reset=none
+  elif [ -z "$key" ] || [ "$recorded_key" != "$key" ]; then
+    reset="main-session	the main session changed"
+  elif [ "$recorded_engine" != "$FM_SUPERVISION_ENGINE" ] || [ "$recorded_model" != "$FM_SUPERVISION_ENGINE_MODEL" ]; then
+    reset="engine	the engine or model changed"
+  elif [ "$turns" -ge "$ROTATE_TURNS" ]; then
+    reset="turn-limit	turns=$turns limit=$ROTATE_TURNS"
+  elif [ "$context" = unknown ]; then
+    reset="context-unknown	the record carries no context estimate"
+  elif [ "$context" -ge "$CONTEXT_CEILING" ]; then
+    reset="context-ceiling	context=$context ceiling=$CONTEXT_CEILING"
+  elif [ ! -s "$PROMPT_FILE" ]; then
+    reset="prompt	the branch prompt is missing"
+  fi
+  if [ -z "$reset" ]; then
     ENGINE_SESSION=$recorded_session
     ENGINE_MODE=resume
     ENGINE_TURNS=$turns
     ENGINE_COST=$(sed -n 's/^conversation_cost=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)
     ENGINE_KEY=$key
     return 0
+  fi
+  if [ "$reset" != none ]; then
+    log_line "engine-reset	session=$recorded_session	turns=$turns	$reset"
+    rm -f "$ENGINE_RECORD"
   fi
   ENGINE_SESSION=$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]')
   case "$ENGINE_SESSION" in
@@ -1158,11 +1186,11 @@ choose_conversation() {
   return 0
 }
 
-write_engine_record() {  # <turns> <conversation-cost>
+write_engine_record() {  # <turns> <conversation-cost> <context>
   local tmp
   tmp=$(mktemp "$ENGINE_RECORD.tmp.XXXXXX") || return 1
-  printf 'engine=%s\nmodel=%s\nsession=%s\nkey=%s\nturns=%s\nconversation_cost=%s\n' \
-    "$FM_SUPERVISION_ENGINE" "$FM_SUPERVISION_ENGINE_MODEL" "$ENGINE_SESSION" "$ENGINE_KEY" "$1" "$2" > "$tmp" \
+  printf 'engine=%s\nmodel=%s\nsession=%s\nkey=%s\nturns=%s\nconversation_cost=%s\ncontext=%s\n' \
+    "$FM_SUPERVISION_ENGINE" "$FM_SUPERVISION_ENGINE_MODEL" "$ENGINE_SESSION" "$ENGINE_KEY" "$1" "$2" "$3" > "$tmp" \
     && mv -f "$tmp" "$ENGINE_RECORD"
 }
 
@@ -1396,7 +1424,7 @@ handle_wake() {  # <reason-lines>
   health_record "$ENGINE_ERROR" "${receipts:-0}"
   if [ "$ENGINE_ERROR" -eq 0 ] && [ "${receipts:-0}" -gt 0 ] && [ -z "$unacked" ]; then
     write_engine_record $((ENGINE_TURNS + 1)) "$(printf '%s\n' "$usage" | sed -n 's/.* conversation_cost=\([^ ]*\).*/\1/p')" \
-      || rm -f "$ENGINE_RECORD"
+      "$(printf '%s\n' "$usage" | sed -n 's/.* context=\([0-9]*\).*/\1/p')" || rm -f "$ENGINE_RECORD"
     [ "$TURN_POSTURE" != attended ] || "$SCRIPT_DIR/fm-host-mirror.sh" commit >/dev/null 2>&1 || true
     [ "$errors" = /dev/null ] || rm -f "$errors"
     TURN_ERRORS=
