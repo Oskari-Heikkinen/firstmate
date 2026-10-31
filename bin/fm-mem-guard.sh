@@ -467,7 +467,7 @@ vm_read() {
   fi
   [ -n "$WIN_PAGES_IN_PS" ] || return 0
   WIN_VM_PAGES_IN_PS=$WIN_PAGES_IN_PS
-  if [ -n "$WIN_VM_FAULTS_PS" ] && [ "$WIN_VM_FAULTS_PS" -lt "$WIN_PAGES_IN_PS" ]; then WIN_VM_PAGES_IN_PS=$WIN_VM_FAULTS_PS; fi
+  if [ -n "$WIN_VM_FAULTS_PS" ]; then WIN_VM_PAGES_IN_PS=$WIN_VM_FAULTS_PS; fi
 }
 
 meminfo_kib() { # <field>
