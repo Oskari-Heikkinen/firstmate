@@ -1180,6 +1180,11 @@ ACTIVE_PIDS=()
 # shellcheck disable=SC2329 # Registered by the EXIT and signal traps below.
 fm_lint_cleanup() {
   local pid
+  # A subshell a signal reaches before it has reset this shell's traps (a
+  # just-started root worker) runs this trap as it dies; only this process
+  # cleans up. The kernel answers which process this is: in that window
+  # BASHPID can still name the parent.
+  [ "$(exec sh -c 'echo "$PPID"')" = "$$" ] || return 0
   for pid in "${ACTIVE_PIDS[@]:-}"; do
     [ -n "$pid" ] || continue
     kill -TERM -- "-$pid" 2>/dev/null || true

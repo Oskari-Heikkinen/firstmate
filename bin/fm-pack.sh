@@ -377,6 +377,11 @@ prepare() {
 # shellcheck disable=SC2329 # Registered as the EXIT trap in prepare.
 finish() {
   local rc=$? report
+  # A subshell a signal reaches before it has reset this shell's traps (the
+  # stop guard, a just-started step) runs this trap as it dies; only this
+  # process cleans up. The kernel answers which process this is: in that
+  # window BASHPID can still name the parent.
+  [ "$(exec sh -c 'echo "$PPID"')" = "$$" ] || return 0
   [ -z "$CLEANUP" ] || "$CLEANUP"
   if [ -n "$RUN" ] && [ -s "$RUN/retry.log" ] && { [ "$CMD" != verify-tar ] || [ "$rc" != 0 ]; }; then
     report=$(awk '{ n++; split($5, w, "="); if (w[2] + 0 > m) m = w[2] + 0; c[$3]++

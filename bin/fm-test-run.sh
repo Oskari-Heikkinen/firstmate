@@ -2286,6 +2286,11 @@ declare -a WORKER_SCRIPTS=()
 # Invoked indirectly by the EXIT trap below.
 # shellcheck disable=SC2329
 cleanup_run() {
+  # A subshell a signal reaches before it has reset this shell's traps (the
+  # stop guard, a just-started script) runs this trap as it dies, so only the
+  # runner itself may remove the run's scratch. The kernel answers which
+  # process this is: in that window BASHPID can still name the parent.
+  [ "$(exec sh -c 'echo "$PPID"')" = "$$" ] || return 0
   # A --jobs worker's TMPDIR lives here, and tests may leave owner-read-only
   # directories behind (a secondmate's locked git-hooks); restore owner write
   # first so removing the run's own scratch cannot fail an otherwise green run.
