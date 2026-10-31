@@ -2748,7 +2748,6 @@ open_decision_reminder_check() {  # [now-epoch]
   fi
   OPEN_DECISION_TICK_LAST=$now
   if open_decision_reminder_tick "$now"; then
-    fm_rm_present "$marker"
     return 0
   fi
   OPEN_DECISION_REMINDER=
