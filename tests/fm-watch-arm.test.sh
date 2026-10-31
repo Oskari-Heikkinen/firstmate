@@ -946,6 +946,128 @@ test_append_wakes_live_announced_watcher() {
   pass "watch-arm: appending work reopens an announced empty recovery"
 }
 
+# A recovery with nothing owed (docs/watcher-continuity.md "Announcement")
+# retires its episode without a wake. Each case below holds exactly one owed
+# input, so reverting the check for that input fails only that case.
+wait_for_quiet_retire() {  # <state>
+  local i=0
+  while [ "$i" -lt "$REARM_EXIT_POLLS" ]; do
+    grep -F 'rearm-resurface not woken: nothing unshown after watcher downtime' \
+      "$1/.watch-triage.log" >/dev/null 2>&1 && return 0
+    is_live_non_zombie "$ARM_PID" || return 1
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+stop_arm() {
+  kill "$ARM_PID" 2>/dev/null || true
+  wait "$ARM_PID" 2>/dev/null || true
+}
+
+test_recovery_with_nothing_owed_retires_quietly() {
+  local dir home state fakebin armout
+  dir=$(make_case quiet-recovery)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  mkdir -p "$home/data"
+  printf 'pending:downtime:quiet.fixture\n' > "$state/.watcher-down"
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$armout"
+  wait_for_quiet_retire "$state" \
+    || fail "an empty recovery was not retired quietly: $(cat "$armout")"
+  is_live_non_zombie "$ARM_PID" || fail "an empty recovery ended the cycle: $(cat "$armout")"
+  ! grep -F 'check: rearm-resurface' "$armout" >/dev/null \
+    || fail "an empty recovery still woke the supervisor"
+  assert_equals 'acked:downtime:quiet.fixture' "$(cat "$state/.watcher-down")" \
+    "the quiet recovery retires its generation"
+  assert_equals 1 "$(grep -cF 'rearm-resurface not woken' "$state/.watch-triage.log")" \
+    "the quiet recovery logs one line"
+  append_wake "$state" check inbox:fixture 'check: captain inbox note fixture' \
+    || fail "the producer could not append after a quiet recovery"
+  wait_for_exit "$ARM_PID" "$REARM_EXIT_POLLS" \
+    || fail "work appended after a quiet recovery was stranded"
+  grep -F 'check: rearm-resurface' "$armout" >/dev/null \
+    || fail "work appended after a quiet recovery did not wake: $(cat "$armout")"
+  pass "watch-arm: a recovery with nothing owed is retired with one log line, and later work still wakes"
+}
+
+test_recovery_with_a_queued_row_wakes() {
+  local dir home state fakebin armout
+  dir=$(make_case owed-queue-recovery)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  mkdir -p "$home/data"
+  append_wake "$state" check inbox:fixture 'check: captain inbox note fixture' \
+    || fail "the fixture row could not be appended"
+  printf 'pending:downtime:queued.fixture\n' > "$state/.watcher-down"
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$armout"
+  wait_for_exit "$ARM_PID" "$REARM_EXIT_POLLS" || fail "a recovery with a queued row did not wake"
+  grep -F 'check: rearm-resurface' "$armout" >/dev/null \
+    || fail "a recovery with a queued row was not announced: $(cat "$armout")"
+  ! grep -F 'rearm-resurface not woken' "$state/.watch-triage.log" >/dev/null 2>&1 \
+    || fail "a recovery with a queued row was retired as empty"
+  pass "watch-arm: a recovery whose queue holds a row wakes"
+}
+
+test_recovery_with_an_unshown_status_wakes() {  # <fresh|dangling>
+  local dir home state fakebin armout
+  dir=$(make_case "owed-status-recovery-$1")
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  mkdir -p "$home/data"
+  case "$1" in
+    fresh) printf 'working: shown to nobody yet\n' > "$state/owed.status" ;;
+    dangling) ln -s "$dir/missing-status-target" "$state/owed.status" ;;
+  esac
+  printf 'pending:downtime:status.fixture\n' > "$state/.watcher-down"
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$armout"
+  wait_for_exit "$ARM_PID" "$REARM_EXIT_POLLS" || fail "a recovery with an unshown $1 status did not wake"
+  grep -F 'check: rearm-resurface' "$armout" >/dev/null \
+    || fail "a recovery with an unshown $1 status was not announced: $(cat "$armout")"
+  ! grep -F 'rearm-resurface not woken' "$state/.watch-triage.log" >/dev/null 2>&1 \
+    || fail "a recovery with an unshown $1 status was retired as empty"
+  pass "watch-arm: a recovery with an unshown $1 status source wakes"
+}
+test_recovery_with_an_unshown_fresh_status_wakes() { test_recovery_with_an_unshown_status_wakes fresh; }
+test_recovery_with_an_unreadable_status_wakes() { test_recovery_with_an_unshown_status_wakes dangling; }
+
+test_recovery_with_an_unreadable_queue_is_not_retired() {
+  local dir home state fakebin armout rc=0
+  if [ "$(id -u)" = 0 ]; then
+    pass "watch-arm: skipped the unreadable-queue case as root, where mode 000 stays readable"
+    return 0
+  fi
+  dir=$(make_case unreadable-queue-recovery)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  mkdir -p "$home/data"
+  : > "$state/.wake-queue"
+  chmod 000 "$state/.wake-queue"
+  printf 'pending:downtime:unreadable.fixture\n' > "$state/.watcher-down"
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$armout"
+  wait_for_exit "$ARM_PID" "$REARM_EXIT_POLLS" || rc=$?
+  chmod 600 "$state/.wake-queue"
+  [ "$rc" -eq 0 ] || { stop_arm; fail "a recovery over an unreadable queue was held quiet: $(cat "$armout")"; }
+  ! grep -F 'rearm-resurface not woken' "$state/.watch-triage.log" >/dev/null 2>&1 \
+    || fail "a recovery over an unreadable queue was retired as empty"
+  [ "$(cat "$state/.watcher-down")" != 'acked:downtime:unreadable.fixture' ] \
+    || fail "a recovery over an unreadable queue acknowledged its episode"
+  pass "watch-arm: an unreadable wake queue counts as owed and is never retired quietly"
+}
+
 # Exercise the handling-window recovery invariant owned by
 # docs/watcher-continuity.md through real watcher processes.
 test_handling_window_close_keeps_the_acknowledgement_valid() {
@@ -2081,6 +2203,11 @@ WATCH_ARM_CASES=(
   test_watcher_exiting_during_slow_start_still_fails_promptly
   test_watcher_exits_when_its_state_directory_is_removed
   test_append_wakes_live_announced_watcher
+  test_recovery_with_nothing_owed_retires_quietly
+  test_recovery_with_a_queued_row_wakes
+  test_recovery_with_an_unshown_fresh_status_wakes
+  test_recovery_with_an_unreadable_status_wakes
+  test_recovery_with_an_unreadable_queue_is_not_retired
   test_delivery_gap_wake_is_recovered_once
   test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
   test_take_over_preserves_downtime_from_watcher_self_exit

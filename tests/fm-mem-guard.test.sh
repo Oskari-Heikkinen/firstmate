@@ -216,11 +216,85 @@ test_starved_windows_host_tells_main_start_repeat_and_clear() {
   fake_ps 6000 50 0 600
   out=$(FM_MEM_GUARD_NOW=1002700 guard tick --check)
   assert_equals "" "$out" "one healthy sample holds the level without a notice"
-  out=$(FM_MEM_GUARD_NOW=1003000 guard tick --check)
-  assert_equals "memory guard cleared: level ok: all signals within limits (bin/fm-mem-guard.sh status)" "$out" "the clear is told once, the tick the level falls"
-  out=$(FM_MEM_GUARD_NOW=1003300 guard tick --check)
+  for t in 1003000 1003300; do
+    out=$(FM_MEM_GUARD_NOW=$t guard tick --check)
+    assert_equals "" "$out" "a clear younger than 600 seconds is not told yet at $t"
+  done
+  out=$(FM_MEM_GUARD_NOW=1003600 guard tick --check)
+  assert_equals "memory guard cleared: level ok: all signals within limits (bin/fm-mem-guard.sh status)" "$out" "the clear is told once it has lasted 600 seconds"
+  out=$(FM_MEM_GUARD_NOW=1003900 guard tick --check)
   assert_equals "" "$out" "a healthy machine after the clear stays silent"
-  pass "a starved Windows host grades above ok naming paging and the pool, and main is told at the start, on a rise, on the repeat cadence and once at the clear"
+  pass "a starved Windows host grades above ok naming paging and the pool, and main is told at the start, on a rise, on the repeat cadence and once after a sustained clear"
+}
+
+# Paging alone (normal pool) drives these cases: refuse at 700 pages/s, critical
+# at 1250, ok at 50; a fall to ok takes two healthy ticks.
+flap_case() {  # <name>
+  new_case "$1"
+  printf '{}\n' > "$C/rules.json"
+  fake_ps 1600 700
+  guard sample >/dev/null
+  out=$(FM_MEM_GUARD_NOW=1000300 guard tick --check)
+  assert_contains "$out" "memory guard refuse: Windows pages input 700/s" "$1: the state's start wakes main"
+}
+
+test_flapping_state_folds_into_one_clear() {
+  local out t
+  flap_case flapfold
+  fake_ps 6000 50
+  for t in 1000600 1000900; do
+    out=$(FM_MEM_GUARD_NOW=$t guard tick --check)
+    assert_equals "" "$out" "a fresh clear is not told at $t"
+  done
+  fake_ps 1600 700
+  out=$(FM_MEM_GUARD_NOW=1001200 guard tick --check)
+  assert_equals "" "$out" "a return at the told level inside the hold folds into the open notice"
+  fake_ps 6000 50
+  for t in 1001500 1001800 1002100; do
+    out=$(FM_MEM_GUARD_NOW=$t guard tick --check)
+    assert_equals "" "$out" "the second clear is not told before 600 seconds at $t"
+  done
+  out=$(FM_MEM_GUARD_NOW=1002400 guard tick --check)
+  assert_equals "memory guard cleared: level ok: all signals within limits (bin/fm-mem-guard.sh status)" "$out" "the flapping state ends in one clear notice"
+  assert_absent "$C/home/state/.mem-guard-wake" "a clear told past rewake_s drops the record"
+  pass "a state that clears and returns inside 600 seconds folds into its open notice and one clear"
+}
+
+test_return_after_a_told_clear_wakes_only_higher() {
+  local out t
+  flap_case flaphold
+  fake_ps 6000 50
+  for t in 1000600 1000900 1001200; do
+    FM_MEM_GUARD_NOW=$t guard tick --check >/dev/null
+  done
+  out=$(FM_MEM_GUARD_NOW=1001500 guard tick --check)
+  assert_contains "$out" "memory guard cleared" "the sustained clear is told"
+  assert_present "$C/home/state/.mem-guard-wake" "the record outlives a told clear inside rewake_s"
+  fake_ps 1600 700
+  out=$(FM_MEM_GUARD_NOW=1001800 guard tick --check)
+  assert_equals "" "$out" "a return at the told level inside rewake_s stays quiet"
+  fake_ps 1600 1250
+  out=$(FM_MEM_GUARD_NOW=1002100 guard tick --check)
+  assert_contains "$out" "memory guard critical: Windows pages input 1250/s" "a return above the told level wakes at once"
+  pass "after a told clear, a return inside rewake_s wakes only above the level last told"
+}
+
+test_told_clear_record_expires_after_rewake() {
+  local out t
+  flap_case flapexpire
+  fake_ps 6000 50
+  for t in 1000600 1000900 1001200; do
+    FM_MEM_GUARD_NOW=$t guard tick --check >/dev/null
+  done
+  out=$(FM_MEM_GUARD_NOW=1001500 guard tick --check)
+  assert_contains "$out" "memory guard cleared" "the sustained clear is told"
+  out=$(FM_MEM_GUARD_NOW=1002100 guard tick --check)
+  assert_equals "" "$out" "the told clear's record expires silently"
+  assert_absent "$C/home/state/.mem-guard-wake" "the record is gone rewake_s after the last wake"
+  fake_ps 1600 700
+  out=$(FM_MEM_GUARD_NOW=1002400 guard tick --check)
+  assert_contains "$out" "memory guard refuse: Windows pages input 700/s" "a return after rewake_s wakes at the same level"
+  pass "a told clear's record expires rewake_s after the last wake, and a later return wakes again"
 }
 
 test_healthy_windows_host_stays_ok_and_silent() {
@@ -255,7 +329,9 @@ test_pool_notice_holds_through_an_unavailable_reading() {
   export FM_MEM_GUARD_POWERSHELL="$C/powershell.exe"
   fake_ps 6000 10 0 600
   out=$(FM_MEM_GUARD_NOW=1001000 guard tick --check)
-  assert_contains "$out" "memory guard cleared" "a readable normal pool clears the notice once the level falls"
+  assert_equals "" "$out" "a readable normal pool starts the clear without telling it"
+  out=$(FM_MEM_GUARD_NOW=1001600 guard tick --check)
+  assert_contains "$out" "memory guard cleared" "a readable normal pool clears the notice once the clear lasts 600 seconds"
   pass "the non-paged pool wakes main with no agent response and its notice holds through an unavailable reading"
 }
 
@@ -505,6 +581,9 @@ test_defaults_grade_linux_and_only_sample_windows_available
 test_swap_grades_only_while_growing
 test_admit_refuses_heavy_jobs
 test_starved_windows_host_tells_main_start_repeat_and_clear
+test_flapping_state_folds_into_one_clear
+test_return_after_a_told_clear_wakes_only_higher
+test_told_clear_record_expires_after_rewake
 test_healthy_windows_host_stays_ok_and_silent
 test_pool_notice_holds_through_an_unavailable_reading
 test_critical_wakes_only_main_once_per_window
