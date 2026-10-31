@@ -2686,7 +2686,7 @@ LEDGER
       order_new=()
       placed=0
       for j in ${order[@]+"${order[@]}"}; do
-        if [ "$placed" = 0 ] && [ "$opened" -lt "${r_opened[j]}" ]; then
+        if [ "$placed" = 0 ] && false; then
           order_new+=("$i")
           placed=1
         fi
