@@ -1418,7 +1418,10 @@ test_watcher_exits_when_its_state_directory_is_removed() {
   mkdir -p "$home/data"
   start_owned_watcher "$home" "$state" "$fakebin" "$armout"
 
-  rm -rf "$state"
+  # Unlink the watched pathname atomically: recursive deletion races the live
+  # watcher's state writes and can leave the directory present (ENOTEMPTY).
+  # Reclaim the renamed tree only after the watcher and arm have stopped.
+  mv "$state" "$dir/removed-state" || fail "could not remove the state pathname"
   wait_for_pid_gone "$WATCH_PID" 400 \
     || { kill -TERM "$WATCH_PID" 2>/dev/null; fail "watcher pid $WATCH_PID outlived its deleted state directory"; }
   wait_for_exit "$ARM_PID" 100 >/dev/null 2>&1 || true
@@ -1426,6 +1429,7 @@ test_watcher_exits_when_its_state_directory_is_removed() {
     || fail "watcher did not log the state-gone exit reason: $(cat "$armout")"
   ! grep -q '^signal:\|^check:\|^stale:\|^heartbeat' "$armout" \
     || fail "a state-gone exit was reported as an actionable wake: $(cat "$armout")"
+  rm -rf "$dir/removed-state"
   pass "watch-arm: a watcher exits when its state directory is removed"
 }
 
@@ -1441,7 +1445,7 @@ test_watcher_exits_when_its_home_is_removed() {
   mkdir -p "$home/data"
   start_owned_watcher "$home" "$state" "$fakebin" "$armout"
 
-  rm -rf "$home"
+  mv "$home" "$dir/removed-home" || fail "could not remove the home pathname"
   wait_for_pid_gone "$WATCH_PID" 400 \
     || { kill -TERM "$WATCH_PID" 2>/dev/null; fail "watcher pid $WATCH_PID outlived its deleted home"; }
   wait_for_exit "$ARM_PID" 100 >/dev/null 2>&1 || true
@@ -1449,6 +1453,7 @@ test_watcher_exits_when_its_home_is_removed() {
     || fail "watcher did not log the home-gone exit reason: $(cat "$armout")"
   [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" != "$WATCH_PID" ] \
     || fail "the exited watcher left its lock in place"
+  rm -rf "$dir/removed-home"
   pass "watch-arm: a watcher exits when its home is removed"
 }
 
