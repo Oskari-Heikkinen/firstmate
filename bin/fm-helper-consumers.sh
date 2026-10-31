@@ -1545,7 +1545,7 @@ alarm_accepted() {  # <dir> <log>
           else if (cs[i] in bad) ok[v] = 0
         }
       }
-      for (j = 1; j <= m; j++) if (any[vorder[j]] && ok[vorder[j]]) print vorder[j]
+      for (j = 1; j <= m; j++) if (ok[vorder[j]]) print vorder[j]
     }' "$1/decls.tsv" "$2") || { rm -f -- "$1/accepted.tsv"; return 1; }
   { mkdir -p "$1/accepted" && if [ -n "$rows" ]; then printf '%s\n' "$rows"; fi > "$1/accepted.tsv.new" \
     && mv -f -- "$1/accepted.tsv.new" "$1/accepted.tsv"; } 2>/dev/null \
