@@ -47,10 +47,11 @@ test_selected_harness_block_only() {
   pass "renderer prints exactly the selected harness block"
 }
 
-# Every Claude home requires explicit opt-in. No file or an off file renders
-# the plain block; an opt-in file adds the host protocol to that block.
+# A Claude home runs the host unless config/supervision-host-off opts it out:
+# the off file renders the plain block, and no file renders exactly what an
+# empty config/supervision-host does, the host protocol added to that block.
 test_supervision_host_protocol_on_an_opted_in_claude_home() {
-  local home config plain hosted other body
+  local home config plain hosted default other body
   home="$TMP_ROOT/host-home"
   config="$TMP_ROOT/host-config"
   mkdir -p "$home/state" "$config"
@@ -58,10 +59,11 @@ test_supervision_host_protocol_on_an_opted_in_claude_home() {
   plain=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness claude)
   assert_not_contains "$plain" "Supervision host" "a claude home opted out by config/supervision-host-off rendered the host protocol"
   rm -f "$config/supervision-host-off"
-  assert_equals "$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness claude)" "$plain" \
-    "a Claude home without config/supervision-host must render the plain protocol"
+  default=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness claude)
   : > "$config/supervision-host"
   hosted=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness claude)
+  assert_equals "$hosted" "$default" \
+    "a Claude home without config/supervision-host must render what an empty config/supervision-host does"
   assert_contains "$hosted" "- Supervision host: on" "an opted-in claude home did not render the host state line"
   assert_mode "$hosted" Claude "the host protocol replaced the claude protocol instead of adding to it"
   body=$(printf '%s\n' "$hosted" | sed -n '/^Supervision host: on/,$p')
@@ -76,7 +78,7 @@ test_supervision_host_protocol_on_an_opted_in_claude_home() {
   rm -f "$config/supervision-host"
   other=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness pi)
   assert_not_contains "$other" "Supervision host" "a pi primary without config/supervision-host rendered the host protocol"
-  pass "renderer adds the supervision-host protocol on an opted-in claude home unless config/supervision-host-off opts it out, leaving the claude block intact"
+  pass "renderer adds the supervision-host protocol on a claude home, with or without config/supervision-host, unless config/supervision-host-off opts it out, leaving the claude block intact"
 }
 
 # Each non-Pi arm owner gets the host protocol in its own terms, and only its

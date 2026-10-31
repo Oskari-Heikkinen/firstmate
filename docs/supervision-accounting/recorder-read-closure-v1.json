@@ -5068,12 +5068,12 @@
    "root": "config",
    "sites": [
     {
-     "site": "bin/fm-supervision-engine-lib.sh:177",
+     "site": "bin/fm-supervision-engine-lib.sh:202",
      "source": "fm_supervision_host_enabled \"$1\" \"$primary\""
     },
     {
-     "site": "bin/fm-supervision-engine-lib.sh:73",
-     "source": "[ -f \"$1/supervision-host\" ]"
+     "site": "bin/fm-supervision-engine-lib.sh:77",
+     "source": "[ ! -f \"$1/supervision-host\" ] || return 0"
     },
     {
      "site": "bin/fm-supervision-instructions.sh:115",
@@ -5091,12 +5091,12 @@
    "root": "config",
    "sites": [
     {
-     "site": "bin/fm-supervision-engine-lib.sh:177",
+     "site": "bin/fm-supervision-engine-lib.sh:202",
      "source": "fm_supervision_host_enabled \"$1\" \"$primary\""
     },
     {
-     "site": "bin/fm-supervision-engine-lib.sh:72",
-     "source": "[ ! -e \"$1/supervision-host-off\" ] && [ ! -L \"$1/supervision-host-off\" ] || return 1"
+     "site": "bin/fm-supervision-engine-lib.sh:82",
+     "source": "[ -e \"$1/supervision-host-off\" ] || [ -L \"$1/supervision-host-off\" ]"
     },
     {
      "site": "bin/fm-supervision-instructions.sh:115",

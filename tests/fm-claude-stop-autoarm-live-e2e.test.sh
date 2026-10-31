@@ -71,6 +71,9 @@ SH
 chmod +x "$PROJECT/bin/tool-logger.sh"
 
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/config" "$HOME_DIR/data"
+# This guard counts the plain arm's runs, so the home opts out of the
+# supervision host a Claude home otherwise runs by default.
+: > "$HOME_DIR/config/supervision-host-off"
 printf 'project=fixture\nwindow=fixture\nbackend=tmux\n' > "$HOME_DIR/state/task.meta"
 # A numeric pid above the supported OS pid range is a demonstrably dead prior
 # harness owner under fm_harness_pid_alive, matching the reproduced incident.
@@ -168,6 +171,7 @@ fi
 FAKE_CLAUDE="$LAB/claude"
 ln -s /bin/bash "$FAKE_CLAUDE"
 mkdir -p "$LIVE_OWNER_HOME/state" "$LIVE_OWNER_HOME/config"
+: > "$LIVE_OWNER_HOME/config/supervision-host-off"
 printf 'project=fixture\n' > "$LIVE_OWNER_HOME/state/task.meta"
 "$FAKE_CLAUDE" -c 'sleep 3; :' &
 LIVE_OWNER_PID=$!
