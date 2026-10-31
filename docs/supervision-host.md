@@ -370,10 +370,17 @@ The [host header](../bin/fm-supervision-host.sh) owns the wait, the exit statuse
 
 The engine keeps one conversation across wakes so the byte-stable prompt stays cached.
 That conversation is keyed to the current main session.
-A new one opens in two cases:
+Each wake adds history, and every model call in a turn reads the whole conversation again, so the per-wake cost grows with it.
+A new one opens in these cases:
 
-- At every main session start.
-- Every `FM_SUPERVISION_HOST_ROTATE_TURNS` turns, because each wake adds history and the per-wake cost grows with it.
+- At every main session start, and when the engine or model changes.
+- Every `FM_SUPERVISION_HOST_ROTATE_TURNS` turns.
+- Once the last turn's context estimate reaches `FM_SUPERVISION_HOST_CONTEXT_CEILING` tokens (150,000 by default), or when the record carries no estimate.
+- After a turn that did not handle its wake (see [Paths that hand the wake back](#paths-that-hand-the-wake-back)); its `failed` log line already records that reset.
+
+The host decides this between turns, just before the next turn starts, so a reset never cuts into a running turn and leaves the wake and its grant untouched.
+The new conversation is built the same way as at a session start: the branch prompt is rendered again and the attended wake's dialog mirror re-anchors on the main session's newest entries.
+Every other reset of a recorded conversation writes one `engine-reset` line to the host log naming the old session, its turn count, and the reason.
 
 Nothing captain-facing rides on that conversation, because the outcome store carries every result.
 The captain context it acts on is the [dialog mirror](#the-dialog-mirror) at the head of every attended wake and the away record's read-back at the tail of every away wake.
@@ -387,6 +394,7 @@ Each engine turn's line carries these fields, and this log is where engine cost 
 - The engine's reported usage.
 - The turn's cost.
 - The conversation's running cost.
+- The conversation's context estimate.
 
 ## Engines
 
@@ -422,6 +430,8 @@ Today the only verified engine is Claude's print mode, measured on Claude Code 2
 - `--output-format json` carries the error flag, turn count, usage, and the tool's own cost estimate.
 - On a resumed conversation that cost is the conversation's running total, while the usage and turn count are the turn's own.
   So the engine lib derives each turn's cost from the total the host recorded after the previous turn.
+- The usage sums every model call in the turn and the turn count is the number of those calls, so neither is the conversation's size.
+  The engine lib estimates that size as the mean prompt per call; its [header](../bin/fm-supervision-engine-lib.sh) owns the estimate.
 - The host counts a turn successful only when that result is complete:
   - `type` is `result`.
   - `subtype` is `success`.

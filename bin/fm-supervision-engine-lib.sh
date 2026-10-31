@@ -408,12 +408,17 @@ fm_supervision_engine_turn() {
 
 # fm_supervision_engine_result <engine> <result-file> [<prior-conversation-cost>]:
 # print one line "error=0|1 cost=<usd> conversation_cost=<usd> input=<n>
-# cache_read=<n> cache_write=<n> output=<n> turns=<n>" from the engine's
-# machine-readable result, where cost is this turn's and conversation_cost the
-# conversation's running total (the caller records it and passes it back for
-# the next turn; 0 for a new conversation). Claude's total_cost_usd is that
-# running total on a resumed conversation, while its usage and num_turns are
-# per turn. error=0 only for a complete success result: type "result",
+# cache_read=<n> cache_write=<n> output=<n> turns=<n> context=<n>|unknown" from the
+# engine's machine-readable result, where cost is this turn's and
+# conversation_cost the conversation's running total (the caller records it and
+# passes it back for the next turn; 0 for a new conversation). Claude's
+# total_cost_usd is that running total on a resumed conversation, while its
+# usage and num_turns are per turn and summed over the turn's model calls.
+# context is the conversation's size in tokens, estimated as the turn's mean
+# prompt per model call (input, cache read, and cache write over num_turns,
+# rounded up; "unknown" without a model call): each call's prompt is the whole
+# conversation so far, so the estimate trails the turn's last call by about
+# half the turn's own growth. error=0 only for a complete success result: type "result",
 # subtype "success", is_error false, and finite total_cost_usd, num_turns, and
 # the four usage token counts; any other shape is error=1. Returns 1 when the
 # result cannot be read. The host treats both as a failed turn.
@@ -437,7 +442,9 @@ fm_supervision_engine_result() {
         const prior = Number(process.argv[2]);
         const turn = Number.isFinite(prior) && prior >= 0 && prior <= total ? total - prior : total;
         const usd = (v) => Number(v.toFixed(6));
-        process.stdout.write(`error=${error} cost=${usd(turn)} conversation_cost=${usd(total)} input=${n(u.input_tokens)} cache_read=${n(u.cache_read_input_tokens)} cache_write=${n(u.cache_creation_input_tokens)} output=${n(u.output_tokens)} turns=${n(j.num_turns)}\n`);
+        const prompt = n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens);
+        const context = n(j.num_turns) >= 1 ? Math.ceil(prompt / n(j.num_turns)) : "unknown";
+        process.stdout.write(`error=${error} cost=${usd(turn)} conversation_cost=${usd(total)} input=${n(u.input_tokens)} cache_read=${n(u.cache_read_input_tokens)} cache_write=${n(u.cache_creation_input_tokens)} output=${n(u.output_tokens)} turns=${n(j.num_turns)} context=${context}\n`);
       ' "$2" "${3:-0}" 2>/dev/null
       ;;
     *) return 1 ;;

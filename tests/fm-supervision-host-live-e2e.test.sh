@@ -9,7 +9,8 @@
 # drains the wake as the branch actor, records its outcome through
 # bin/fm-branch-report.sh, and acknowledges the wake, while the host stays
 # parked on a live successor watcher, main is never woken, and no hook of the
-# lab home fires inside the engine. A second wake then resumes the same engine
+# lab home fires inside the engine; the engine record carries a plausible
+# context estimate. A second wake then resumes the same engine
 # conversation. Claude keeps its existing managed authentication; the engine's
 # own session files land in Claude's project store for the lab directory.
 # No live fleet home, worktree, or session is touched.
@@ -120,6 +121,12 @@ printf '# first turn: %s\n' "$(grep '	handled	' "$FM/state/.supervision-host.log
 printf '# outcome: %s\n' "$(head -n 1 "$FM/state/branch-outcomes.jsonl")"
 
 session=$(sed -n 's/^session=//p' "$FM/state/.supervision-host-engine")
+# The ceiling reads this estimate, so a real result must yield a plausible
+# per-call size: above the branch prompt alone, below one context window.
+context=$(sed -n 's/^context=//p' "$FM/state/.supervision-host-engine")
+case "$context" in '' | *[!0-9]*) fail "the engine record carries no context estimate: '$context' ($CLAUDE_VERSION)"$'\n'"$(diagnose)" ;; esac
+[ "$context" -ge 1000 ] && [ "$context" -lt 200000 ] \
+  || fail "the context estimate $context is not a plausible per-call size ($CLAUDE_VERSION)"$'\n'"$(diagnose)"
 printf 'working [at=%s]: started the follow-up check\n' "$(date +%s)" >> "$FM/state/demo.status"
 wait_until "$HOST_TIMEOUT_POLLS" settled_at_least 2 || fail "the second engine turn never settled ($CLAUDE_VERSION)"$'\n'"$(diagnose)"
 [ "$(grep -c '	handled	' "$FM/state/.supervision-host.log")" -ge 2 ] \
