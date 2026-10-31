@@ -2759,8 +2759,7 @@ open_decision_reminder_check() {  # [now-epoch]
   fi
   # A directory or symlink in the marker's place would take the rename into
   # it, or through it, and still report success.
-  if { [ -e "$marker" ] || [ -L "$marker" ]; } && { [ ! -f "$marker" ] || [ -L "$marker" ]; } \
-    || ! printf '%s\n' "$OPEN_DECISION_ERROR" 2>/dev/null > "$marker.tmp.$$" \
+  if ! printf '%s\n' "$OPEN_DECISION_ERROR" 2>/dev/null > "$marker.tmp.$$" \
     || ! mv -f "$marker.tmp.$$" "$marker" 2>/dev/null; then
     rm -f -- "$marker.tmp.$$" 2>/dev/null
     OPEN_DECISION_ERROR="$OPEN_DECISION_ERROR, and $marker could not be written, so this repeats every tick"
