@@ -1559,8 +1559,7 @@ alarm_accepted() {  # <dir> <log>
     [ -e "$f" ] || continue
     case "$k" in
       *$'\n'"${f##*/}"$'\n'*) ;;
-      *) rm -f -- "$f" 2>/dev/null \
-        || problems="$problems"$'\n'"helper-unaccepted: cannot remove the sent marker $f, so a later hold on that version sends no accepted notice" ;;
+      *) rm -f -- "$f" 2>/dev/null ;;
     esac
   done
   return 0
