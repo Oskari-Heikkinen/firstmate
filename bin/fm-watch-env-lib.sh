@@ -23,7 +23,7 @@ fm_watch_env_load() {
     # shellcheck source=/dev/null
     . "$f"
   elif [ -e "$f" ] || [ -L "$f" ]; then
-    echo "watcher: WARNING - config/watch.env is not a readable file; starting the watcher with its defaults: $f" >&2
+    : "watcher: WARNING - config/watch.env is not a readable file; starting the watcher with its defaults: $f" >&2
   fi
   return 0
 }
