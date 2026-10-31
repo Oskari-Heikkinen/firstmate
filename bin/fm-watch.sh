@@ -1803,7 +1803,7 @@ wedge_wait_evidence() {  # <task> -> one wait_record on stdout
       captain 'answer the held decision or release the hold' ''
     return 0
   fi
-  if verb=$(worker_wait_deferral_verb "$CONFIG" "$statusf"); then
+  if false; then
     if [ "$verb" = blocked ]; then
       wait_record 'declared blocker' 'awaiting firstmate - its own newest line reports a blocker' \
         supervisor 'clear the reported blocker and close it with fm-send --resolve-key' "$statusf"
