@@ -48,6 +48,7 @@ test_perl_timeout_fallback_honors_cleanup_bound_before_escalating() {
   mkdir -p "$home/root/bin" "$fallback_bin"
   cp "$CHECKPOINT" "$home/root/bin/fm-watch-checkpoint.sh"
   cp "$ROOT/bin/fm-supervision-engine-lib.sh" "$home/root/bin/fm-supervision-engine-lib.sh"
+  cp "$ROOT/bin/fm-watch-env-lib.sh" "$home/root/bin/fm-watch-env-lib.sh"
   for tool in bash dirname mktemp rm perl grep cat; do
     tool_path=$(command -v "$tool") || fail "could not locate $tool for the Perl fallback fixture"
     ln -s "$tool_path" "$fallback_bin/$tool"
@@ -232,6 +233,56 @@ test_existing_singleton_watcher_is_not_success() {
 # A home opted into the supervision host whose checkpoint runs a stub host in
 # a fixture code root: the stub records the bound it was given, then closes
 # the way $FM_HOME/host-kind says.
+# The checkpoint's direct watcher loads config/watch.env the way an armed one does
+# (bin/fm-watch-env-lib.sh), so the wedge cap's off switch holds there too; a
+# watch.env that is present but not a readable file is named on stderr and the
+# watcher still runs with its defaults.
+checkpoint_watch_env_case() {  # <name> <watch.env shape: file|dir>
+  local home shape=$2 status
+  home=$(make_home "$1")
+  mkdir -p "$home/root/bin"
+  cp "$CHECKPOINT" "$home/root/bin/fm-watch-checkpoint.sh"
+  cp "$ROOT/bin/fm-supervision-engine-lib.sh" "$home/root/bin/fm-supervision-engine-lib.sh"
+  cp "$ROOT/bin/fm-watch-env-lib.sh" "$home/root/bin/fm-watch-env-lib.sh"
+  cat > "$home/root/bin/fm-watch.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${FM_WEDGE_MAX_ESCALATIONS-unset}" > "$FM_HOME/watcher-saw"
+printf 'signal: demo.status\n'
+SH
+  chmod +x "$home/root/bin/fm-watch-checkpoint.sh" "$home/root/bin/fm-watch.sh"
+  case "$shape" in
+    file) printf 'export FM_WEDGE_MAX_ESCALATIONS=0\n' > "$home/config/watch.env" ;;
+    dir) mkdir -p "$home/config/watch.env" ;;
+  esac
+  status=0
+  env -u FM_WEDGE_MAX_ESCALATIONS FM_HOME="$home" \
+    "$home/root/bin/fm-watch-checkpoint.sh" --seconds 30 >"$home/out.txt" 2>"$home/err.txt" || status=$?
+  expect_code 0 "$status" "checkpoint with a watch.env $shape"
+  [ -f "$home/watcher-saw" ] || fail "the checkpoint never ran its watcher: $(cat "$home/out.txt" "$home/err.txt")"
+  case "$shape" in
+    file)
+      [ "$(cat "$home/watcher-saw")" = 0 ] \
+        || fail "the checkpoint's watcher did not inherit config/watch.env: saw '$(cat "$home/watcher-saw")'"
+      pass "config/watch.env reaches the checkpoint's direct watcher, so FM_WEDGE_MAX_ESCALATIONS=0 holds there"
+      ;;
+    dir)
+      [ "$(cat "$home/watcher-saw")" = unset ] \
+        || fail "a watch.env directory still set the checkpoint watcher's cap: saw '$(cat "$home/watcher-saw")'"
+      assert_contains "$(cat "$home/err.txt")" "config/watch.env is not a readable file" \
+        "a watch.env that is not a readable file was not named"
+      pass "a watch.env that is not a readable file is named and the checkpoint's watcher runs with its defaults"
+      ;;
+  esac
+}
+
+test_checkpoint_watcher_inherits_watch_env() {
+  checkpoint_watch_env_case checkpoint-watch-env file
+}
+
+test_checkpoint_watcher_names_unreadable_watch_env() {
+  checkpoint_watch_env_case checkpoint-watch-env-dir dir
+}
+
 make_host_home() {  # <name>
   local home
   home=$(make_home "$1")
@@ -373,6 +424,8 @@ test_queue_append_during_checkpoint_still_resurfaces
 test_signal_passes_through_and_exits_zero
 test_registered_check_uses_preserved_watcher_environment
 test_existing_singleton_watcher_is_not_success
+test_checkpoint_watcher_inherits_watch_env
+test_checkpoint_watcher_names_unreadable_watch_env
 test_host_outer_timeout_arms_forced_escalation
 test_host_checkpoint_bounds_the_park_by_posture
 test_host_checkpoint_passes_a_handback_and_reports_a_stand_down
