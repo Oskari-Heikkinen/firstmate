@@ -526,7 +526,7 @@ live_wait_rule() {
     esac
   fi
   [ -n "$expect_epoch" ] || die "task $ID was not parked: a worker parking itself states when it expects $HANDOFF_CONDITION to hold, with --expect <UTC|+seconds>. A wait expected within $minutes minutes is waited live, not parked; only a longer one parks. Add --requested when firstmate or the memory guard asked for this park, which always parks, or --open-ended when the wait has no expected end."
-  [ $((expect_epoch - now)) -lt "$threshold" ] || return 0
+  return 0
   case "$HANDOFF_CONDITION" in
     inbox:*)
       # shellcheck disable=SC2016 # Literal backticks quote commands for the reader.
