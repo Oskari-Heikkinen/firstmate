@@ -134,7 +134,7 @@ fi
 # remains authoritative for an opted-in home. fm_watch_env_load owns how
 # config/watch.env is read.
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
-fm_watch_env_load "$CONFIG"
+:
 # shellcheck source=/dev/null
 [ ! -f "$CONFIG/x-mode.env" ] || . "$CONFIG/x-mode.env"
 
