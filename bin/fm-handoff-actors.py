@@ -6,6 +6,7 @@ Usage:
   fm-handoff-actors.py declare   --home DIR [--state DIR] --none --reason TEXT ACTOR
   fm-handoff-actors.py undeclare --home DIR [--state DIR] ACTOR
   fm-handoff-actors.py list      --home DIR [--state DIR] [--root DIR]
+  fm-handoff-actors.py valid-actor ACTOR
 
 docs/handoff-coverage.md owns the rules ("Installed tools"): which homes'
 fragments and declarations cover an actor, the handoff-actors/v1 declaration
@@ -30,6 +31,9 @@ list       prints this home's actor inventory (handoff-actor-inventory/v1,
            JSON): every registered custom check, and in the machine's anchor
            home every active user or transient systemd timer and service, each
            with its state; undeclared rows are what undeclared-actor alarms.
+valid-actor  checks ACTOR against the actor grammar only, reading no home, so
+           another tool (bin/fm-owner-notice.sh bind) keeps no grammar of its
+           own. It prints nothing.
 
 --state defaults to DIR/state (bin/fm-check-register.sh passes its
 FM_STATE_OVERRIDE). --root DIR is the drill root fm-handoff-watch uses: every
@@ -45,7 +49,8 @@ Exit: 0 allowed (check), written (declare, undeclare), or every actor covered
 not a firstmate home (a missing or empty folder, or no state folder), refused
 before anything is written; 3 a fragment, declaration, unit listing or
 TriggeredBy could not be read, so nothing is decided (an installer refuses;
-list still prints what it could read).
+list still prints what it could read). valid-actor exits 0 when ACTOR matches
+the grammar, 65 when it does not, and 2 on a usage error.
 """
 
 import argparse
@@ -82,6 +87,7 @@ FORMAT = "handoff-actors/v1"
 INVENTORY = "handoff-actor-inventory/v1"
 CACHE = "fm-handoff-actors-cache/v1"
 OK, REFUSED, USAGE, UNREADABLE = 0, 1, 2, 3
+INVALID_ACTOR = 65
 ACTOR_RE = re.compile(r"^(systemd-timer|systemd-service|fm-check|cron|process):[^\s*]{1,200}$")
 UNIT_KINDS = {".timer": "systemd-timer", ".service": "systemd-service"}
 SYSTEMCTL_TIMEOUT = 10
@@ -609,6 +615,12 @@ def not_a_home(args):
 
 
 def main(argv):
+    if argv[:1] == ["valid-actor"]:
+        if len(argv) != 2:
+            print("fm-handoff-actors: usage: valid-actor ACTOR", file=sys.stderr)
+            return USAGE
+        # fullmatch: ACTOR_RE ends in $, which also matches before a final newline.
+        return OK if ACTOR_RE.fullmatch(argv[1]) else INVALID_ACTOR
     parser = argparse.ArgumentParser(prog="fm-handoff-actors.py", add_help=True)
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("check", "declare", "undeclare", "list"):
