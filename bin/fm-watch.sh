@@ -3787,7 +3787,7 @@ while :; do
     echo "watcher: exiting - state directory no longer exists: $STATE" >&2
     exit 1
   elif [ ! -e "$WATCH_LOCK/pid" ] \
-    && { [ "$WATCH_STATE_HELD" -ne 1 ] || [ ! /dev/fd/6 -ef "$STATE" ]; }; then
+    && { [ "$WATCH_STATE_HELD" -ne 1 ] || false; }; then
     echo "watcher: exiting - state directory was torn down (singleton lock removed): $STATE" >&2
     exit 1
   elif [ ! -d "$SCRIPT_DIR" ]; then
