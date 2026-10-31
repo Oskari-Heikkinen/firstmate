@@ -98,7 +98,7 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-handoff-watch.py` | One watcher pass: read fragments, outboxes, places, dated rules and heartbeats, and sync one alert store per alarm target, and once a week write the home's coverage line |
 | `fm-handoff-measure.py` | Read-only time to notice per alarm against its target, and a home's weekly coverage line; the watcher's weekly pass prints the same line (docs/handoff-coverage.md "Measurement") |
 | `fm-handoff-firstmate.py` | Print or publish the handoff-registry/v1 fragment of a home's own Firstmate handoffs (docs/handoff-coverage.md "Firstmate's own handoffs") |
-| `fm-handoff-actors.py` | The handoff install check (refuse a tool no fragment or declaration covers), no-handoff declarations, and the actor inventory `undeclared-actor` reads (docs/handoff-coverage.md "Installed tools") |
+| `fm-handoff-actors.py` | The handoff install check (refuse a tool no fragment or declaration covers), no-handoff declarations, the actor inventory `undeclared-actor` reads (docs/handoff-coverage.md "Installed tools"), and `valid-actor`, the one actor-grammar check |
 | `fm-handoff-actors-lib.sh` | Shell wrappers installers source to run the handoff install check and record a no-handoff declaration |
 | `fm-dated-rules.sh`      | Watcher slow check that raises a home's dated-rule alarms in its alert stores, and the date lookup code uses instead of a dated constant (docs/dated-rule-schedule.md) |
 | `fm-dated-rules.py`      | Store, registration and lookup logic behind fm-dated-rules.sh |
@@ -155,6 +155,10 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-alert-lib.sh`        | Sourced active-alert channels (`config/wedge-alarm`) shared by the daemon's wedge alarm and the away watchdog |
 | `fm-alert-store.sh`      | Raise, clear, sync and acknowledge level alarms in an owned alert store, register a store with a home, and run the watcher tick that re-posts active alarms ([alert-store.md](alert-store.md)) |
 | `fm-alert-store-lib.sh`  | Sourced alert-store reader and writer, including the registered-store check the decision fold uses to keep a store alarm open |
+| `fm-owner-notice.sh`     | Owner front of fm-owner-notice/v1: bind a producer outbox, ingest its envelopes into custody, and consume, acknowledge, retire, show and list them ([owner-notice.md](owner-notice.md)) |
+| `fm-owner-notice-client.py` | Producer client of fm-owner-notice/v1: submit, query, pending and prune, answering from the owner's receipts |
+| `fm_owner_notice_format.py` | Shared owner-notice formats, canonical JSON, durable I/O, process identity and test seams |
+| `fm_owner_notice_store.py` | Owner-notice engine the front runs under its locks: stage, ingest, reconcile, consume, retire, retention and alarms |
 | `fm-supervisor-target-lib.sh` | Resolve the shared supervisor target and backend for the daemon and launcher       |
 | `fm-supervise-daemon.sh` | Presence-gated away-mode sub-supervisor: self-handle routine wakes, guard injection by the detected primary harness, escalate batched digests, alert on failed delivery |
 | `fm-crew-state.sh`       | Print one deterministic current-state line for a crew                                |
