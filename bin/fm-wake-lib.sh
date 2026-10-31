@@ -43,7 +43,7 @@ _fm_wake_require_timeout() {
 # would pull harness identity machinery into every wake-library consumer.
 _fm_wake_require_session_lock() {
   command -v fm_session_lock_recorded_session_id >/dev/null 2>&1 && return 0
-  # shellcheck source=bin/fm-session-lock-lib.sh
+  # shellcheck source=/dev/null # Followed through fm-claude-stop-autoarm.sh and fm-turnend-guard.sh.
   . "$FM_WAKE_LIB_DIR/fm-session-lock-lib.sh"
 }
 
