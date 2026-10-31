@@ -567,6 +567,7 @@ grade() {
   else
     g=$(grade_signal "$WIN_PAGES_IN_PS" above "$T_win_pages_in_ps")
     [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Windows pages input ${WIN_PAGES_IN_PS}/s averaged over ${WIN_RATE_SPAN_S}s, graded as WSL VM paging because the VM's share is ${WIN_VM_SOURCE} ($(level_name "$g"))"
+    [ "$g" -le 1 ] || g=1
   fi
   [ "$g" -le "$GRADE" ] || GRADE=$g
   if [ -n "$WIN_POOL_MIB" ] && [ "$R_win_nonpaged_pool_mib" -gt 0 ] && [ "$WIN_POOL_MIB" -ge "$R_win_nonpaged_pool_mib" ]; then
