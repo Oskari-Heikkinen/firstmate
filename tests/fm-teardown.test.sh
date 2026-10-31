@@ -7646,10 +7646,17 @@ SH
 # guard fires alone. A file whose only change is its mtime and ctime, as git
 # freshening a hard-linked pack leaves it, still holds the copied bytes and
 # installs; the same-size edit retimes its file too and must still refuse.
+# The guarantee is that the copy equals the source as rechecked, not that
+# nothing changed since the snapshot: an early-* variant overwrites a file
+# right after its snapshot, before it is copied, and retimes it before the
+# recheck. A live source's new bytes are copied and install (early-edit); an
+# earlier copy is checked against its stored manifest, so its edit refuses
+# whether the declared path's source is gone (early-prior) or the copy is not
+# owned (early-prior-unowned).
 test_evidence_unlocked_copy_changes_refuse() {
   local variant case_dir ev hash rc
   for variant in stable retime retime-prior edit add remove retarget appear prior racy \
-      chmod retime-unmanifested owned; do
+      chmod retime-unmanifested owned early-edit early-prior early-prior-unowned; do
     case_dir=$(make_case "evidence-copy-change-$variant")
     ev="$case_dir/data/task-x1/evidence"
     mkdir -p "$case_dir/wt/ws/sub" "$ev/copy" "$case_dir/scan" "$case_dir/fakebin"
@@ -7666,7 +7673,16 @@ test_evidence_unlocked_copy_changes_refuse() {
     cp -RPp "$ev" "$case_dir/prior-tree"
     cat > "$case_dir/fakebin/perl" <<SH
 #!/usr/bin/env bash
-# \$3 is the staging tree whose manifest the recheck reads.
+# \$3 is the snapshot's path, or the staging tree whose manifest the recheck reads.
+if [ "\${2:-}" = snapshot ]; then
+  rc=0
+  "$(command -v perl)" "\$@" || rc=\$?
+  case "$variant:\$3" in
+    early-edit:*/wt/ws) printf X > "$case_dir/wt/ws/sub/b" ;;
+    early-prior:*/evidence/copy/gone|early-prior-unowned:*/evidence/copy/gone) printf 'earlier BYTES\n' > "$ev/copy/gone" ;;
+  esac
+  exit "\$rc"
+fi
 if [ "\${2:-}" = recheck ]; then
   : > "$case_dir/mutated"
   case "$variant" in
@@ -7677,7 +7693,8 @@ if [ "\${2:-}" = recheck ]; then
     appear) printf back > "$case_dir/wt/gone" ;;
     prior) printf changed > "$ev/copy/gone" ;;
     retime) touch -t 203001010000 "$case_dir/wt/ws/a" ;;
-    retime-prior) touch -t 203001010000 "$ev/copy/gone" ;;
+    retime-prior|early-prior|early-prior-unowned) touch -t 203001010000 "$ev/copy/gone" ;;
+    early-edit) touch -t 203001010000 "$case_dir/wt/ws/sub/b" ;;
     chmod) chmod 600 "$case_dir/wt/ws/a" ;;
     # A retimed file the staged manifest does not list has no bytes to match.
     retime-unmanifested)
@@ -7700,8 +7717,9 @@ SH
       . "$1"
       data=$2 wt=$3 scan=$4 variant=$5 owned=1 rc=0
       PATH=$6:$PATH
+      [ "$variant" != early-prior-unowned ] || owned=0
       fm_task_evidence_scan prepare "$data/task-x1" "$scan" "$wt" "" || exit
-      fm_task_evidence_stage task-x1 "$data" "$wt" 1 "" "$scan" || exit
+      fm_task_evidence_stage task-x1 "$data" "$wt" "$owned" "" "$scan" || exit
       [ "$variant" != owned ] || owned=0
       fm_task_evidence_scan verify "$data/task-x1" "$scan" || exit
       fm_task_evidence_finish task-x1 "$data" "$wt" "$owned" "" "$scan" || rc=$?
@@ -7709,13 +7727,20 @@ SH
       exit "$rc"
     ' _ "$ROOT/bin/fm-task-evidence-lib.sh" "$case_dir/data" "$case_dir/wt" "$case_dir/scan" "$variant" \
       "$case_dir/fakebin" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
-    assert_present "$case_dir/mutated" "staging did not recheck its copy ($variant): $(cat "$case_dir/stderr")"
-    if [ "$variant" = stable ] || [ "$variant" = retime ] || [ "$variant" = retime-prior ]; then
+    # Staging itself refuses an earlier copy that no longer matches its
+    # manifest when the source is gone, so no recheck runs.
+    [ "$variant" = early-prior ] \
+      || assert_present "$case_dir/mutated" "staging did not recheck its copy ($variant): $(cat "$case_dir/stderr")"
+    case "$variant" in stable|retime|retime-prior|early-edit)
       expect_code 0 "$rc" "an unchanged copy should install ($variant): $(cat "$case_dir/stderr")"
       evidence_manifest_verifies "$ev" || fail 'unlocked copy installed an unverifiable tree'
       assert_grep '  copy/ws/sub/b' "$ev/MANIFEST.sha256" 'unlocked copy lost a declared member'
       assert_grep '  copy/gone' "$ev/MANIFEST.sha256" 'unlocked copy lost the carried earlier copy'
-    else
+      if [ "$variant" = early-edit ]; then
+        [ "$(cat "$ev/copy/ws/sub/b")" = X ] || fail 'an edit made before the copy did not install its new bytes'
+      fi
+      ;;
+    *)
       expect_code 1 "$rc" "a $variant change after the unlocked copy must refuse"
       case "$variant" in
         owned) assert_grep 'task evidence inputs changed since the unlocked copy for task-x1' "$case_dir/stderr" 'ownership drift did not refuse' ;;
@@ -7724,19 +7749,23 @@ SH
         remove|racy|chmod|retime-unmanifested) assert_grep "$case_dir/wt/ws/a changed while it was copied" "$case_dir/stderr" "$variant member did not refuse" ;;
         retarget) assert_grep "$case_dir/wt/ws/lnk changed while it was copied" "$case_dir/stderr" 'retargeted link did not refuse' ;;
         appear) assert_grep "$case_dir/wt/gone changed while it was copied" "$case_dir/stderr" 'reappeared source did not refuse' ;;
-        prior) assert_grep "$ev/copy/gone changed while it was copied" "$case_dir/stderr" 'changed earlier copy did not refuse' ;;
+        prior|early-prior-unowned) assert_grep "$ev/copy/gone changed while it was copied" "$case_dir/stderr" "$variant earlier copy did not refuse" ;;
+        early-prior) assert_grep "declared evidence $case_dir/wt/gone for task-x1 does not exist and no verified earlier copy is preserved" "$case_dir/stderr" 'earlier copy edited before staging did not refuse' ;;
       esac
-      assert_grep 'nothing was changed; retry teardown' "$case_dir/stderr" "$variant refusal did not say nothing changed"
-      if [ "$variant" != prior ]; then
-        diff -r "$case_dir/prior-tree" "$ev" || fail "$variant refusal changed the earlier evidence tree"
-      fi
-    fi
+      [ "$variant" = early-prior ] \
+        || assert_grep 'nothing was changed; retry teardown' "$case_dir/stderr" "$variant refusal did not say nothing changed"
+      case "$variant" in
+        prior|early-prior|early-prior-unowned) ;;
+        *) diff -r "$case_dir/prior-tree" "$ev" || fail "$variant refusal changed the earlier evidence tree" ;;
+      esac
+      ;;
+    esac
     if compgen -G "$case_dir/data/task-x1/.evidence.new.*" >/dev/null \
        || compgen -G "$case_dir/data/task-x1/.evidence.old.*" >/dev/null; then
       fail "$variant left a staged or replaced evidence tree behind"
     fi
   done
-  pass 'an evidence copy staged outside the lock installs when a member or earlier copy was only retimed, and refuses when a source, member, link, mode, earlier copy or staged byte changed before its recheck, or ownership changed before finishing'
+  pass 'an evidence copy staged outside the lock installs when a member or earlier copy was only retimed or a source was edited before it was copied, and refuses when an earlier copy was edited before or after it was carried, or a source, member, link, mode, earlier copy or staged byte changed before its recheck, or ownership changed before finishing'
 }
 
 test_evidence_citation_scan_completes_for_a_plain_missing_path() {

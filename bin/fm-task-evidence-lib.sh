@@ -38,7 +38,10 @@
 # every walk, rehashes each file modified within a few seconds of its snapshot
 # or whose only metadata change is its mtime and ctime, and refuses with nothing
 # changed when any member was added, removed, replaced, retargeted or edited
-# since; a retimed file whose bytes still match its copy is unchanged
+# since, unless the copy still holds the member's current bytes: the guarantee
+# is that the copy equals the source as rechecked, so a same-size edit made
+# before a file was copied is captured and passes, and a carried earlier copy,
+# whose staged hashes are its stored manifest's, refuses any edit
 # (bin/fm-task-evidence-scan.pl owns the comparison). No walk of a declared tree runs at finishing, so a caller's lock
 # hold does not grow with the tree; finishing refuses when its inputs differ
 # from staging's. Every other check and refusal below runs at finishing, in the

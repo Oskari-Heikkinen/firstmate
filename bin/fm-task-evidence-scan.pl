@@ -9,12 +9,15 @@
 # or edits since prepare. Evidence and staging trees are excluded in both walks.
 # prepare and verify never inspect a disposable root.
 # snapshot records one declared source's (or carried earlier copy's) metadata
-# inventory before it is copied; recheck repeats every walk, refuses any change,
-# and rehashes against the staged manifest the regular files whose mtime or
-# ctime is not older than their snapshot by the timestamp margin below, and those
-# whose signature differs from it only in mtime and ctime (git freshens a pack
-# hard-linked from another repository that way); such a retimed file that the
-# manifest lacks refuses. Both run
+# inventory before it is copied; recheck repeats every walk and refuses any
+# other metadata change, then rehashes against the staged manifest the regular
+# files whose mtime or ctime is not older than their snapshot by the timestamp
+# margin below, and those whose signature differs from it only in mtime and
+# ctime (git freshens a pack hard-linked from another repository that way);
+# such a retimed file that the manifest lacks refuses. What it proves is that
+# the copy equals the source as rechecked: a same-size edit made before a file
+# was copied is in the copy and passes, while a carried earlier copy's staged
+# hashes come from its stored manifest, so any edit to it refuses. Both run
 # while staging, before teardown takes its project lock, so the copy and every
 # walk of it stay outside that lock (the library header owns that contract).
 # Citation parsing, object survival and installation remain in the library,
