@@ -1454,7 +1454,7 @@ _fm_od_fold_line() {  # <status-line> <resolve-verb> <held-verb> <kind> [<timed>
       if [ "${5:-0}" = 1 ]; then
         _ofl_opened=unknown
         _fm_decision_key_to "$1" _ofl_explicit '' || _ofl_explicit=''
-        if [ -n "$_ofl_explicit" ] && _fm_status_at_epoch "$1" _ofl_explicit; then
+        if _fm_status_at_epoch "$1" _ofl_explicit; then
           _ofl_opened=$_ofl_explicit
         fi
         _ofl_note="${_ofl_opened}"$'\t'"${_ofl_note}"
