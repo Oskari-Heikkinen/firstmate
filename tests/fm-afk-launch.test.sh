@@ -31,8 +31,8 @@ CONTRACT="$ROOT/bin/fm-afk-contract.sh"
 # the CLAUDECODE=1 marker below and refuse the daemon paths under test.
 unset PI_CODING_AGENT FM_PI_HARNESS CURSOR_AGENT CURSOR_INVOKED_AS GEMINI_CLI ATLASSIAN_AGENT_TYPE ROVODEV_CLI
 export CLAUDECODE=1 FM_TEST_HARNESS=claude FM_TEST_SEAM=1
-# A Claude home needs config/supervision-host to opt in; config/supervision-host-off
-# overrides it (docs/configuration.md "Supervision host"). The host owns an opted-in
+# A Claude home runs the supervision host unless config/supervision-host-off
+# opts it out (docs/configuration.md "Supervision host"). The host owns such a
 # home's away session, so the daemon units use an explicitly opted-out home; the
 # supervision-host units point FM_CONFIG_OVERRIDE at their own home's config.
 OFF_CONFIG=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-off-config.XXXXXX")
@@ -1010,25 +1010,25 @@ unit_native_lifecycle() {
   rm -rf "$st"
 }
 
-# An opted-in Claude home runs the supervision host and it is the home's away
-# session, so away mode launches no daemon there with an empty or Claude opt-in
-# file; quiet mode still does, a plain refresh of a running quiet daemon is
+# A Claude home runs the supervision host and it is the home's away session,
+# so away mode launches no daemon there with no host file or with an empty or
+# Claude one; quiet mode still does, a plain refresh of a running quiet daemon is
 # still allowed, and an off file keeps the away daemon.
 unit_supervision_host_claude_home_runs_no_away_daemon() {
   local st out rc line
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-host.XXXXXX")
   mkdir -p "$st/state" "$st/config"
-  for line in "" claude; do
+  for line in - "" claude; do
     rm -f "$st/config/supervision-host" "$st/state/.afk-contract"
-    printf '%s\n' "$line" > "$st/config/supervision-host"
+    [ "$line" = - ] || printf '%s\n' "$line" > "$st/config/supervision-host"
     FM_CONFIG_OVERRIDE="$st/config" enter_posture "$st" || fail "supervision host: could not enter fixture posture"
     out=$(FM_HOME="$st" FM_STATE_OVERRIDE="$st/state" FM_CONFIG_OVERRIDE="$st/config" "$LAUNCH" start-native 2>&1)
     rc=$?
     if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -F 'runs the supervision host (docs/supervision-host.md)' >/dev/null \
       && [ ! -e "$st/state/.afk" ] && [ ! -e "$st/state/.afk-daemon-terminal" ] && [ -f "$st/state/.afk-contract" ]; then
-      pass "supervision host: away start-native on a claude home (config file: ${line:-empty}) refuses the daemon and keeps the record"
+      pass "supervision host: away start-native on a claude home (config file: ${line:-empty}, - for none) refuses the daemon and keeps the record"
     else
-      fail "supervision host: away start-native did not refuse cleanly with config file ${line:-empty} (rc=$rc): $out"
+      fail "supervision host: away start-native did not refuse cleanly with config file ${line:-empty} (- for none) (rc=$rc): $out"
     fi
   done
   rm -f "$st/state/.afk-contract"
@@ -1056,8 +1056,8 @@ unit_supervision_host_claude_home_runs_no_away_daemon() {
   rm -rf "$st"
 }
 
-# Every non-Pi primary with an arm owner runs the host under the same file, so
-# away mode launches no daemon there, quiet mode still does, and a harness with
+# Every non-Pi primary with an arm owner runs the host under the same file
+# (Claude also without it), so away mode launches no daemon there, quiet mode still does, and a harness with
 # no arm owner (kimi) keeps the daemon. `enter` says so when the file selects
 # no engine for that primary.
 unit_supervision_host_other_harnesses_run_no_away_daemon() {
@@ -1071,7 +1071,10 @@ unit_supervision_host_other_harnesses_run_no_away_daemon() {
   for harness in cursor opencode omp grok codex; do
     daemon_allowed "$harness" >/dev/null || fail "$harness: a home without config/supervision-host must keep the away daemon"
   done
-  daemon_allowed claude >/dev/null || fail "claude: a home without config/supervision-host must keep the away daemon"
+  out=$(daemon_allowed claude); rc=$?
+  [ "$rc" -ne 0 ] || fail "claude: a home without config/supervision-host runs the host, so it must refuse the away daemon"
+  printf '%s' "$out" | grep -F "not launched on this claude home, which runs the supervision host" >/dev/null \
+    || fail "claude: the refusal without config/supervision-host must name the host: $out"
   : > "$st/config/supervision-host-off"
   for harness in claude cursor opencode omp grok codex; do
     daemon_allowed "$harness" >/dev/null || fail "$harness: a home opted out by config/supervision-host-off must keep the away daemon"
@@ -1109,7 +1112,7 @@ unit_supervision_host_other_harnesses_run_no_away_daemon() {
   out=$(enter_with claude '')
   printf '%s' "$out" | grep -F 'Supervision host: no engine' >/dev/null && fail "a claude home's own engine must count as an engine: $out"
   out=$(enter_with claude -)
-  printf '%s' "$out" | grep -F 'Supervision host' >/dev/null && fail "a claude home without the opt-in file must not announce a host engine: $out"
+  printf '%s' "$out" | grep -F 'Supervision host: no engine' >/dev/null && fail "a claude home without the file runs its own engine, so it must not announce a missing one: $out"
   out=$(enter_with cursor off)
   printf '%s' "$out" | grep -F 'Supervision host' >/dev/null && fail "enter must stay quiet on a home that opted out: $out"
   pass "supervision host: enter names a missing engine on an opted-in home and says nothing otherwise"
@@ -1175,8 +1178,9 @@ unit_daemon_quiet_entry_holds_nothing_for_a_return() {
 
 # /quiet where the attended supervision host runs is a statement: quiet-check
 # says quiet mode needs nothing, or that the session is paused while its
-# broken-session latch holds, and a quiet enter writes nothing. Without the
-# opt-in, or on Pi, quiet-check says nothing and quiet mode is the daemon's.
+# broken-session latch holds, and a quiet enter writes nothing; a Claude home
+# needs no host file for that. With the off file, on a non-Claude home without
+# the file, or on Pi, quiet-check says nothing and quiet mode is the daemon's.
 unit_supervision_host_quiet_statement() {
   local st out rc key harness
   st=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-quiet.XXXXXX")
@@ -1188,7 +1192,7 @@ unit_supervision_host_quiet_statement() {
   out=$(FM_TEST_HARNESS=cursor quiet_in "$st" "$LAUNCH" quiet-check); rc=$?
   [ "$rc" -eq 1 ] && [ -z "$out" ] || fail "quiet-check on a cursor home without config/supervision-host must exit 1 silently (rc=$rc): $out"
   out=$(quiet_in "$st" "$LAUNCH" quiet-check); rc=$?
-  [ "$rc" -eq 1 ] && [ -z "$out" ] || fail "quiet-check on an unopted Claude home must exit 1 silently: $out"
+  quiet_expect 0 'Quiet mode needs nothing on this home' "quiet-check on a Claude home without config/supervision-host must say quiet mode needs nothing"
   printf 'claude\n' > "$st/config/supervision-host"
   out=$(FM_TEST_HARNESS=pi quiet_in "$st" "$LAUNCH" quiet-check); rc=$?
   [ "$rc" -eq 1 ] && [ -z "$out" ] || fail "quiet-check on a pi home must exit 1 silently (rc=$rc): $out"

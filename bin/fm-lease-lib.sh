@@ -55,8 +55,8 @@
 #   - Guard semantics (fm_lease_guard): no lease, a same-actor lease, or a
 #     provably stale lease passes; a live lease held by the OTHER actor
 #     refuses with exit FM_LEASE_REFUSE_EXIT. Whenever the guard engages - a
-#     supervision context (Pi, or an explicit actor), a home that runs the
-#     supervision host (fm_supervision_host_enabled, whose host can claim a
+#     supervision context (Pi, or an explicit actor), a home that may run the
+#     supervision host (fm_supervision_host_may_run, whose host can claim a
 #     task that has no lease yet), or any lease file for the task - it retains the
 #     lease-command lock until fm_lease_guard_release, so the other actor
 #     cannot claim between the check and the guarded mutation, including the
@@ -114,14 +114,16 @@ fm_lease_lock_helpers() {
   . "$FM_LEASE_LIB_DIR/fm-wake-lib.sh"
 }
 
-# fm_lease_home_runs_host: 0 iff this home runs the supervision host
-# (fm_supervision_host_enabled owns the gate).
+# fm_lease_home_runs_host: 0 when this home may run the supervision host
+# (fm_supervision_host_may_run): a caller outside the primary's process tree
+# cannot tell the primary, so it engages the guard wherever the answer depends
+# on it, because a guard engaged without a host costs only the lock.
 fm_lease_home_runs_host() {
-  if ! command -v fm_supervision_host_enabled >/dev/null 2>&1; then
+  if ! command -v fm_supervision_host_may_run >/dev/null 2>&1; then
     # shellcheck source=bin/fm-supervision-engine-lib.sh
     . "$FM_LEASE_LIB_DIR/fm-supervision-engine-lib.sh"
   fi
-  fm_supervision_host_enabled "${FM_CONFIG_OVERRIDE:-${FM_HOME:-$STATE/..}/config}"
+  fm_supervision_host_may_run "${FM_CONFIG_OVERRIDE:-${FM_HOME:-$STATE/..}/config}"
 }
 
 # fm_lease_actor: print the current actor after validating it. Returns 1 (with

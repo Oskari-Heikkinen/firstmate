@@ -8,9 +8,10 @@
 #   fm-supervision-host.sh stop
 #
 # A primary's arm owner runs this in place of bin/fm-watch-arm.sh when the home
-# runs the host (by explicit config/supervision-host opt-in on every primary,
-# never with config/supervision-host-off; docs/configuration.md "Supervision
-# host"): the Claude Stop auto-arm
+# runs the host (fm_supervision_host_enabled: by default where the primary's own
+# engine is verified, else by config/supervision-host, never with
+# config/supervision-host-off; docs/configuration.md "Supervision host"): the
+# Claude Stop auto-arm
 # (bin/fm-claude-stop-autoarm.sh), the Cursor stop-hook park
 # (bin/fm-turnend-guard-cursor.sh), the OpenCode TUI plugin
 # (.opencode/plugins/fm-primary-watch-arm.js), the omp watch extension
@@ -100,7 +101,7 @@
 # (bin/fm-branch-report.sh), so it still reaches main when the host dies at the
 # turn's end or its owner drops the handoff, as a superseded Cursor park does.
 #
-# THE LATCH. An opted-in host persists engine health across short-lived
+# THE LATCH. A running host persists engine health across short-lived
 # parks; docs/supervision-host.md "The broken-session latch" owns the policy.
 #
 # THE PARK BOUNDARY. Claude drops the exit 2 of a Stop hook it terminated at

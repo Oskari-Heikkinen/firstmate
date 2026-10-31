@@ -4,7 +4,8 @@
 # bin/fm-claude-stop-autoarm.sh, docs/supervision-host.md "Attended").
 #
 # Proves against the real installed Claude Code, in an isolated lab copy of this
-# checkout opted into the supervision host (never a live fleet home), that an
+# checkout that runs the supervision host by default (no config file; never a
+# live fleet home), that an
 # interactive primary sitting idle at its prompt - nobody types after its setup
 # prompt - is woken by the tracked Stop hook for every close the host hands to
 # main, across repeated hand-offs:
@@ -114,7 +115,8 @@ make_lab() {  # <name> [host-ref]
   git -C "$fm" add -A >/dev/null
   git -C "$fm" -c user.name=fmtest -c user.email=fmtest@example.invalid commit -q -m lab
   mkdir -p "$fm/state" "$fm/config" "$fm/data"
-  : > "$fm/config/supervision-host"
+  # No config/supervision-host: the host runs because the real Claude primary
+  # is detected and its engine is verified (fm_supervision_host_enabled).
   printf 'project=demo\nwindow=fm-demo\nharness=claude\n' > "$fm/state/demo.meta"
   : > "$fm/state/demo.status"
   printf 'project=demo2\nwindow=fm-demo2\nharness=claude\n' > "$fm/state/demo2.meta"
@@ -293,7 +295,7 @@ start_primary() {  # <lab>
   jq -e '[.hooks.Stop[]?.hooks[]? | select(.type == "command" and .asyncRewake == true and (.command | endswith("/bin/fm-claude-stop-autoarm.sh") or endswith("/bin/fm-claude-stop-autoarm.sh\"")))] | length == 1' \
     "$lab/fm/.claude/settings.json" >/dev/null \
     || fail "$(basename "$lab"): the lab lacks the tracked Stop hook registration"
-  evidence "$(basename "$lab") step 1: primary idle (claude pid $(cat "$lab/fm/state/.lock"), $CLAUDE_VERSION, model $MODEL); tracked Stop hook registered; config/supervision-host present; host pid $(awk -F '\t' '$1 == "host" { print $2; exit }' "$lab/fm/state/.supervision-host") parked on watcher $(watcher_pid "$lab"); listener runner $(listener_pid "$lab"); captain prompts so far: $(captain_prompts "$lab")"
+  evidence "$(basename "$lab") step 1: primary idle (claude pid $(cat "$lab/fm/state/.lock"), $CLAUDE_VERSION, model $MODEL); tracked Stop hook registered; no host config file; host pid $(awk -F '\t' '$1 == "host" { print $2; exit }' "$lab/fm/state/.supervision-host") parked on watcher $(watcher_pid "$lab"); listener runner $(listener_pid "$lab"); captain prompts so far: $(captain_prompts "$lab")"
   evidence "$(basename "$lab") transcript: $(transcript "$lab")"
 }
 

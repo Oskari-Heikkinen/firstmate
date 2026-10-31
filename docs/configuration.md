@@ -311,8 +311,8 @@ The host runs the supervision branch's contract on a headless engine session bes
 A Claude, Cursor, OpenCode, omp, Grok, or Codex primary can run the host.
 
 A present `config/supervision-host-off`, whatever it holds, opts the home out on every primary.
-Otherwise a Claude, Cursor, OpenCode, omp, Grok, or Codex primary runs the host only while `config/supervision-host` exists and the home is not opted out.
-With no opt-in file the host is disabled, including on Claude; an empty file opts Claude in at its engine's default model.
+Otherwise a Claude, Cursor, OpenCode, omp, Grok, or Codex primary runs the host while `config/supervision-host` exists.
+With neither file the host is on by default where the primary's own engine is verified, at that engine's default model, which today means every Claude home; a Cursor, OpenCode, omp, Grok, or Codex home has no engine of its own and opts in with a file naming `claude`.
 A home that does not run the host behaves exactly as it does without it, and a Pi primary keeps its in-process supervision branch whatever either file says.
 `fm_supervision_host_enabled` in `bin/fm-supervision-engine-lib.sh` implements this gate for every reader.
 
@@ -320,7 +320,8 @@ While the home runs the host, the primary's arm owner runs it in place of the wa
 The host handles wakes on the engine under the [posture rules](supervision-host.md#postures), including an away record and attended operation on a Claude or Cursor primary with a verified dialog mirror.
 On that home, `/afk` launches no away daemon; see [Quiet mode](supervision-host.md#quiet-mode) for `/quiet`'s attended statement and fallback.
 The same gate governs the primary's dialog-mirror hooks (`bin/fm-host-mirror.sh`), which record on a Claude or Cursor primary ([supervision-host.md](supervision-host.md#the-dialog-mirror)).
-Grok's arm command is rendered at session start, so a change to its host mode takes effect at its next session start; the other arm owners check the gate at every arm.
+Grok's arm command is rendered at session start, so a change to its host mode takes effect at its next session start; the other arm owners check the gate at every arm, so a Claude home with neither file runs the host from its next arm.
+A reader that runs outside the primary's process tree and cannot tell the primary, such as the lease guard below or the away watchdog's host check, treats a home with neither file as one that may run the host.
 
 ### Engine selection
 
@@ -566,12 +567,13 @@ It runs from a systemd user timer, outside every agent session, and sends throug
 
 ### Installing the timer
 
-`bin/fm-away-watch.sh install-timer [--home DIR]` writes `fm-away-watch-<id>.service` and `fm-away-watch-<id>.timer` into `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`, where `<id>` is the `cksum` of the home's path, pinned to this code root and the home, then enables the timer.
+`bin/fm-away-watch.sh install-timer [--home DIR] [--primary HARNESS]` writes `fm-away-watch-<id>.service` and `fm-away-watch-<id>.timer` into `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`, where `<id>` is the `cksum` of the home's path, pinned to this code root, the home, and its primary harness (`--primary`, else the one the installing session runs under), then enables the timer.
+A service with no primary, from an older install or an undetectable session, checks the host on a home with neither host file; reinstall from the primary's session to record it.
 Install it once per home that goes away under the supervision host; each home gets its own pair of units.
 The service carries the installer's `PATH`, and `HERDR_SOCKET_PATH` when it is set, so `herdr` and `command:` channels resolve as they do in a session; reinstall after either changes.
 The timer runs every five minutes and catches up once after the machine sleeps.
 `bin/fm-away-watch.sh uninstall-timer [--home DIR]` disables that home's timer and removes both its units.
-`bin/fm-away-watch.sh run [--home DIR]` checks once by hand.
+`bin/fm-away-watch.sh run [--home DIR] [--primary HARNESS]` checks once by hand.
 
 ### Thresholds
 

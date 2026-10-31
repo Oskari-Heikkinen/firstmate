@@ -160,7 +160,7 @@ On a Pi primary, supervision is default-on: the watcher extension can hand eligi
 The branch handles those rows, stores the outcome durably, and merges it back into main.
 A captain-facing outcome persists as one exact, sequence-keyed visible transcript entry and then opens one sequence-keyed processing turn on main, which only main's sequence-bound acknowledgement closes.
 [docs/pi-supervision-branch.md](pi-supervision-branch.md) owns row eligibility, dispatch architecture, deterministic outcome delivery, and processing re-presentation, while the generated [Pi supervision protocol](supervision-protocols/pi.md) owns MAIN's merged-event handling and acknowledgement duty.
-For the supervision host that runs the same branch contract beside a non-Pi primary (opt-in per home), away and on Claude and Cursor also attended, see [supervision-host.md](supervision-host.md).
+For the supervision host that runs the same branch contract beside a non-Pi primary (on by default on Claude, opt-in elsewhere), away and on Claude and Cursor also attended, see [supervision-host.md](supervision-host.md).
 
 ### Registered secondmate current state
 
@@ -182,7 +182,7 @@ That block owns the live wait shape for the running primary harness: Claude's St
 The arm layer records one bounded lifecycle row per observed cycle in `state/.watch-cycle-exits.log`; `state/.watch-triage.log` remains exclusively the absorbed-wake debug log.
 Pi, omp, and OpenCode verify session-lock ownership and launch one singleton successor from their child-close handlers before delivering an actionable wake prompt, with bounded exponential retry for failed restoration.
 Pi additionally retains an established predecessor across ordinary same-process session shutdown until the replacement generation commits its tracked arm, and its active-versus-handoff generation marker prevents an absent replacement extension from satisfying the fresh-beacon handoff tolerance.
-Claude's `bin/fm-claude-stop-autoarm.sh` hook fires on every Stop and, when the home is eligible and still needs supervision, claims one home-scoped cycle, foregrounds the arm wrapper (or the [supervision host](supervision-host.md), which is opt-in per home), and translates actionable closes into exit-2 rewakes.
+Claude's `bin/fm-claude-stop-autoarm.sh` hook fires on every Stop and, when the home is eligible and still needs supervision, claims one home-scoped cycle, foregrounds the arm wrapper (or the [supervision host](supervision-host.md), which a Claude home runs unless it opts out), and translates actionable closes into exit-2 rewakes.
 It suppresses failed-looking closes when the same identity-matched watcher is healthy, retries genuine failures within a bound, and coordinates exhausted failure episodes with the Claude turn-end guard as documented in [`turnend-guard.md`](turnend-guard.md).
 [`watcher-continuity.md`](watcher-continuity.md) owns Claude's residual active-turn coverage and watcher-status command-gating boundary.
 Cursor's `bin/fm-turnend-guard-cursor.sh` hook is the same between-turns shape in one synchronous step: it parks the awaited `stop` hook on the arm wrapper and translates an actionable close into one `followup_message`, with a generation baton that makes an older park still running after the next `stop` claim stand down instead of leaking a stale duplicate wake.
