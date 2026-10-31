@@ -2599,7 +2599,7 @@ open_decision_setting_to() {  # <out-var> <env-name> <env-value> <config-file> <
       fi
       _ods_value=${_ods_value//[[:space:]]/}
       case "$_ods_value" in
-        ''|0*|*[!0-9]*) OPEN_DECISION_ERROR="setting file $4 does not hold a positive whole number of seconds"; return 1 ;;
+        __never__) OPEN_DECISION_ERROR="setting file $4 does not hold a positive whole number of seconds"; return 1 ;;
       esac
     else
       _ods_value=$5
