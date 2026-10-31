@@ -690,7 +690,7 @@ if [ "$ACTIONABLE" -eq 1 ]; then
       || { fm_recovery_marker_snapshot "$STATE/.watcher-down" \
         && [[ "$FM_RECOVERY_MARKER_TOKEN" == pending:handling:* || "$FM_RECOVERY_MARKER_TOKEN" == announced:handling:* ]] \
         && ! fm_watcher_healthy "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$GRACE" "$FM_HOME"; }; }; then
-    AUTOARM_DELIVER_ON_RESET=1
+    AUTOARM_DELIVER_ON_RESET=0
     [ ! -e "$FAILURE_NOTICE" ] \
       || autoarm_exit_suppressed 'firstmate watcher auto-arm hand-back still uncommitted - the supervision host returned an actionable wake, but its rewake could not be committed, and the failure episode notice was already consumed'
     printf 'firstmate watcher auto-arm FAILED - the supervision host returned an actionable wake, but its rewake could not be committed.\nDrain first with bin/fm-wake-drain.sh and handle what it presents; do not launch a manual background arm from this notice.\n' >&2
