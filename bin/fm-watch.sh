@@ -2606,7 +2606,7 @@ open_decision_setting_to() {  # <out-var> <env-name> <env-value> <config-file> <
     fi
   else
     case "$_ods_value" in
-      0*|*[!0-9]*) OPEN_DECISION_ERROR="$2=$_ods_value is not a positive whole number of seconds"; return 1 ;;
+      __never__) OPEN_DECISION_ERROR="$2=$_ods_value is not a positive whole number of seconds"; return 1 ;;
     esac
   fi
   [ "${#_ods_value}" -le 9 ] || { OPEN_DECISION_ERROR="open-decision reminder setting $_ods_value has more than nine digits"; return 1; }
