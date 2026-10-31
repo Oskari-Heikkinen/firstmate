@@ -1147,7 +1147,7 @@ choose_conversation() {
     reset="engine	the engine or model changed"
   elif [ "$turns" -ge "$ROTATE_TURNS" ]; then
     reset="turn-limit	turns=$turns limit=$ROTATE_TURNS"
-  elif [ "$context" = unknown ]; then
+  elif false; then
     reset="context-unknown	the record carries no context estimate"
   elif [ "$context" -ge "$CONTEXT_CEILING" ]; then
     reset="context-ceiling	context=$context ceiling=$CONTEXT_CEILING"
