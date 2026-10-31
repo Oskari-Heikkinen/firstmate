@@ -3,11 +3,11 @@
 # (bin/fm-wake-triage-replay.sh "Engines").
 #
 # Proves against each installed real engine, with no stub: a replay of two
-# recorded check:loop-alerts rows (one whose alert cleared before the row, one
-# still raised) runs one classify-only turn per row, the replay reads each
-# turn's answer and cost from the engine's real JSON output, no turn used a
-# tool (the replay refuses claude's num_turns above 1 and a pi tool call), and
-# the row whose probe failed is relayed. The rows' engines run under their
+# recorded check:loop-alerts rows (one whose alert cleared 10 s after the row,
+# before the probe time, one still raised) runs one classify-only turn per
+# row, the replay reads each turn's answer and cost from the engine's real
+# JSON output, no turn used a tool (the replay refuses claude's num_turns
+# above 1 and a pi tool call), and the row whose probe failed is relayed. The rows' engines run under their
 # existing logins; no live home is touched.
 #
 # FM_WAKE_TRIAGE_REPLAY_LIVE_E2E=1 (or FM_LIVE=1) runs it.
@@ -27,7 +27,7 @@ H="$LAB/home"
 mkdir -p "$H/state/loop-alerts"
 unset FM_WAKE_TRIAGE_CLAUDE_BIN FM_WAKE_TRIAGE_PI_BIN
 
-# 2026-10-29T00:00:00Z is 1793232000. h2's alert cleared 20 s after the row;
+# 2026-10-29T00:00:00Z is 1793232000. h2's alert cleared 10 s after the row;
 # h3's was raised again and never cleared.
 {
   printf '1793232000\tstart\tgen=host-1-1793232000\tprimary=claude\n'

@@ -140,7 +140,6 @@ full tests/fm-handoff-watch.test.sh
 full tests/fm-harness-precedence.test.sh
 full tests/fm-helper-consumers.test.sh
 full tests/fm-helper-equiv.test.sh
-full tests/fm-wake-triage-replay.test.sh
 full tests/fm-helper-selftest.test.sh
 full tests/fm-herdr-attached-viewer-live-e2e.test.sh
 full tests/fm-herdr-lab.test.sh
@@ -214,6 +213,7 @@ full tests/fm-vendor-auth-probe.test.sh
 full tests/fm-wake-drain-open-decisions.test.sh
 full tests/fm-wake-file-ident-renumber.test.sh
 full tests/fm-wake-queue.test.sh
+full tests/fm-wake-triage-replay.test.sh
 full tests/fm-watch-dated-rules.test.sh
 full tests/fm-watch-quiet-waits.test.sh
 full tests/fm-watch-reminder-group.test.sh
