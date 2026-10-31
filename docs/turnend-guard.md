@@ -350,6 +350,7 @@ The ledger is `state/.claude-autoarm-epoch`:
 - Line 1 records the claim and terminal outcome.
 - Line 2 records the claiming process's mandatory pid-identity.
 - Line 3, on an arming entry that recorded `owner_session_id`, records the pid-identity of the session-lock holder the claim was taken under.
+- The claimant publishes its arming entry first and adds `owner_session_id` and line 3 just after, because proving the id walks the harness ancestry and the guard waits only `FM_CLAUDE_AUTOARM_SYNC_WAIT_MS` for the claim; until then descent alone keeps the claim open.
 
 `fm_autoarm_claim_open` and `fm_autoarm_claim_next` in `bin/fm-wake-lib.sh` own the format contract.
 
