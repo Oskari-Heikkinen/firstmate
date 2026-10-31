@@ -1549,7 +1549,7 @@ alarm_accepted() {  # <dir> <log>
     }' "$1/decls.tsv" "$2") || { rm -f -- "$1/accepted.tsv"; return 1; }
   { mkdir -p "$1/accepted" && if [ -n "$rows" ]; then printf '%s\n' "$rows"; fi > "$1/accepted.tsv.new" \
     && mv -f -- "$1/accepted.tsv.new" "$1/accepted.tsv"; } 2>/dev/null \
-    || { rm -f -- "$1/accepted.tsv.new" "$1/accepted.tsv" 2>/dev/null; return 1; }
+    || return 1
   k=$'\n'
   while IFS="$TAB" read -r h sha; do
     [ -z "$h" ] || k="$k${h##*/}@$sha"$'\n'
