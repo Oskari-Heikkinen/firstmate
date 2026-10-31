@@ -38,15 +38,6 @@ _fm_wake_require_timeout() {
   . "$FM_WAKE_LIB_DIR/fm-timeout-lib.sh"
 }
 
-# Load the session-lock identity owner only for the auto-arm claim helpers,
-# which read the trusted session id beside state/.lock. Sourcing it eagerly
-# would pull harness identity machinery into every wake-library consumer.
-_fm_wake_require_session_lock() {
-  command -v fm_session_lock_recorded_session_id >/dev/null 2>&1 && return 0
-  # shellcheck source=bin/fm-session-lock-lib.sh
-  . "$FM_WAKE_LIB_DIR/fm-session-lock-lib.sh"
-}
-
 # Pass a variable name to capture this frame's pid without forking it in $().
 # On Bash 3.2, exec a child shell so its PPID identifies this frame, unlike $$.
 fm_current_pid() {  # [output-variable]
@@ -2372,7 +2363,10 @@ fm_failure_episode_reset() {
 
 # --- Claude Stop auto-arm generation claims -----------------------------------
 # Both Stop-event participants (bin/fm-claude-stop-autoarm.sh and
-# bin/fm-turnend-guard.sh --claude) coordinate through the epoch ledger
+# bin/fm-turnend-guard.sh --claude) source bin/fm-session-lock-lib.sh beside
+# this library before calling the claim helpers, which read the session id
+# through it; without it no claim records or matches a session id, so descent
+# alone keeps a claim open. They coordinate through the epoch ledger
 # state/.claude-autoarm-epoch, whose monotonic epoch sequence IS the claim
 # generation. This is an optimistic, generation-based single-flight design:
 #
@@ -2576,7 +2570,6 @@ fm_autoarm_claim_open() {  # <state-dir> [grace]
     [ -n "$FM_AUTOARM_OWNER_LOCK_IDENTITY" ] || return 1
     fm_pid_identity_to lock_identity "$lock_pid" 2>/dev/null || return 1
     [ "$lock_identity" = "$FM_AUTOARM_OWNER_LOCK_IDENTITY" ] || return 1
-    _fm_wake_require_session_lock
     recorded=$(fm_session_lock_recorded_session_id "$state" 2>/dev/null || true)
     [ -n "$recorded" ] && [ "$recorded" = "$FM_AUTOARM_OWNER_SESSION_ID" ] || return 1
   fi
@@ -2675,7 +2668,6 @@ _fm_autoarm_claim_pin_session() {  # <state-dir> <gen> <pid> <identity>
   local state=$1 gen=$2 pid=$3 identity=$4 lock epoch session_id lock_pid lock_identity tmp i=0
   lock="$state/.claude-autoarm.lock"
   epoch="$state/.claude-autoarm-epoch"
-  _fm_wake_require_session_lock
   session_id=$(fm_session_lock_trusted_session_id 2>/dev/null || true)
   case "$session_id" in
     ''|*[![:alnum:]_.-]*) return 0 ;;
