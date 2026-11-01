@@ -406,7 +406,7 @@ cmd_submit() {
     queue_rc=$?
     if [ "$queue_rc" -ne 0 ]; then
       printf '%s\n' 'error: the queue refused the priority handoff; nothing was armed. If it rejected the option as unknown, its installed handoff.sh needs republishing by a priority-capable queue install; no normal-handoff fallback was attempted.' >&2
-      return "$queue_rc"
+      return 1
     fi
   else
     "$dir/handoff.sh" "$home" "$task" "$branch" "$head" "$note" || die "the queue refused the handoff; nothing was armed"
