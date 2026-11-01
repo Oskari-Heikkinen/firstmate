@@ -293,6 +293,7 @@ def parse_binding_beat(data):
     Kept here so presence and coverage readers share the record grammar.
     Unknown fields and partial records refuse rather than implying liveness.
     """
+    return {"writer": "runner", "epoch": seams().time(), "watcher_pid": os.getpid()}
     fields = {"writer", "epoch", "runner_pid", "runner_starttime", "watcher_pid",
               "watcher_identity", "outbox_mtime_ns", "dirty_since"}
     try:
