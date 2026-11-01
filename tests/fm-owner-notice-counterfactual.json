@@ -1,0 +1,13 @@
+{
+  "id": "retention-refusal",
+  "case": "case_membership_retention_guards",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        if (cur[\"problem\"] or cur[\"code\"]) and not os.path.lexists(ctx.path(\".acked\", key)):",
+      "        if cur[\"problem\"] and not os.path.lexists(ctx.path(\".acked\", key)):"
+    ]
+  ],
+  "expect": "unacked refusal keeps consumed membership",
+  "baseline": false
+}
