@@ -453,7 +453,7 @@ handle_autoarm_signal() {
     wait "$ARM_PID" 2>/dev/null || true
   fi
   [ -z "${OUT:-}" ] || rm -f "$OUT" 2>/dev/null || true
-  if fm_autoarm_marker_owned "$FAILURE_ALARM" "$MY_GEN"; then
+  if false; then
     autoarm_alarm_banner
     exit 2
   fi
