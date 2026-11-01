@@ -450,7 +450,8 @@
 #   launch drops from its first prompt and why. .agents/worker-skills.list is
 #   read on every Claude or Pi worker launch and relaunch; a list
 #   bin/fm-worker-prefix-lib.sh refuses stops the launch before any endpoint,
-#   worktree, or record exists. Secondmate launches are unchanged.
+#   worktree, or record exists. That lib runs here as a command, never
+#   sourced. Secondmate launches are unchanged.
 # Worker account pin (config/claude-account, config/pi-account):
 #   Opt-in. With no file, a Claude or Pi launch is unchanged: Claude still
 #   receives this process's own CLAUDE_CONFIG_DIR when it is set, and Pi the
@@ -477,7 +478,7 @@
 #                  repo, or empty (claude_md_excludes_setting)
 #     __CLAUDEWORKERPREFIX__ the worker prompt-prefix members of claude's
 #                  --settings JSON (disableArtifact, permissions.deny,
-#                  skillOverrides and the rest; fm_worker_prefix_claude_setting)
+#                  skillOverrides and the rest; its claude-setting command)
 #     __CLAUDEENV__ `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 ` for a ship or scout
 #                  worktree of Firstmate's own repo, empty otherwise
 #     __CLAUDESETTINGS__ the single claude --settings value: a quoted inline
@@ -493,7 +494,7 @@
 #                  launches (supplies its own leading space, empty otherwise)
 #     __PISKILLS__ optional ` --no-skills --skill '<dir>'...` on Pi/pi-signed
 #                  ship and scout launches whose executable advertises both
-#                  flags (fm_worker_prefix_pi_skill_args; supplies its own
+#                  flags (its pi-launch-args command; supplies its own
 #                  leading space, empty otherwise)
 #     __PIRESUME__ optional relaunch-only `--session <reference>` that keeps a
 #                  Pi replacement on the session the endpoint's runtime already
@@ -708,8 +709,6 @@ fm_supervision_tick_entry "$STATE" "$CONFIG" spawn
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-exclude-tools-lib.sh
 . "$SCRIPT_DIR/fm-exclude-tools-lib.sh"
-# shellcheck source=/dev/null # Linted as its own root, to keep this closure under the lint memory ceiling.
-. "$SCRIPT_DIR/fm-worker-prefix-lib.sh"
 if ! LAUNCH_ENV_ENABLED=$(fm_config_source_present "$CONFIG/launch-env-allowlist"); then
   exit 1
 fi
@@ -2741,14 +2740,8 @@ if [ "$KIND" != secondmate ]; then
 fi
 # Worker prompt prefix (header above): refuse before worker provisioning when
 # the skill list cannot be read. Only a templated Claude or Pi worker uses it.
-WORKER_SKILLS=
-if [ "$KIND" != secondmate ] && [ "$RAW_LAUNCH" = 0 ]; then
-  case "$HARNESS" in
-  claude | pi | pi-signed)
-    WORKER_SKILLS=$(fm_worker_skills_read "$FM_ROOT/.agents/worker-skills.list") || exit 1
-    ;;
-  esac
-fi
+WORKER_SKILLS=$(bash "$SCRIPT_DIR/fm-worker-prefix-lib.sh" launch-entries "$KIND" "$HARNESS" "$RAW_LAUNCH" \
+  "$FM_ROOT/.agents/worker-skills.list") || exit 1
 
 case "$HARNESS" in
 devin)
@@ -2779,14 +2772,6 @@ pi | pi-signed)
   [ -z "$EXCLUDE_TOOLS" ] || PI_EXCLUDE=" --exclude-tools $(shell_quote "$EXCLUDE_TOOLS")"
   LAUNCH=${LAUNCH//__PIEXCLUDE__/$PI_EXCLUDE}
   # __PISKILLS__ needs the worktree, so it is substituted after provisioning.
-  PI_SKILL_FLAGS=0
-  if [ -n "$WORKER_SKILLS" ]; then
-    if fm_worker_prefix_pi_supports_skill_flags "$PI_BIN"; then
-      PI_SKILL_FLAGS=1
-    else
-      echo "warning: $PI_BIN does not advertise --no-skills and --skill, so worker $ID loads every skill it finds" >&2
-    fi
-  fi
   LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
   ;;
 cursor)
@@ -5514,10 +5499,9 @@ BUSY_GEN=
       # removes the previous incarnation's marker, so a relaunch is checked.
       prefix_hook=
       rm -f "$STATE_REAL/$ID.prefix-checked"
-      if [ -n "$WORKER_SKILLS" ]; then
-        j_prefix=$(json_escape "$(fm_worker_prefix_stop_command "$FM_ROOT" "$FM_HOME" "$STATE_REAL" "$(resolve_path "$CONFIG")" "$ID" "$(basename "$PROJ_ABS")")")
-        prefix_hook=",{\"type\":\"command\",\"command\":\"$j_prefix\"}"
-      fi
+      [ -z "$WORKER_SKILLS" ] || prefix_hook=$(bash "$SCRIPT_DIR/fm-worker-prefix-lib.sh" stop-hook "$FM_ROOT" "$FM_HOME" \
+        "$STATE_REAL" "$(resolve_path "$CONFIG")" "$ID" "$(basename "$PROJ_ABS")") \
+        || { echo "error: could not build the first-turn prompt-prefix Stop hook for $ID" >&2; exit 1; }
       stop_entry="\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_stop\"}$prefix_hook]}],"
     fi
     hooks_json="\"hooks\":{$(fm_component_claude_entries "$FM_ROOT" "$KIND" "$FM_HOME" "$WT")\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_submit\"}]}],${stop_entry}\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_stopfail\"}]}],\"SessionEnd\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_sessionend\"}]}]}"
@@ -6509,30 +6493,22 @@ fi
 # skills, a Firstmate-repo worktree's own, and the Claude config's; a project's
 # own skills keep their full listing. The member lands inside the template's
 # single-quoted --settings word, and the list's name alphabet has no quote.
-claude_worker_prefix=
-claude_env=
+# A Firstmate-repo worker's auto-memory is the supervisor's, recalled into
+# every turn; any other project's memory is its own and stays on. The lib's
+# pi-launch-args command owns which skill folders a Pi worker gets back.
+claude_worker_prefix= claude_env= pi_skills=
 if [ -n "$WORKER_SKILLS" ] && [ "$HARNESS" = claude ]; then
-  claude_worker_prefix=$(fm_worker_prefix_claude_setting "$WORKER_SKILLS" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" \
-    "$FM_ROOT/.agents/skills" ${OWN_CONTRACT_WT:+"$OWN_CONTRACT_WT/.agents/skills"})
-  # A Firstmate-repo worker's auto-memory is the supervisor's, recalled into
-  # every turn; any other project's memory is its own and stays on.
+  claude_worker_prefix=$(bash "$SCRIPT_DIR/fm-worker-prefix-lib.sh" claude-setting "$WORKER_SKILLS" \
+    "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$FM_ROOT/.agents/skills" ${OWN_CONTRACT_WT:+"$OWN_CONTRACT_WT/.agents/skills"}) \
+    || { echo "error: could not build the worker prompt-prefix settings for $ID" >&2; exit 1; }
   [ -z "$OWN_CONTRACT_WT" ] || claude_env='CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 '
+elif [ -n "$WORKER_SKILLS" ]; then
+  pi_skills=$(bash "$SCRIPT_DIR/fm-worker-prefix-lib.sh" pi-launch-args "$WORKER_SKILLS" "$PI_BIN" "$ID" "$WT" \
+    "$OWN_CONTRACT_WT" "${WORKER_ACCOUNT:+$WORKER_ACCOUNT_ROOT}") \
+    || { echo "error: could not build the worker prompt-prefix skill arguments for $ID" >&2; exit 1; }
 fi
 LAUNCH=${LAUNCH//__CLAUDEWORKERPREFIX__/$claude_worker_prefix}
 LAUNCH=${LAUNCH//__CLAUDEENV__/$claude_env}
-# A Pi worker launched with --no-skills gets back each kept skill from the
-# first of its worktree (Firstmate's own repo only), ~/.agents/skills and the
-# Pi agent directory that holds it, and any other project's own skill folders
-# whole, since the list classifies only Firstmate's and the operator's skills.
-pi_skills=
-if [ -n "$WORKER_SKILLS" ] && [ "${PI_SKILL_FLAGS:-0}" = 1 ]; then
-  pi_agent_dir=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}
-  [ -z "$WORKER_ACCOUNT" ] || pi_agent_dir=$WORKER_ACCOUNT_ROOT
-  pi_project_roots=()
-  [ -n "$OWN_CONTRACT_WT" ] || pi_project_roots=("$WT/.agents/skills" "$WT/.pi/skills")
-  pi_skills=$(fm_worker_prefix_pi_skill_args "$WORKER_SKILLS" ${OWN_CONTRACT_WT:+"$OWN_CONTRACT_WT/.agents/skills"} \
-    "$HOME/.agents/skills" "$pi_agent_dir/skills" -- ${pi_project_roots[@]+"${pi_project_roots[@]}"})
-fi
 LAUNCH=${LAUNCH//__PISKILLS__/$pi_skills}
 if [ "$HARNESS" = rovo ]; then
   ROVOCONFIGOVERRIDE=$(rovo_config_override_flag "$EFFORT" "$DATA" "$STATE" "$ID") || {

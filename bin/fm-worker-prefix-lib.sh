@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# fm-worker-prefix-lib.sh - the worker prompt-prefix cut, sourced by
-# bin/fm-spawn.sh: the one parser of .agents/worker-skills.list and the
-# builders of the Claude --settings members and Pi skill arguments it drives.
+# fm-worker-prefix-lib.sh - the worker prompt-prefix cut: the one parser of
+# .agents/worker-skills.list and the builders of the Claude --settings members,
+# Pi skill arguments and first-turn Stop hook it drives. bin/fm-control.sh
+# sources it; bin/fm-spawn.sh runs it as a command (the entry at the end), so
+# its body stays out of fm-spawn.sh's lint closure.
 #
 # docs/configuration.md "Worker prompt prefix" owns the operator contract and
 # why each member is there; .agents/worker-skills.list's header owns which
@@ -177,6 +179,36 @@ fm_worker_prefix_pi_skill_args() {
   printf '%s' "$out"
 }
 
+# fm_worker_prefix_launch_entries <kind> <harness> <raw-launch> <list-file>:
+# print the list's entries for a templated Claude or Pi ship or scout launch,
+# nothing for any other launch. Non-zero when the list is refused.
+fm_worker_prefix_launch_entries() {
+  [ "$1" != secondmate ] && [ "$3" = 0 ] || return 0
+  case "$2" in
+  claude | pi | pi-signed) fm_worker_skills_read "$4" ;;
+  esac
+}
+
+# fm_worker_prefix_pi_launch_args <entries> <pi-executable> <task-id> <worktree>
+# <firstmate-repo-worktree> <pi-agent-dir>: the Pi launch's skill arguments.
+# Kept skills come from the first of the Firstmate-repo worktree's own (when
+# the worker is in Firstmate's repo), ~/.agents/skills and the Pi agent
+# directory's (empty means PI_CODING_AGENT_DIR or ~/.pi/agent); any other
+# project's own skill folders load whole, since the list classifies only
+# Firstmate's and the operator's skills. Prints nothing, with a warning, when
+# the executable does not advertise the flags.
+fm_worker_prefix_pi_launch_args() {
+  local entries=$1 pi=$2 id=$3 wt=$4 own=$5 agent=${6:-${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}}
+  local -a project=()
+  if ! fm_worker_prefix_pi_supports_skill_flags "$pi"; then
+    echo "warning: $pi does not advertise --no-skills and --skill, so worker $id loads every skill it finds" >&2
+    return 0
+  fi
+  [ -n "$own" ] || project=("$wt/.agents/skills" "$wt/.pi/skills")
+  fm_worker_prefix_pi_skill_args "$entries" ${own:+"$own/.agents/skills"} "$HOME/.agents/skills" "$agent/skills" \
+    -- ${project[@]+"${project[@]}"}
+}
+
 # fm_worker_prefix_stop_command <fm-root> <fm-home> <state> <config> <task-id> <project>:
 # print the Stop hook shell command that runs bin/fm-worker-prefix-check.sh
 # until it writes <state>/<task-id>.prefix-checked; after that a turn costs
@@ -187,3 +219,25 @@ fm_worker_prefix_stop_command() {
     "$(_fm_worker_prefix_quote "$2")" "$(_fm_worker_prefix_quote "$3")" "$(_fm_worker_prefix_quote "$4")" \
     "$(_fm_worker_prefix_quote "$5")" "$(_fm_worker_prefix_quote "$6")"
 }
+
+# fm_worker_prefix_stop_hook <fm-root> <fm-home> <state> <config> <task-id> <project>:
+# the Claude Stop hook entry, with a leading comma, that runs
+# fm_worker_prefix_stop_command.
+fm_worker_prefix_stop_hook() {
+  local entry
+  entry=$(jq -cn --arg c "$(fm_worker_prefix_stop_command "$@")" '{type: "command", command: $c}') || return 1
+  printf ',%s' "$entry"
+}
+
+# Run as a command: fm-worker-prefix-lib.sh <launch-entries|claude-setting|
+# pi-launch-args|stop-hook> <args>..., each the function of that name above.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case "${1:-}" in
+  launch-entries) shift; fm_worker_prefix_launch_entries "$@"; exit ;;
+  claude-setting) shift; fm_worker_prefix_claude_setting "$@"; exit ;;
+  pi-launch-args) shift; fm_worker_prefix_pi_launch_args "$@"; exit ;;
+  stop-hook) shift; fm_worker_prefix_stop_hook "$@"; exit ;;
+  esac
+  echo "usage: fm-worker-prefix-lib.sh launch-entries|claude-setting|pi-launch-args|stop-hook <args>..." >&2
+  exit 2
+fi

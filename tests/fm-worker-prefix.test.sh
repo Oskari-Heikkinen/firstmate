@@ -273,6 +273,9 @@ test_pi_ship_launch_loads_only_kept_skills() {
   make_skill "$WT_DIR/.agents/skills" project-own
   git -C "$WT_DIR" add -A
   git -C "$WT_DIR" -c user.name=t -c user.email=t@t commit -qm 'project skill'
+  # fm-spawn resets the pooled copy to origin's default branch, so the
+  # project's skill must be there.
+  git -C "$WT_DIR" push -q origin HEAD:main
   out=$(FM_FAKE_PI_SKILLS=1 spawn_ship prefix-pi-z5 --model openai-codex/gpt-5.6-sol) || fail "pi spawn failed: $out"
   launch=$(cat "$LAUNCH_LOG")
   kept="--no-skills --skill '$USER_HOME/.agents/skills/no-mistakes' --skill '$USER_HOME/.pi/agent/skills/review-preferences' --skill '"
