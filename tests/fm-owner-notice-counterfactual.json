@@ -1,0 +1,13 @@
+{
+  "id": "postcommit-reconcile",
+  "case": "case_postcommit_reconcile",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        result.diagnostic = error\n        result.code = UNKNOWN",
+      "        if result.result.get(\"state\") == 'reconciled':\n            raise Done(UNKNOWN, state=\"unknown\", code=error[\"code\"])\n        result.diagnostic = error\n        result.code = UNKNOWN"
+    ]
+  ],
+  "expect": "reconcile retains committed state",
+  "baseline": false
+}
