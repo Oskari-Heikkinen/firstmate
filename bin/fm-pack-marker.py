@@ -258,7 +258,7 @@ class Unit:
                     elif stat.S_ISLNK(st.st_mode):
                         row = ("l", 0, mode, os.readlink(path))
                     else:
-                        raise Refused("unsupported tree kind: " + name, 1)
+                        continue
                     tree[name] = row
         self.compare(tree, members)
 
