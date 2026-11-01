@@ -1058,7 +1058,7 @@ cmd_release() (
   # Only the resume runner may spend a rate-limited external check. Retain
   # these copies rather than launching a second query from the release action.
   local cadence
-  cadence=$(cadence_value "$META") || return 1
+  cadence=$(cadence_value "$META") || return 0
   [ "$cadence" = 0 ] || return 0
   # Never release when the wait already cleared: its sole listener owns resume.
   "$SCRIPT_DIR/fm-park.sh" check "$(meta_get park_when)" >/dev/null 2>&1; status=$?
