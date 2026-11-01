@@ -94,15 +94,22 @@ fm_herdr_lab_session_list() { # <session>
 
 # One parser for live session lists and persisted tripwires. Slurp refuses
 # multiple JSON documents rather than accepting the last valid fragment.
+# Fleet names follow Herdr session::validate_name, NOT the restrictive lab
+# target rule: 1..64 ASCII alphanumeric/dot/underscore/hyphen bytes, except
+# literal `.` and `..`. Absolute regex anchors also reject a trailing newline.
+# The default/name equality below also enforces default's boolean type; a
+# separate type predicate would be redundant and mask its counterfactual.
 fm_herdr_lab_normalize_sessions() { # [owned-lab-name]; one parse for schema and ownership
   jq -cse --arg lab "${1-}" '
     if length != 1 then error("expected one session list") else .[0] end
     | .sessions
     | if type != "array" or length == 0 then error("missing sessions") else . end
     | if all(.[];
-        (.name | type == "string" and test("^[a-zA-Z0-9][a-zA-Z0-9_-]*$"))
-        and (.default | type == "boolean") and (.running | type == "boolean")
-        and (.socket_path | type == "string" and startswith("/") and (explode | all(. >= 32 and . != 127)))
+        (.name | if type != "string" then false else
+          test("\\A[a-zA-Z0-9._-]{1,64}\\z") and (. != "." and . != "..") end)
+        and (.running | type == "boolean")
+        and (.socket_path | if type != "string" then false else
+          startswith("/") and (explode | all(. >= 32 and . != 127)) end)
         and (.default == (.name == "default")))
       and ([.[] | select(.default)] | length == 1)
       and ((map(.name) | unique | length) == length)
