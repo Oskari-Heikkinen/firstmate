@@ -34,6 +34,8 @@ init_fixture() {
   printf 'one\n' >"$REPO/bin/fm-disk-room.sh"
   printf 'one\n' >"$REPO/bin/fm-storage-admission-lib.sh"
   printf 'one\n' >"$REPO/bin/fm-vhdx-bat.py"
+  printf 'one\n' >"$REPO/bin/fm-owner-notice-client.py"
+  printf 'one\n' >"$REPO/bin/fm_owner_notice_format.py"
   printf 'one\n' >"$REPO/src/other.txt"
   cat >"$FAKE" <<'SH'
 #!/usr/bin/env bash
@@ -213,12 +215,18 @@ test_select_names_changed_helpers() {
   select_on lib bin/fm-storage-admission-lib.sh
   assert_equals bin/fm-disk-room.sh "$(cat "$TMP/lib.log")" "a changed pinned sibling selects its helper"
   select_on gate bin/fm-helper-selftest.sh
-  assert_equals bin/fm-disk-room.sh "$(cat "$TMP/gate.log")" "a change to the gate selects every helper"
+  assert_equals $'bin/fm-disk-room.sh\nbin/fm-owner-notice-client.py' "$(cat "$TMP/gate.log")" "a change to the gate selects every helper"
+  select_on notice bin/fm-owner-notice-client.py
+  expect_code 0 "$RC" "select on the notice client change"
+  assert_equals bin/fm-owner-notice-client.py "$(cat "$TMP/notice.log")" "the notice client selects its self-test"
+  select_on format bin/fm_owner_notice_format.py
+  expect_code 0 "$RC" "select on the notice format change"
+  assert_equals bin/fm-owner-notice-client.py "$(cat "$TMP/format.log")" "the format closure selects the notice self-test"
   select_on other src/other.txt
   expect_code 0 "$RC" "select on an unrelated change"
   assert_equals '' "$(cat "$TMP/other.log")" "an unrelated change selects nothing"
   gate_run all select --all
-  assert_equals bin/fm-disk-room.sh "$(cat "$TMP/all.log")" "--all lists every gated helper"
+  assert_equals $'bin/fm-disk-room.sh\nbin/fm-owner-notice-client.py' "$(cat "$TMP/all.log")" "--all lists every gated helper"
   gate_run badbase select --base no-such-ref
   expect_code 1 "$RC" "an unreadable base fails closed"
   assert_grep "fm-helper-selftest: cannot find the merge base of no-such-ref and HEAD" "$TMP/badbase.log" "the failure is named"
