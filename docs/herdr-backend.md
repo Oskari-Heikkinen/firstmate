@@ -858,12 +858,17 @@ The ambient stop command has no explicit target.
 The helper:
 
 - Provisions only non-default names beginning with `fm-lab-`.
-- Supplies an explicit `--session` Herdr option before any `--` delimiter in allowed task commands.
+- Supplies an explicit `--session` Herdr option before any `--` delimiter in allowed task commands, and removes inherited socket overrides and pane identity from lab processes.
 - Refuses caller-supplied session flags and server/session lifecycle subcommands.
 - Performs destructive stop/delete only through its guarded lifecycle actions.
 
-Immediately before every destructive call it re-queries the named session and refuses empty, missing, literal `default`, or `default:true` identities.
-Its before/after tripwire requires the live default-session snapshot to remain byte-identical.
+Immediately before every destructive call it re-queries the named session and refuses empty, missing, literal `default`, `default:true`, or recorded fleet identities.
+Provision identifies the fleet using the caller's `HERDR_SESSION`; without a fleet identity it requires exactly one running session.
+A caller that already sets `HERDR_SESSION` to the new lab name uses that same unique-session discovery, never treats the lab as its own fleet.
+The tripwire records every running session plus the default session, which may be stopped; names, running states, default flags and sockets must stay identical before destructive work and after teardown.
+Teardown uses the recorded set, not its caller's current environment.
+Malformed lists, duplicate names or sockets, collisions, and missing or invalid tripwires fail closed.
+Legacy single-default tripwires are not adopted or upgraded automatically.
 
 The helper's header and `--help` own exact commands.
 Tests use thin compatibility wrappers in `tests/herdr-test-safety.sh` and never duplicate the destructive policy.
@@ -899,5 +904,5 @@ tests/fm-afk-inject-herdr-e2e.test.sh
 tests/fm-afk-pi-herdr-return-e2e.test.sh
 ```
 
-Real Herdr tests use the named lab helper and default-session tripwire.
+Real Herdr tests use the named lab helper and recorded-fleet tripwire; `tests/fm-herdr-lab.test.sh` covers the isolation policy portably with fake Herdr.
 [`verification/runtime-backends.md`](verification/runtime-backends.md#herdr) records the active version, CLI, projection, event, and lifecycle evidence without task-specific chronology.
