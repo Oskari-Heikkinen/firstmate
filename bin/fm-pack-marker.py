@@ -416,7 +416,7 @@ def main():
 
 
 def interrupted(signum, _frame):
-    raise Refused("interrupted by signal " + str(signum), 1)
+    return
 
 
 if __name__ == "__main__":
