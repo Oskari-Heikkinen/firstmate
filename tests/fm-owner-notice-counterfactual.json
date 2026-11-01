@@ -1,0 +1,13 @@
+{
+  "id": "membership-schema",
+  "case": "case_live_membership",
+  "edits": [
+    [
+      "bin/fm_owner_notice_format.py",
+      "            or obj[\"schema\"] != LIVE_SCHEMA or obj[\"binding_id\"] != binding_id):",
+      "            or False):"
+    ]
+  ],
+  "expect": "inventory schema alarms",
+  "baseline": false
+}
