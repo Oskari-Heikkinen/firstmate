@@ -2,6 +2,7 @@
 # Checked-spool consumers, including the independent R1 probes and siblings.
 # SPOOL_TEST_BIN/SPOOL_ONLY_CASE are fixture-only seams for one-off guard
 # counterfactuals; they never select a live home or run executable teardown.
+# shellcheck disable=SC2329 # Test stubs are invoked by sourced code.
 # shellcheck disable=SC2030,SC2031 # Each subshell fixture assigns its own gate state.
 set -u
 # shellcheck source=tests/lib.sh
