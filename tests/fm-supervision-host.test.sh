@@ -2763,6 +2763,36 @@ SH
   pass "host: the whole result-reader context token survives for validation, never a numeric prefix"
 }
 
+test_engine_valid_numeric_boundaries_resume() {
+  local home pid first
+  home=$(make_home valid-numeric-boundaries away)
+  FM_SUPERVISION_HOST_CONTEXT_CEILING=9007199254740991 FM_SUPERVISION_HOST_ROTATE_TURNS=9007199254740991 start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "valid boundaries: no watcher"
+  append_status "$home" 'ordinary first wake'
+  wait_until 2000 handled_at_least "$home" 1 || fail "valid boundaries: first wake not handled"
+  first=$(sed -n '/^arg=--session-id$/{n;s/^arg=//p;}' "$home/engine-call.1")
+  write_count_result "$home" 1e0 9007199254740991 0 0 0
+  append_status "$home" 'maximum safe prompt'
+  wait_until 2000 handled_at_least "$home" 2 || fail "valid boundaries: maximum-safe result rejected"
+  assert_re "^arg=$first\$" "$home/engine-call.2" "maximum-safe limits must permit resume"
+  assert_re '^context=9007199254740991$' "$home/state/.supervision-host-engine" "maximum-safe estimate must remain exact"
+  write_count_result "$home" 1 0 0 0 0
+  append_status "$home" 'zero prompt after ceiling'
+  wait_until 2000 handled_at_least "$home" 3 || fail "valid boundaries: zero-prompt result rejected"
+  assert_re '^arg=--session-id$' "$home/engine-call.3" "equality at maximum-safe ceiling must reset"
+  assert_re '^context=0$' "$home/state/.supervision-host-engine" "zero prompt with one call must be known zero"
+  append_status "$home" 'resume known zero'
+  wait_until 2000 handled_at_least "$home" 4 || fail "valid boundaries: zero-prompt resume failed"
+  assert_re '^arg=--resume$' "$home/engine-call.4" "known zero must permit resume"
+  [ "$(grep -c 'engine-reset' "$home/state/.supervision-host.log")" -eq 1 ] || fail "valid boundaries: spurious reset"
+  [ "$(grep -c '"task":"demo"' "$home/state/branch-outcomes.jsonl")" -eq 4 ] || fail "valid boundaries: lost or duplicated outcome"
+  assert_no_grep 'demo.status' "$home/state/.wake-queue" "valid boundaries: wake left queued"
+  pid=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
+  kill -TERM "$pid"
+  wait_until 200 host_exited "$home" || fail "valid boundaries: host did not stop"
+  pass "host: maximum-safe limits and counts stay exact, and known-zero context resumes"
+}
+
 test_engine_invalid_limits_choose_fresh() {
   local home field value n pid
   for field in CONTEXT_CEILING ROTATE_TURNS; do
@@ -4772,6 +4802,7 @@ HOST_CASES=(
   test_engine_persisted_numbers_fail_closed
   test_engine_invalid_limits_choose_fresh
   test_engine_context_output_is_not_truncated
+  test_engine_valid_numeric_boundaries_resume
   test_engine_turn_is_bounded_and_its_descendants_reaped
   test_attended_wake_carries_the_dialog_mirror
   test_primary_without_a_verified_mirror_runs_away_only
