@@ -147,6 +147,71 @@ if mq "$H" handoff nosuch fm/x "$HEAD_A" -- x 2>/dev/null; then
 fi
 pass "a refused or foreign handoff arms and records nothing"
 
+# --- priority: exact argv and refusal ownership -----------------------------
+Q="$TMP_ROOT/q-priority"; new_queue "$Q"
+H="$TMP_ROOT/h-priority"; new_home "$H" "$Q" t1
+cat > "$Q/handoff.sh" <<'SH'
+#!/usr/bin/env bash
+q=$(dirname "$0")
+printf '%s\n' "$@" > "$q/argv"
+if [ "${1-}" = --priority ]; then
+  if [ -e "$q/old-adapter" ]; then
+    echo 'refused: unknown argument --priority' >&2
+    exit 2
+  fi
+  [ "$2" = pipeline ] || { printf "refused: unknown priority '%s'; one of: pipeline\n" "$2" >&2; exit 2; }
+  shift 2
+fi
+printf 'HANDOFF 2026-09-27T18:00:00Z home=%s task=%s branch=%s head=%s note=%s\n' "$1" "$2" "$3" "$4" "$5" >> "$q/queue.log"
+SH
+chmod +x "$Q/handoff.sh"
+mq "$H" handoff t1 fm/t1 "$HEAD_A" --priority pipeline --resume-note 'keep context' -- 'blocks other work' >/dev/null
+expected=$(printf '%s\n' --priority pipeline test-home t1 fm/t1 "$HEAD_A" 'blocks other work')
+assert_equals "$expected" "$(cat "$Q/argv")" "priority is two words before all five positionals"
+assert_grep 'keep context' "$H/state/merge-queue/t1.resume" "priority composes with resume notes"
+FM_HOME="$H" "$ROOT/bin/fm-park.sh" cancel t1 >/dev/null
+mq "$H" handoff t1 fm/t1 "$HEAD_A" -- normal note >/dev/null
+expected=$(printf '%s\n' test-home t1 fm/t1 "$HEAD_A" 'normal note')
+assert_equals "$expected" "$(cat "$Q/argv")" "no option preserves the original five argv words"
+FM_HOME="$H" "$ROOT/bin/fm-park.sh" cancel t1 >/dev/null
+for value in urgent '' 'pipeline urgent'; do
+  rc=0
+  mq "$H" handoff t1 fm/t1 "$HEAD_B" --priority "$value" -- refused >"$Q/out" 2>"$Q/err" || rc=$?
+  assert_equals 2 "$rc" "unknown priority keeps the queue exit status"
+  expected=$(printf '%s\n' --priority "$value" test-home t1 fm/t1 "$HEAD_B" refused)
+  assert_equals "$expected" "$(cat "$Q/argv")" "unknown priority is forwarded without rewriting"
+  assert_grep "refused: unknown priority '$value'; one of: pipeline" "$Q/err" "queue refusal stderr survives"
+  assert_absent "$H/state/procevent/merge-queue-t1-bbbbbbbb.source" "unknown priority arms nothing"
+done
+touch "$Q/old-adapter"
+rc=0
+mq "$H" handoff t1 fm/t1 "$HEAD_B" --priority pipeline -- old >"$Q/out" 2>"$Q/err" || rc=$?
+assert_equals 2 "$rc" "old adapter status survives"
+assert_grep 'refused: unknown argument --priority' "$Q/err" "old adapter refusal survives"
+assert_grep 'needs republishing' "$Q/err" "old adapter refusal explains installation requirement"
+assert_no_grep "$HEAD_B" "$Q/queue.log" "no silent normal-handoff fallback"
+assert_absent "$H/state/procevent/merge-queue-t1-bbbbbbbb.source" "old adapter refusal arms nothing"
+# Both option orders must refuse before calling the queue, even a permissive one.
+for order in before after; do
+  rm -f "$Q/argv"
+  rc=0
+  if [ "$order" = before ]; then
+    mq "$H" handoff t1 fm/t1 "$HEAD_B" --test-only --priority pipeline -- rehearsal >"$Q/out" 2>"$Q/err" || rc=$?
+  else
+    mq "$H" handoff t1 fm/t1 "$HEAD_B" --priority pipeline --test-only -- rehearsal >"$Q/out" 2>"$Q/err" || rc=$?
+  fi
+  assert_equals 1 "$rc" "test-only plus priority refuses locally"
+  assert_grep 'this adapter waits for landing results' "$Q/err" "test-only refusal names the lifecycle mismatch"
+  assert_absent "$Q/argv" "test-only never reaches the queue"
+done
+for malformed in --priority --priority=pipeline; do
+  rc=0
+  mq "$H" handoff t1 fm/t1 "$HEAD_B" "$malformed" >"$Q/out" 2>"$Q/err" || rc=$?
+  assert_equals 1 "$rc" "malformed priority option refuses"
+  assert_absent "$Q/argv" "malformed priority never reaches the queue"
+done
+pass "priority preserves argv, refusal ownership, and landing-only lifecycle"
+
 # --- result: pending, taken, final, and the train's read helper ---------------
 Q="$TMP_ROOT/q-result"; new_queue "$Q"
 H="$TMP_ROOT/h-result"; new_home "$H" "$Q" t1

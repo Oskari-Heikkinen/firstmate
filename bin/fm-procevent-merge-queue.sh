@@ -8,6 +8,7 @@
 #
 # Usage:
 #   fm-procevent-merge-queue.sh handoff <task-id> <branch> <head40>
+#                               [--priority <value>]
 #                               [--resume-note <text> | --resume-note-file <path>]
 #                               -- <note>...
 #   fm-procevent-merge-queue.sh arm <task-id> <head40>
@@ -27,6 +28,14 @@
 #            Park adopts this watch, records the incarnation, and stops the
 #            worker; it arms no second resume watch. A refused queue handoff
 #            arms and appends nothing.
+#            --priority forwards two argv words before the queue's positionals;
+#            pipeline is the queue's supported value. Other values are forwarded
+#            unchanged for the queue to refuse. Priority refusals preserve the
+#            queue's stderr and exit status, with no fallback to normal handoff.
+#            An unknown-option refusal means the installed handoff.sh must be
+#            republished by a queue install supporting priority.
+#            --priority=value is not accepted. --test-only is refused here:
+#            this adapter parks for landing results, not rehearsal results.
 # arm        Register the watch for one handed-over head (idempotent). Use it
 #            to re-arm after an `error` outcome or when a head was handed over
 #            by hand. The source id is merge-queue-<task-id>-<head8>, so a new
@@ -356,10 +365,14 @@ cmd_arm() {
 
 cmd_handoff() {
   local task=${1-} branch=${2-} head=${3-} resume='' resume_set=0 dir home note tmp sid
+  local priority='' priority_set=0 queue_rc
   [ "$#" -ge 3 ] || usage
   shift 3
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --priority) [ "$#" -ge 2 ] || die "--priority needs a value"; priority=$2; priority_set=1; shift 2 ;;
+      --priority=*) die "use --priority <value>, not --priority=<value>" ;;
+      --test-only) die "--test-only is not supported: this adapter waits for landing results; priority cannot be used for a rehearsal" ;;
       --resume-note) [ "$#" -ge 2 ] || die "--resume-note needs text"; resume=$2; resume_set=1; shift 2 ;;
       --resume-note-file)
         [ "$#" -ge 2 ] && [ -f "$2" ] || die "--resume-note-file needs a readable file"
@@ -375,7 +388,16 @@ cmd_handoff() {
   dir=$(queue_dir) || die "no merge queue is configured: set dir= in $CONFIG/merge-queue"
   [ -x "$dir/handoff.sh" ] || die "the queue has no executable handoff.sh: $dir"
   home=$(home_name)
-  "$dir/handoff.sh" "$home" "$task" "$branch" "$head" "$note" || die "the queue refused the handoff; nothing was armed"
+  if [ "$priority_set" -eq 1 ]; then
+    "$dir/handoff.sh" --priority "$priority" "$home" "$task" "$branch" "$head" "$note"
+    queue_rc=$?
+    if [ "$queue_rc" -ne 0 ]; then
+      printf '%s\n' 'error: the queue refused the priority handoff; nothing was armed. If it rejected the option as unknown, its installed handoff.sh needs republishing by a priority-capable queue install; no normal-handoff fallback was attempted.' >&2
+      return "$queue_rc"
+    fi
+  else
+    "$dir/handoff.sh" "$home" "$task" "$branch" "$head" "$note" || die "the queue refused the handoff; nothing was armed"
+  fi
   (umask 077; mkdir -p "$MQ_STATE") || die "cannot create $MQ_STATE"
   if [ "$resume_set" = 1 ]; then
     printf '%s\n' "$resume" > "$MQ_STATE/$task.resume" || die "cannot store the resume note"
@@ -472,7 +494,7 @@ relaunch_note() {  # <line> <head> <task>
   else
     printf '\nFix what the result names in this copy, re-run the gate, push a new head to your branch, and hand it over again with:\n'
   fi
-  printf "  FM_HOME='%s' '%s' handoff %s <branch> <new-head40> [--resume-note <text>] -- <note>\n" "$FM_HOME" "$SELF" "$3"
+  printf "  FM_HOME='%s' '%s' handoff %s <branch> <new-head40> [--priority <value>] [--resume-note <text>] -- <note>\n" "$FM_HOME" "$SELF" "$3"
   printf 'then stop.\n'
 }
 
