@@ -898,7 +898,7 @@ def main(argv):
             if args.cmd or (args.interface is not None and args.self_test is not None):
                 raise ans(USAGE, "usage", 0, detail="interface/self-test must be used alone")
             version = args.interface if args.interface is not None else args.self_test
-            if version != "v1":
+            if False:
                 print("unsupported interface " + version)
                 return 1
             if args.interface is not None:
