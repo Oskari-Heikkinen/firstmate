@@ -55,6 +55,10 @@
 #       fm-pack-marker-verification/v1 record defined in docs/storage.md.
 #       Release requires that record and uses its verified_at for the window;
 #       created and filesystem times never supply verification authority.
+#       One in-memory snapshot binds metadata, image and receipt identities
+#       and digests from initial loading through every reopen, source
+#       comparison and the final pre-removal guard. A change refuses and, if
+#       renamed, restores the source; matching timestamps never rebind it.
 #       Marker --against/release also hash the source: its historical tree
 #       lacks mtime/link counts, which are not inferred. Hard-link accounting
 #       remains release's independent guard. No marker restore is supported.
@@ -342,7 +346,7 @@ set -o pipefail
 
 BIN=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 NL=$'\n'
-IFORMAT='' # Internal dispatch state, never inherited from the caller.
+IFORMAT='' IBINDING='' IMETADATA='' # Private state, never inherited from the caller.
 
 die() { printf 'fm-pack: %s\n' "$*" >&2; exit 2; }
 fail1() { printf 'fm-pack: %s\n' "$*" >&2; exit 1; }
@@ -571,7 +575,7 @@ tree_list() {
 # A process substitution would hide a failed producer, even on equal output.
 tree_matches() {
   if [ "${IFORMAT:-}" = tj-pack-marker/v1 ]; then
-    run_stoppable python3 "$BIN/fm-pack-marker.py" tree "$IMG" "$1"
+    marker_step tree "$1"
     return $?
   fi
   local tmp rc
@@ -683,10 +687,20 @@ need_reader() {
     die "no usable FUSE mount (squashfuse, fusermount3 and a usable /dev/fuse) to verify through; FM_PACK_MOUNT=unsquashfs names the slow path"
 }
 
+# The one metadata response stays in memory; no later pathname supplies it.
+marker_field() { jq -er --arg key "$1" '.[$key]' <<<"$IMETADATA"; }
+
+# marker_step ACTION ARGS: every reopened reader carries the initial binding.
+marker_step() {
+  local action=$1 flags=(--binding "$IBINDING"); shift
+  [ "$CMD" != release ] || flags+=(--receipt)
+  run_stoppable python3 "$BIN/fm-pack-marker.py" "$action" "$IMG" "$@" "${flags[@]}"
+}
+
 # check_members IMAGE DIR MEMBERS: 0 match, 1 mismatch.
 check_members() {
   if [ "${IFORMAT:-}" = tj-pack-marker/v1 ]; then
-    run_stoppable python3 "$BIN/fm-pack-marker.py" verify "$1" "$METHOD"
+    marker_step verify "$METHOD"
   else
     "check_members_$METHOD" "$@"
   fi
@@ -839,7 +853,14 @@ load_image() {
     need python3
     IJSON=$IDIR/$IUNIT.marker.json
     IFORMAT=tj-pack-marker/v1
-    IDIRNAME=$(python3 "$BIN/fm-pack-marker.py" metadata "$IMG") || die "invalid marker unit $IJSON"
+    local flags=(--capture)
+    [ "$CMD" != release ] || flags+=(--receipt)
+    IMETADATA=$(python3 "$BIN/fm-pack-marker.py" metadata "$IMG" "${flags[@]}") || {
+      [ "$CMD" != release ] || die "invalid marker verification record or unit $IJSON"
+      die "invalid marker unit $IJSON"
+    }
+    IDIRNAME=$(marker_field pkg) || die "invalid marker package snapshot"
+    IBINDING=$(marker_field binding) || die "invalid marker binding snapshot"
     return
   fi
   [ -f "$IJSON" ] || die "$IJSON is missing"
@@ -875,7 +896,7 @@ cmd_verify() {
   if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
     local args=()
     [ -z "$against" ] || args=(--against "$against")
-    run_stoppable python3 "$BIN/fm-pack-marker.py" verify "$IMG" "$METHOD" --record ${args[@]+"${args[@]}"} ||
+    marker_step verify "$METHOD" --record ${args[@]+"${args[@]}"} ||
       fail1 "$IMG failed marker verification"
   else
     image_sha_ok "$IDIR" "$IUNIT" || fail1 "$IMG does not match $IUNIT.sqfs.sha256"
@@ -1201,11 +1222,13 @@ cmd_release() {
   [[ $REL_WINDOW =~ ^[0-9]{1,10}$ ]] || die "the window must be whole seconds, not $REL_WINDOW"
   REL_WINDOW=$((10#$REL_WINDOW))
   if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
-    REL_VERIFIED=$(python3 "$BIN/fm-pack-marker.py" receipt "$IMG") || die "invalid marker verification record"
+    REL_VERIFIED=$(marker_field verified_at) || die "invalid marker verification record"
+    recorded=$(marker_field source) || die "invalid marker source snapshot"
+    REL_IMAGE_SHA=$(marker_field image_sha256) || die "invalid marker image snapshot"
   else
     REL_VERIFIED=$(sidecar verified_at "$IJSON") && [[ $REL_VERIFIED =~ ^[0-9]+$ ]] || die "$IJSON has no verified_at"
+    recorded=$(sidecar source "$IJSON") || die "$IJSON has no source"
   fi
-  recorded=$(sidecar source "$IJSON") || die "$IJSON has no source"
 
   [ -d "$given" ] && [ ! -L "$given" ] || die "$given is not a real directory"
   src=$(cd -P -- "$given" && pwd -P) || die "cannot resolve $given"
@@ -1242,6 +1265,9 @@ cmd_release() {
   take_slot "fm-pack release $IMG $src"
   CLEANUP=release_cleanup
 
+  if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
+    marker_step recheck || rel_refuse 1 "marker transaction changed while waiting for the pack slot"
+  fi
   now=$(date +%s)
   [ "$now" -ge $((REL_VERIFIED + REL_WINDOW)) ] ||
     rel_refuse 75 "the release window of $REL_WINDOW s ends at $((REL_VERIFIED + REL_WINDOW)), $((REL_VERIFIED + REL_WINDOW - now)) s from now"
@@ -1266,14 +1292,12 @@ cmd_release() {
   freed=$(printf '%s\n' "$out" | sed -n 's/^freed\t//p') && [[ $freed =~ ^[0-9]+$ ]] ||
     rel_refuse 1 "link-accounting-read-failed: $src freed"
 
-  if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
-    out=$(python3 "$BIN/fm-pack-marker.py" receipt "$IMG") || rel_refuse 1 "invalid marker verification record"
-    [ "$out" = "$REL_VERIFIED" ] || rel_refuse 1 "marker verification record changed during release"
-  fi
   image_sha_ok "$IDIR" "$IUNIT" || rel_refuse 1 "$IMG does not match $IUNIT.sqfs.sha256"
   check_members "$IMG" "$IDIRNAME" "$IMEMBERS" || rel_refuse 1 "$IMG failed the member check ($METHOD)"
-  REL_IMAGE_SHA=$(cut -d' ' -f1 <"$IDIR/$IUNIT.sqfs.sha256") && [[ $REL_IMAGE_SHA =~ ^[0-9a-f]{64}$ ]] ||
-    rel_refuse 1 "image-hash-read-failed: $IUNIT.sqfs.sha256"
+  if [ "$IFORMAT" != tj-pack-marker/v1 ]; then
+    REL_IMAGE_SHA=$(cut -d' ' -f1 <"$IDIR/$IUNIT.sqfs.sha256") && [[ $REL_IMAGE_SHA =~ ^[0-9a-f]{64}$ ]] ||
+      rel_refuse 1 "image-hash-read-failed: $IUNIT.sqfs.sha256"
+  fi
   tree_matches "$src" "$IDIR/$IUNIT.tree.tsv" || rel_refuse 1 "$src no longer matches $IUNIT.tree.tsv"
 
   REL_PENDING=1
@@ -1284,6 +1308,9 @@ cmd_release() {
   if [ -n "${FM_PACK_TEST_BEFORE_RECHECK:-}" ]; then bash -c "$FM_PACK_TEST_BEFORE_RECHECK"; fi
   tree_matches "$REL_ASIDE" "$IDIR/$IUNIT.tree.tsv" || rel_refuse 1 "$src changed while it was renamed aside"
   in_use "$REL_ASIDE" "${names[@]}"
+  if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
+    marker_step recheck || rel_refuse 1 "marker transaction changed before removal"
+  fi
 
   # Once removal starts, a stop is held until the record says released.
   hold_stops

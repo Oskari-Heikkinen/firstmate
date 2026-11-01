@@ -6,13 +6,13 @@ metadata:
   internal: true
   sources:
     - path: docs/storage.md
-      sha256: e2aba1cc692426029f63bbd2baa8ab611defb125f9356b14ab0eda3e04887f78
+      sha256: f1442c59b718078ac1921ffddb75d3ae6dfcbd54591ca6c21e79afb8ea60bda1
     - path: bin/fm-storage.sh
       sha256: ab045d99446844920ce041cf17330d8bef4d9a3e15cc481c2e8d4cc026be11d8
     - path: bin/fm-pack.sh
-      sha256: 7e2a680a5325770d416bcc97fcc94046ad40a2b19fa67431f707fa09287c137c
+      sha256: 0636e5089aaadee654522641f36ab72ea80520077a228709360f64525b50141e
     - path: bin/fm-pack-marker.py
-      sha256: d0d41e1083442de11c697f55ac3c023316aff37d9e0aac41f10af20c788ab32f
+      sha256: 9a4a0e81e218b91b8cd18bb0804bd873ed585f0baf5c87e7a0ddec6df96bb871
     - path: bin/fm-pack-retry.c
       sha256: 3eeff66fcf5e63e6ab6fd0da33d75f66d7df0b197e6b822ae4614c5527dfcf5b
     - path: bin/fm-pack-parity.py
@@ -87,6 +87,6 @@ Answer each check PASS or FINDING.
 8. Is each new fact stated once in its owner (`docs/storage.md` or the script header) and only cross-referenced elsewhere?
 9. Does each state change notify once, and is every wait, refusal and release logged with its reason?
 10. Would `tests/fm-storage.test.sh`, `tests/fm-pack.test.sh` or `tests/fm-pack-parity.test.sh` fail, through the public commands, if this behaviour broke?
-11. Would a new root or data family need only a data entry, and does a new unit format use an explicit allowlist and a format adapter without duplicating the release implementation?
+11. Would a new root, data family or unit format need only a data or allowlist entry, not a new code branch?
 12. Do heavy steps still run at `nice 19` and idle I/O, inside the machine-wide pack slot, with no new service, daemon or index, and does every slot wait stay bounded and every holder stoppable without a half-committed unit?
 13. If a source pinned in this skill's `metadata.sources` changed, does every rule here still hold, and are the pins updated in the same change?

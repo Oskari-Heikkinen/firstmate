@@ -13,7 +13,7 @@ set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-for tool in mksquashfs unsquashfs jq sha256sum; do
+for tool in mksquashfs unsquashfs jq sha256sum timeout; do
   command -v "$tool" >/dev/null 2>&1 || { echo "skip: $tool is not installed"; exit 0; }
 done
 
@@ -53,7 +53,7 @@ interpreter = os.readlink(f'/proc/{os.getppid()}/exe')
 # inputs used by the fixtures and production command, including the C compiler.
 tools = '''bash sh python3 gcc cc uname mksquashfs unsquashfs jq sha256sum find stat awk
 sed grep cut wc sort cat df du flock nice ionice realpath dirname basename
-readlink date mkdir mktemp mv rm cp ln chmod cmp head tail tr dd sleep touch'''.split()
+readlink date mkdir mktemp mv rm cp ln chmod cmp head tail tr dd sleep touch timeout'''.split()
 pins = []
 for tool in tools:
     path = shutil.which(tool)
@@ -1029,16 +1029,16 @@ read_failure_case() (
   printf 'no source reference here\n' >"$PACK_FAIL_REF"
   : >"$PACK_FAIL_MOUNTS"
   case "$mode" in
-    links-*) diag=link-census-read-failed ;;
-    also) diag=link-census-read-failed ;;
-    account-*) diag=link-accounting-read-failed ;;
-    release-*) diag=release-state-read-failed ;;
+    links-*) diag='link-census-read-failed' ;;
+    also) diag='link-census-read-failed' ;;
+    account-*) diag='link-accounting-read-failed' ;;
+    release-*) diag='release-state-read-failed' ;;
     tree-*) diag='tree-read-failed' ;;
     mount-source|mount-aside) diag='mount-table-read-failed' ;;
-    process-*) diag=process-scan-read-failed ;;
-    reservation-*) diag=reservation-read-failed ;;
-    reference) diag=reference-read-failed ;;
-    image-list|member-count|mount-count) diag=member-count-read-failed ;;
+    process-*) diag='process-scan-read-failed' ;;
+    reservation-*) diag='reservation-read-failed' ;;
+    reference) diag='reference-read-failed' ;;
+    image-list|member-count|mount-count) diag='member-count-read-failed' ;;
     image-cat|member-hash) diag=member-read-failed ;;
     image-hash) diag='image-hash-read-failed' ;;
     member-list|member-list-io) diag=member-list-read-failed ;;
@@ -1531,6 +1531,11 @@ p = Path(sys.argv[1]); p.write_text(p.read_text().replace('tj-pack-marker/v1', '
 PY
     chmod 444 "$stage/.tj-pack.json"
   fi
+  case "${1:-}" in
+    root-extra) : >"$stage/extra" ;;
+    root-missing) rm -f "$stage/.tj-pack.json" ;;
+    pkg-missing) rm -rf "$stage/pkg" ;;
+  esac
   rm -f "$MARKER_IMG"
   mksquashfs "$stage" "$MARKER_IMG" -noappend -no-progress -quiet -processors 1 >/dev/null || return 1
   (cd "$MARKER_DIR/pack" && sha256sum pkg.sqfs >pkg.sqfs.sha256)
@@ -1600,7 +1605,7 @@ test_marker() {
     # because it is missing one. Verification failure must not refresh it.
     out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
     expect_code 0 "$rc" "$variant baseline verifies"
-    snap=$(sha256sum <"$MARKER_DIR/pack/pkg.verify.json")
+    snap=$(marker_receipt_snapshot)
     file="$MARKER_DIR/pack/pkg"
     case "$variant" in
       missing-members) rm "$file.members.sha256" ;;
@@ -1682,8 +1687,9 @@ PY
       missing-tree) assert_contains "$out" '.tree.tsv is missing' 'missing tree precondition' ;;
       malformed-members) assert_contains "$out" 'malformed members.sha256' 'members syntax refuses before image work' ;;
       malformed-tree) assert_contains "$out" 'malformed tree.tsv header' 'tree version refuses before image work' ;;
+      partial-members) assert_contains "$out" 'partial manifest last line' 'partial member line diagnostic' ;;
     esac
-    assert_equals "$snap" "$(sha256sum <"$file.verify.json")" "$variant failed verify never updates record"
+    assert_equals "$snap" "$(marker_receipt_snapshot)" "$variant failed verify never updates record"
     marker_no_delete "$variant verify"
   done
   make_marker empty || fail 'empty marker fixture'
@@ -1706,7 +1712,7 @@ PY
   make_marker changing || fail 'changing marker fixture'
   out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
   expect_code 0 "$rc" 'changing fixture baseline verifies'
-  snap=$(sha256sum <"$MARKER_DIR/pack/pkg.verify.json")
+  snap=$(marker_receipt_snapshot)
   local real_unsquashfs
   real_unsquashfs=$(command -v unsquashfs)
   mkdir "$MARKER_DIR/tools"
@@ -1722,8 +1728,425 @@ SH
     PACK_MARKER_REWRITE="$MARKER_DIR/pack/pkg.marker.json" run_pack verify "$MARKER_IMG" 2>&1); rc=$?
   expect_code 1 "$rc" 'concurrent marker write refuses verification'
   assert_contains "$out" 'input changed:' 'final identity recheck names the changed input'
-  assert_equals "$snap" "$(sha256sum <"$MARKER_DIR/pack/pkg.verify.json")" 'concurrent write cannot refresh verification record'
+  assert_equals "$snap" "$(marker_receipt_snapshot)" 'concurrent write cannot refresh verification record'
   pass 'marker verification, receipt binding, manifest readers and R2 release'
+}
+
+# Focused missing-rule proof: every negative names the early diagnostic as
+# well as refusing, so a later defense cannot mask removal of this rule.
+marker_rule() {
+  local case_name=$1 diagnostic out rc snap
+  local fixture="$ROOT/tests/fm-pack-marker-fixtures.py"
+    make_marker "rule-$case_name" || fail "$case_name construction"
+    out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+    expect_code 0 "$rc" "$case_name valid control: $out"
+    diagnostic=$(python3 "$fixture" mutate "$case_name" "$MARKER_DIR") || fail "$case_name mutation"
+    snap=$(marker_receipt_snapshot)
+    MARKER_SNAP=$(snapshot "$MARKER_SRC")
+    case "$case_name" in
+      time-*|record-*) out=$(run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$? ;;
+      restore) out=$(run_pack restore "$MARKER_IMG" "$MARKER_DIR/restored" 2>&1); rc=$? ;;
+      readable-regular)
+        printf '#!/usr/bin/env bash\nexec timeout -k 5 120 bash "%s" "$@"\n' "$PACK" >"$MARKER_DIR/bounded-pack"
+        out=$(PACK_EXEC="$MARKER_DIR/bounded-pack" run_pack verify "$MARKER_IMG" 2>&1); rc=$? ;;
+      source-*) out=$(run_pack verify "$MARKER_IMG" --against "$MARKER_SRC" 2>&1); rc=$? ;;
+      *) out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$? ;;
+    esac
+    assert_contains "$out" "$diagnostic" "marker rule $case_name diagnostic"
+    [ "$rc" != 0 ] || fail "marker rule $case_name must refuse"
+    assert_equals "$snap" "$(marker_receipt_snapshot)" "marker rule $case_name cannot refresh receipt"
+    marker_no_delete "marker rule $case_name"
+    assert_absent "$MARKER_DIR/restored" 'unsupported restore writes nothing'
+    pass "individual marker rule $case_name"
+}
+
+marker_receipt_snapshot() {
+  stat -c '%d:%i:%s:%y:%z' "$MARKER_DIR/pack/pkg.verify.json"
+  sha256sum <"$MARKER_DIR/pack/pkg.verify.json"
+}
+
+test_marker_rule_time() { local v; for v in zero negative future boolean string large; do marker_rule "time-$v"; done; }
+test_marker_rule_pkg() { marker_rule pkg-type; marker_rule pkg-name; marker_rule pkg-binding; }
+test_marker_rule_task() { marker_rule task-type; marker_rule task-name; }
+test_marker_rule_source() { marker_rule source-type; marker_rule source-relative; marker_rule source-traversal; marker_rule source-name; }
+test_marker_rule_date_type() { marker_rule date-type; }
+test_marker_rule_date_value() { marker_rule date-value; }
+test_marker_rule_integer() { marker_rule integer-bytes-negative; marker_rule integer-files-boolean; marker_rule integer-entries-large; marker_rule integer-files-string; }
+test_marker_rule_census() { marker_rule census-files; marker_rule census-entries; marker_rule census-bytes; }
+test_marker_rule_object() { marker_rule object-shape; marker_rule record-extra; marker_rule record-version; }
+test_marker_rule_duplicate_key() { marker_rule duplicate-key; }
+test_marker_rule_byte_bound() { marker_rule byte-bound; }
+test_marker_rule_regular() { marker_rule readable-regular; }
+test_marker_rule_nofollow() { marker_rule nofollow; }
+test_marker_rule_partial() { marker_rule partial-line; }
+test_marker_rule_nul() { marker_rule nul; }
+test_marker_rule_entry_bound() { marker_rule entry-bound; }
+test_marker_rule_duplicate_member() { marker_rule duplicate-member; }
+test_marker_rule_tree_row() { marker_rule tree-row; }
+test_marker_rule_tree_field() { marker_rule tree-field; }
+test_marker_rule_tree_size() { marker_rule tree-size; marker_rule tree-large; }
+test_marker_rule_tree_link() { marker_rule tree-link; }
+test_marker_rule_duplicate_tree() { marker_rule duplicate-tree; }
+test_marker_rule_ancestor() { marker_rule ancestor; marker_rule ancestor-kind; }
+test_marker_rule_names() { marker_rule member-names; }
+test_marker_rule_image_record() { marker_rule image-record; }
+test_marker_rule_collision() { marker_rule collision; }
+test_marker_rule_restore() { marker_rule restore; }
+test_marker_rule_source_root() { marker_rule source-root; }
+test_marker_rule_source_extra() { marker_rule source-extra; }
+test_marker_rule_source_kind() { marker_rule source-kind; }
+
+# The wrapper mutates only after a real helper returns, not inside its Input
+# lifetime. This distinguishes transaction-wide binding from per-call checks.
+marker_phase_wrapper() {
+  mkdir "$MARKER_DIR/tools"
+  {
+    printf '#!/usr/bin/env bash\n'
+    declare -f snapshot
+    cat <<'SH'
+"$PACK_REAL_PYTHON" "$@" || exit "$?"
+[ "${1:-}" = "$PACK_MARKER_HELPER" ] || exit 0
+hit=no
+case "$PACK_TXN_PHASE:${2:-}" in
+  load:metadata|image:verify) hit=yes ;;
+  first:tree|last:tree)
+    n=0; [ ! -e "$PACK_TXN_ROOT/count" ] || n=$(cat "$PACK_TXN_ROOT/count")
+    n=$((n + 1)); printf '%s\n' "$n" >"$PACK_TXN_ROOT/count"
+    case "$PACK_TXN_PHASE:$n" in first:1|last:2) hit=yes ;; esac ;;
+esac
+[ "$hit" = yes ] || exit 0
+source="$PACK_TXN_ROOT/source/pkg"
+[ -d "$source" ] || source="$PACK_TXN_ROOT/source/.pkg.fm-pack-release"
+"$PACK_REAL_PYTHON" "$PACK_TXN_FIXTURE" transaction "$PACK_TXN_CASE" "$PACK_TXN_ROOT" "$source" || exit "$?"
+snapshot "$source" >"$PACK_TXN_ROOT/expected"
+SH
+  } >"$MARKER_DIR/tools/python3"
+  chmod +x "$MARKER_DIR/tools/python3"
+}
+
+test_marker_transaction() {
+  local case_name phase out rc hook aside entry suffix
+  local fixture="$ROOT/tests/fm-pack-marker-fixtures.py" real_python
+  real_python=$(command -v python3)
+  # Replacing every participating file with identical bytes must still refuse.
+  # The reviewer case preserves its stale receipt; rebind also updates that
+  # receipt without changing verified_at, isolating the original binding.
+  local cases=(rename:reviewer rename:rebind rename:image-write rename:receipt-time
+    rename:verify.json-missing rename:sqfs-missing rename:marker.json-missing
+    rename:members.sha256-missing rename:tree.tsv-missing rename:sqfs.sha256-missing
+    load:rebind image:rebind first:rebind last:rebind load:source-pointer)
+  for phase in load image first rename last; do
+    for suffix in verify.json sqfs marker.json members.sha256 tree.tsv sqfs.sha256; do
+      cases+=("$phase:$suffix-replace")
+    done
+  done
+  for entry in "${cases[@]}"; do
+    phase=${entry%%:*}; case_name=${entry#*:}
+    make_marker "transaction-$phase-$case_name" || fail "$entry construction"
+    out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+    expect_code 0 "$rc" "$entry valid control: $out"
+    aside="$MARKER_DIR/source/.pkg.fm-pack-release"
+    if [ "$phase" = rename ]; then
+      hook="$(declare -f snapshot); python3 '$fixture' transaction '$case_name' '$MARKER_DIR' '$aside'; snapshot '$aside' >'$MARKER_DIR/expected'"
+      out=$(FM_PACK_TEST_BEFORE_RECHECK="$hook" run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
+    else
+      marker_phase_wrapper
+      out=$(PATH="$MARKER_DIR/tools:$PATH" PACK_REAL_PYTHON="$real_python" PACK_MARKER_HELPER="$ROOT/bin/fm-pack-marker.py" \
+        PACK_TXN_PHASE="$phase" PACK_TXN_CASE="$case_name" PACK_TXN_ROOT="$MARKER_DIR" PACK_TXN_FIXTURE="$fixture" \
+        run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
+    fi
+    expect_code 1 "$rc" "marker transaction $entry refuses"
+    assert_present "$MARKER_DIR/expected" "$entry reached the intended boundary"
+    MARKER_SNAP=$(cat "$MARKER_DIR/expected")
+    marker_no_delete "marker transaction $entry"
+    python3 "$fixture" receipt-check "$case_name" "$MARKER_DIR" || fail "$entry release must not refresh the receipt"
+    case "$phase" in
+      load) assert_contains "$out" 'changed while waiting for the pack slot' 'under-slot binding diagnostic' ;;
+      last) assert_contains "$out" 'changed before removal' 'final binding diagnostic' ;;
+    esac
+  done
+  pass 'marker release keeps one verified identity across all reopen boundaries'
+}
+
+test_marker_slot_binding() {
+  local case_name lock ready go holder release out rc
+  local fixture="$ROOT/tests/fm-pack-marker-fixtures.py"
+  for case_name in receipt-time verify.json-replace; do
+    make_marker "slot-$case_name" || fail "$case_name slot construction"
+    out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+    expect_code 0 "$rc" "$case_name slot valid control"
+    MARKER_SNAP=$(snapshot "$MARKER_SRC")
+    lock="$MARKER_DIR/slot" ready="$MARKER_DIR/ready" go="$MARKER_DIR/go" out="$MARKER_DIR/output"
+    flock "$lock" bash -c ': >"$1"; n=0
+      until [ -e "$2" ] || [ "$n" -ge 6000 ]; do sleep 0.05; n=$((n + 1)); done' _ "$ready" "$go" \
+      </dev/null >/dev/null 2>&1 &
+    holder=$!
+    wait_for 30 test -e "$ready" || fail 'marker slot holder did not start'
+    PACK_SLOT_LOCK="$lock" run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test >"$out" 2>&1 &
+    release=$!
+    wait_for 60 grep -F 'waiting for the machine-wide pack slot' "$out" >/dev/null || fail 'marker release never waited'
+    python3 "$fixture" transaction "$case_name" "$MARKER_DIR" "$MARKER_SRC" || fail "$case_name slot writer"
+    : >"$go"; wait "$holder"
+    wait "$release"; rc=$?
+    expect_code 1 "$rc" "marker slot $case_name refuses"
+    assert_grep 'changed while waiting for the pack slot' "$out" "marker slot $case_name diagnostic"
+    marker_no_delete "marker slot $case_name"
+  done
+  pass 'receipt replacement and timestamp change while queued cannot rebind release'
+}
+
+marker_io_rule() {
+  local case_name=$1 diagnostic=$2 out rc snap target
+  local fixture="$ROOT/tests/fm-pack-marker-fixtures.py" real_unsquashfs
+  real_unsquashfs=$(command -v unsquashfs)
+  make_marker "io-$case_name" || fail "$case_name IO construction"
+  out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+  expect_code 0 "$rc" "$case_name IO valid control"
+  snap=$(marker_receipt_snapshot)
+  MARKER_SNAP=$(snapshot "$MARKER_SRC")
+  mkdir "$MARKER_DIR/tools"
+  case "$case_name" in
+    read-growth|source-open)
+      cp "$ROOT/tests/fm-pack-marker-io.py" "$MARKER_DIR/tools/sitecustomize.py"
+      target="$MARKER_DIR/pack/pkg.marker.json"
+      [ "$case_name" != source-open ] || target="$MARKER_SRC/empty"
+      out=$(PYTHONPATH="$MARKER_DIR/tools" PACK_MARKER_IO_CASE="$case_name" PACK_MARKER_IO_TARGET="$target" \
+        run_pack verify "$MARKER_IMG" --against "$MARKER_SRC" 2>&1); rc=$? ;;
+    *)
+      cat >"$MARKER_DIR/tools/unsquashfs" <<'SH'
+#!/usr/bin/env bash
+exec python3 "$PACK_IO_FIXTURE" tool "$PACK_IO_CASE" "$PACK_IO_ROOT" "$@"
+SH
+      chmod +x "$MARKER_DIR/tools/unsquashfs"
+      out=$(PATH="$MARKER_DIR/tools:$PATH" PACK_REAL_UNSQUASHFS="$real_unsquashfs" PACK_IO_FIXTURE="$fixture" \
+        PACK_IO_CASE="$case_name" PACK_IO_ROOT="$MARKER_DIR" run_pack verify "$MARKER_IMG" 2>&1); rc=$? ;;
+  esac
+  assert_contains "$out" "$diagnostic" "marker IO $case_name diagnostic"
+  [ "$rc" != 0 ] || fail "marker IO $case_name must refuse"
+  assert_equals "$snap" "$(marker_receipt_snapshot)" "marker IO $case_name cannot refresh receipt"
+  if [ "$case_name" = source-open ]; then
+    # The fixture writer, not verification, intentionally appended this byte.
+    assert_equals x "$(cat "$MARKER_SRC/empty")" 'racing source bytes remain'
+    assert_equals hello "$(cat "$MARKER_SRC/sub/file with space")" 'other source bytes remain'
+    MARKER_SNAP=$(snapshot "$MARKER_SRC")
+  fi
+  marker_no_delete "marker IO $case_name"
+  pass "individual marker IO rule $case_name"
+}
+
+test_marker_rule_read_bound() { marker_io_rule read-growth 'input read exceeds byte bound'; }
+test_marker_rule_source_open() { marker_io_rule source-open 'tree file changed'; }
+test_marker_rule_listing() { marker_io_rule listing 'malformed image listing'; }
+test_marker_rule_image_link() { marker_io_rule image-link 'ambiguous image link'; }
+test_marker_rule_embedded_entry() { marker_io_rule embedded-entry 'invalid embedded marker entry'; }
+test_marker_rule_root_entry() { marker_io_rule root-entry 'invalid image root'; }
+test_marker_rule_prefix() { marker_io_rule prefix 'entry outside image prefix'; }
+test_marker_rule_image_entry() { marker_io_rule image-entry 'unexpected image entry'; }
+test_marker_rule_root_missing() { marker_io_rule root-missing 'missing image root'; }
+test_marker_rule_permission() { marker_io_rule permission 'invalid image permission'; }
+test_marker_rule_tool_failed() { marker_io_rule tool-failed 'tool failed: unsquashfs'; }
+test_marker_rule_tool_bound() { marker_io_rule tool-bound 'tool output exceeds byte bound'; }
+test_marker_rule_cat_failed() { marker_io_rule cat-failed 'image member read failed'; }
+
+marker_fuse_probe() {
+  mkdir "$MARKER_DIR/probe"
+  if ! command -v squashfuse >/dev/null 2>&1 || ! command -v fusermount3 >/dev/null 2>&1 ||
+    ! squashfuse -o ro "$MARKER_IMG" "$MARKER_DIR/probe" 2>/dev/null; then
+    echo 'skip: no usable FUSE for marker refusal fixture'
+    return 1
+  fi
+  fusermount3 -u "$MARKER_DIR/probe"
+}
+
+test_marker_rule_mount_root() {
+  local case_name out rc snap
+  for case_name in root-extra root-missing pkg-missing; do
+    make_marker "mount-$case_name" || fail "$case_name construction"
+    marker_fuse_probe || return 0
+    out=$(FM_PACK_MOUNT=mount run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+    expect_code 0 "$rc" "$case_name real mount control"
+    snap=$(marker_receipt_snapshot)
+    MARKER_SNAP=$(snapshot "$MARKER_SRC")
+    marker_image "$case_name" || fail "$case_name image"
+    out=$(FM_PACK_MOUNT=mount run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+    assert_contains "$out" 'unexpected image root' "marker mount $case_name diagnostic"
+    expect_code 1 "$rc" "$case_name real mount refuses"
+    assert_equals "$snap" "$(marker_receipt_snapshot)" "$case_name cannot refresh receipt"
+    marker_no_delete "$case_name real mount"
+  done
+  pass 'real FUSE requires the complete marker image root'
+}
+
+test_marker_rule_source_device() {
+  local out rc snap
+  make_marker source-device || fail 'source device construction'
+  marker_fuse_probe || return 0
+  out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+  expect_code 0 "$rc" 'source device valid control'
+  snap=$(marker_receipt_snapshot)
+  MARKER_SNAP=$(snapshot "$MARKER_SRC")
+  squashfuse -o ro "$MARKER_IMG" "$MARKER_SRC/sub" || fail 'source child mount'
+  out=$(run_pack verify "$MARKER_IMG" --against "$MARKER_SRC" 2>&1); rc=$?
+  fusermount3 -u "$MARKER_SRC/sub" || fail 'source child unmount'
+  assert_contains "$out" 'tree crosses a filesystem' 'marker source device diagnostic'
+  expect_code 1 "$rc" 'source device refuses'
+  assert_equals "$snap" "$(marker_receipt_snapshot)" 'source device cannot refresh receipt'
+  marker_no_delete 'source device'
+  pass 'a real nested filesystem refuses source verification'
+}
+
+test_marker_mount_transaction() {
+  local out rc real_python
+  real_python=$(command -v python3)
+  make_marker mount-transaction || fail 'mount transaction construction'
+  marker_fuse_probe || return 0
+  out=$(FM_PACK_MOUNT=mount run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+  expect_code 0 "$rc" 'mount transaction control'
+  marker_phase_wrapper
+  out=$(FM_PACK_MOUNT=mount PATH="$MARKER_DIR/tools:$PATH" PACK_REAL_PYTHON="$real_python" \
+    PACK_MARKER_HELPER="$ROOT/bin/fm-pack-marker.py" PACK_TXN_PHASE=image PACK_TXN_CASE=rebind \
+    PACK_TXN_ROOT="$MARKER_DIR" PACK_TXN_FIXTURE="$ROOT/tests/fm-pack-marker-fixtures.py" \
+    run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
+  expect_code 1 "$rc" 'mount transaction refuses cross-process rebind'
+  assert_present "$MARKER_DIR/expected" 'mount transaction reached image/source boundary'
+  MARKER_SNAP=$(cat "$MARKER_DIR/expected")
+  marker_no_delete 'mount transaction'
+  pass 'FUSE image verification carries the same transaction binding into source checks'
+}
+
+test_marker_helper_contract() {
+  local out rc snap case_name image args capture binding diagnostic
+  make_marker helper-contract || fail 'helper contract construction'
+  out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+  expect_code 0 "$rc" 'helper contract valid control'
+  snap=$(marker_receipt_snapshot)
+  MARKER_SNAP=$(snapshot "$MARKER_SRC")
+  capture=$(python3 "$ROOT/bin/fm-pack-marker.py" metadata "$MARKER_IMG" --capture) || fail 'helper snapshot'
+  binding=$(jq -er .binding <<<"$capture") || fail 'helper binding'
+  assert_equals null "$(jq -r .verified_at <<<"$capture")" 'verification capture never borrows an existing receipt time'
+  for case_name in suffix binding reader publication; do
+    image=$MARKER_IMG
+    case "$case_name" in
+      suffix) image="$MARKER_DIR/pack/pkg.image"; args=(metadata "$image"); out='image must end in .sqfs' ;;
+      binding) args=(verify "$image" unsquashfs --record); out='transaction binding required' ;;
+      reader) args=(verify "$image" wrong --record --binding "$binding"); out='invalid image reader' ;;
+      publication) args=(tree "$image" "$MARKER_SRC" --record --binding "$binding"); out='only verify may publish a receipt' ;;
+    esac
+    diagnostic=$out
+    out=$(python3 "$ROOT/bin/fm-pack-marker.py" "${args[@]}" 2>&1); rc=$?
+    assert_contains "$out" "$diagnostic" "marker helper $case_name diagnostic"
+    expect_code 2 "$rc" "marker helper $case_name refuses"
+    assert_equals "$snap" "$(marker_receipt_snapshot)" "marker helper $case_name cannot refresh receipt"
+    marker_no_delete "marker helper $case_name"
+  done
+  pass 'internal executable argument refusals preserve the unit and receipt'
+}
+
+test_marker_capabilities() {
+  local out rc expected
+  make_marker capabilities || fail 'capability construction'
+  out=$(run_pack verify "$MARKER_IMG" --against "$MARKER_SRC" 2>&1); rc=$?
+  expect_code 0 "$rc" 'marker dispatch verify-against accepts'
+  assert_present "$MARKER_DIR/pack/pkg.verify.json" 'marker dispatch publishes verification receipt'
+  expected=$(cut -d' ' -f1 <"$MARKER_DIR/pack/pkg.sqfs.sha256")
+  out=$(run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
+  expect_code 0 "$rc" 'marker dispatch release accepts'
+  assert_equals "$expected" "$(jq -r .image_sha256 "$MARKER_DIR/pack/pkg.release.json")" 'release receipt retains verified image digest'
+  assert_grep 'SquashFS' "$MARKER_SRC/STORED.md" 'marker stub names the supported reader'
+  assert_no_grep 'fm-pack.sh restore' "$MARKER_SRC/STORED.md" 'marker stub never promises native restore'
+  pass 'marker format dispatch preserves supported capabilities and release evidence'
+}
+
+test_marker_arrival_auxiliary() {
+  local out rc
+  make_arrival pkg-auxiliary
+  out=$(run_pack verify "$ARR/pkg-auxiliary.sqfs" 2>&1); rc=$?
+  expect_code 0 "$rc" 'arrival metadata stays authoritative beside its auxiliary marker'
+  assert_absent "$ARR/pkg-auxiliary.verify.json" 'arrival does not acquire a marker receipt'
+  pass 'arrival auxiliary marker is not competing metadata'
+}
+
+marker_capture_rule() {
+  local field=$1 diagnostic=$2 out rc snap real_python
+  real_python=$(command -v python3)
+  make_marker "capture-$field" || fail "$field capture construction"
+  out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+  expect_code 0 "$rc" "$field capture valid control"
+  snap=$(marker_receipt_snapshot)
+  MARKER_SNAP=$(snapshot "$MARKER_SRC")
+  mkdir "$MARKER_DIR/tools"
+  cat >"$MARKER_DIR/tools/python3" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "$PACK_MARKER_HELPER" ] && [ "${2:-}" = metadata ]; then
+  "$PACK_REAL_PYTHON" "$@" >"$PACK_CAPTURE_ROOT/response" || exit "$?"
+  exec "$PACK_REAL_PYTHON" "$PACK_CAPTURE_FIXTURE" capture "$PACK_CAPTURE_FIELD" "$PACK_CAPTURE_ROOT" <"$PACK_CAPTURE_ROOT/response"
+fi
+exec "$PACK_REAL_PYTHON" "$@"
+SH
+  chmod +x "$MARKER_DIR/tools/python3"
+  out=$(PATH="$MARKER_DIR/tools:$PATH" PACK_REAL_PYTHON="$real_python" PACK_MARKER_HELPER="$ROOT/bin/fm-pack-marker.py" \
+    PACK_CAPTURE_FIXTURE="$ROOT/tests/fm-pack-marker-fixtures.py" PACK_CAPTURE_FIELD="$field" PACK_CAPTURE_ROOT="$MARKER_DIR" \
+    run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
+  assert_contains "$out" "$diagnostic" "marker capture $field diagnostic"
+  expect_code 2 "$rc" "marker capture $field refuses"
+  assert_equals "$snap" "$(marker_receipt_snapshot)" "marker capture $field cannot refresh receipt"
+  marker_no_delete "marker capture $field"
+  pass "individual marker capture result rule $field"
+}
+
+test_marker_capture_failed() { marker_capture_rule failed 'invalid marker verification record or unit'; }
+test_marker_capture_pkg() { marker_capture_rule pkg 'invalid marker package snapshot'; }
+test_marker_capture_binding() { marker_capture_rule binding 'invalid marker binding snapshot'; }
+test_marker_capture_source() { marker_capture_rule source 'invalid marker source snapshot'; }
+test_marker_capture_time() { marker_capture_rule verified_at 'invalid marker verification record'; }
+test_marker_capture_image() { marker_capture_rule image_sha256 'invalid marker image snapshot'; }
+
+test_marker_verify_binding() {
+  local out rc real_python fixture="$ROOT/tests/fm-pack-marker-fixtures.py"
+  real_python=$(command -v python3)
+  make_marker verify-binding || fail 'verify binding construction'
+  out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+  expect_code 0 "$rc" 'verify binding valid control'
+  marker_phase_wrapper
+  out=$(PATH="$MARKER_DIR/tools:$PATH" PACK_REAL_PYTHON="$real_python" PACK_MARKER_HELPER="$ROOT/bin/fm-pack-marker.py" \
+    PACK_TXN_PHASE=load PACK_TXN_CASE=rebind PACK_TXN_ROOT="$MARKER_DIR" PACK_TXN_FIXTURE="$fixture" \
+    run_pack verify "$MARKER_IMG" --against "$MARKER_SRC" 2>&1); rc=$?
+  assert_contains "$out" 'transaction binding changed' 'verify preserves its original metadata binding'
+  expect_code 1 "$rc" 'verify refuses changed inputs between metadata and image readers'
+  assert_present "$MARKER_DIR/expected" 'verify fixture reached the process boundary'
+  MARKER_SNAP=$(cat "$MARKER_DIR/expected")
+  marker_no_delete 'verify binding'
+  python3 "$fixture" receipt-check rebind "$MARKER_DIR" || fail 'failed verify cannot refresh the changed receipt'
+  pass 'verify cannot exchange metadata snapshots across helper invocations'
+}
+
+test_marker_interrupted() {
+  local out rc snap verify helper
+  make_marker interrupted || fail 'interrupted construction'
+  out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+  expect_code 0 "$rc" 'interrupted valid control'
+  snap=$(marker_receipt_snapshot)
+  MARKER_SNAP=$(snapshot "$MARKER_SRC")
+  mkdir "$MARKER_DIR/tools"
+  cat >"$MARKER_DIR/tools/unsquashfs" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$PPID" >"$PACK_INTERRUPT_READY"
+exec sleep 300
+SH
+  chmod +x "$MARKER_DIR/tools/unsquashfs"
+  printf '#!/usr/bin/env bash\nexec timeout -k 5 120 bash "%s" "$@"\n' "$PACK" >"$MARKER_DIR/bounded-pack"
+  PATH="$MARKER_DIR/tools:$PATH" PACK_INTERRUPT_READY="$MARKER_DIR/ready" PACK_EXEC="$MARKER_DIR/bounded-pack" \
+    run_pack verify "$MARKER_IMG" >"$MARKER_DIR/output" 2>&1 &
+  verify=$!
+  wait_for 60 test -s "$MARKER_DIR/ready" || fail 'marker interrupt seam not reached'
+  helper=$(cat "$MARKER_DIR/ready")
+  kill -TERM "$helper" || fail 'signal the fixture helper only'
+  wait "$verify"; rc=$?
+  assert_grep 'interrupted by signal 15' "$MARKER_DIR/output" 'marker interrupt diagnostic'
+  expect_code 1 "$rc" 'interrupted marker verification refuses'
+  assert_equals "$snap" "$(marker_receipt_snapshot)" 'interruption cannot refresh the receipt'
+  marker_no_delete 'interrupted verification'
+  pass 'marker interruption refuses without publishing verification'
 }
 
 test_no_publication_waits
@@ -1750,3 +2173,62 @@ test_release_process_scan
 test_release
 test_candidates
 test_marker
+test_marker_rule_time
+test_marker_rule_pkg
+test_marker_rule_task
+test_marker_rule_source
+test_marker_rule_date_type
+test_marker_rule_date_value
+test_marker_rule_integer
+test_marker_rule_census
+test_marker_rule_object
+test_marker_rule_duplicate_key
+test_marker_rule_byte_bound
+test_marker_rule_regular
+test_marker_rule_nofollow
+test_marker_rule_partial
+test_marker_rule_nul
+test_marker_rule_entry_bound
+test_marker_rule_duplicate_member
+test_marker_rule_tree_row
+test_marker_rule_tree_field
+test_marker_rule_tree_size
+test_marker_rule_tree_link
+test_marker_rule_duplicate_tree
+test_marker_rule_ancestor
+test_marker_rule_names
+test_marker_rule_image_record
+test_marker_rule_collision
+test_marker_rule_restore
+test_marker_rule_source_root
+test_marker_rule_source_extra
+test_marker_rule_source_kind
+test_marker_transaction
+test_marker_slot_binding
+test_marker_rule_read_bound
+test_marker_rule_source_open
+test_marker_rule_listing
+test_marker_rule_image_link
+test_marker_rule_embedded_entry
+test_marker_rule_root_entry
+test_marker_rule_prefix
+test_marker_rule_image_entry
+test_marker_rule_root_missing
+test_marker_rule_permission
+test_marker_rule_tool_failed
+test_marker_rule_tool_bound
+test_marker_rule_cat_failed
+test_marker_rule_mount_root
+test_marker_rule_source_device
+test_marker_mount_transaction
+test_marker_helper_contract
+test_marker_capabilities
+test_marker_arrival_auxiliary
+test_marker_capture_failed
+test_marker_capture_pkg
+test_marker_capture_binding
+test_marker_capture_source
+test_marker_capture_time
+test_marker_capture_image
+test_marker_verify_binding
+test_marker_interrupted

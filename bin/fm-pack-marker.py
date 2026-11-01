@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """tj-pack-marker/v1 adapter for fm-pack.sh; never deletes a source.
 
-Usage (internal): fm-pack-marker.py metadata|receipt|tree|verify IMAGE [ARGS]
-metadata validates the marker and manifests and prints pkg.
-receipt validates UNIT.verify.json against the current manifests and prints
-verified_at. tree IMAGE SRC checks the source tree AND its member hashes.
+Usage (internal): fm-pack-marker.py metadata|recheck|tree|verify IMAGE [ARGS]
+metadata [--capture] [--receipt] validates one snapshot. Normally it prints
+pkg; --capture prints JSON fields pkg, source, image_sha256, verified_at and
+binding (the snapshot's sha256). With --receipt the snapshot also includes the
+validated verification receipt and its timestamp; otherwise verified_at is null.
+fm-pack holds this response in process memory, never in reopened unit metadata.
+Every later action requires --binding SHA256 [--receipt], checks that original
+snapshot before work, and rechecks every opened input afterwards. tree IMAGE
+SRC checks the source tree AND its member hashes; recheck does no image read.
 verify IMAGE mount|unsquashfs [--against SRC] [--record] reads the complete
 image; only --record atomically publishes the verification receipt on success.
+The opaque binding hashes the identities and digests of the image, all sidecars
+and (for release) the receipt. No transaction record is written to disk.
 Exit 2 is an invalid input/record; 1 is a failed comparison or tool; 0 success.
 The public interface is fm-pack.sh; docs/storage.md owns the receipt schema.
 
@@ -31,7 +38,7 @@ import sys
 import tempfile
 import time
 
-from fm_receipt_io import atomic, digest
+from fm_receipt_io import atomic, canonical, digest
 
 SCHEMA = "tj-pack-marker/v1"
 RECEIPT = "fm-pack-marker-verification/v1"
@@ -67,10 +74,10 @@ class Input:
         self.before = identity(st)
 
     def read(self, limit):
-        require(self.before[2] <= limit, "input exceeds byte bound: " + str(self.path))
+        require(self.before[2] <= limit, "input size exceeds byte bound: " + str(self.path))
         with os.fdopen(os.dup(self.fd), "rb") as stream:
             raw = stream.read(limit + 1)
-        require(len(raw) <= limit, "input exceeds byte bound: " + str(self.path))
+        require(len(raw) <= limit, "input read exceeds byte bound: " + str(self.path))
         self.recheck()
         return raw
 
@@ -181,6 +188,9 @@ class Unit:
                             ("tree.tsv", "tree_sha256"), ("sqfs.sha256", "image_digest_sha256")):
             self.binding[key] = digest(self.raw[suffix])
         self.record = Path(self.base + ".verify.json")
+        self.image_input = self.open(self.image)
+        self.receipt_raw = None
+        self.verified_at = None
 
     def open(self, path):
         source = Input(path)
@@ -192,11 +202,24 @@ class Unit:
             source.recheck()
 
     def receipt(self):
-        record = obj(self.open(self.record).read(65536), (*self.binding, "verified_at"))
+        self.receipt_raw = self.open(self.record).read(65536)
+        record = obj(self.receipt_raw, (*self.binding, "verified_at"))
         require(integer(record["verified_at"]) and 0 < record["verified_at"] <= int(time.time()), "invalid verification time")
         require(all(record[k] == value for k, value in self.binding.items()), "verification record digest mismatch")
         self.recheck()
         return record["verified_at"]
+
+    def snapshot(self):
+        self.recheck()
+        return {"format": "fm-pack-marker-snapshot/v1", "source": self.marker["source"],
+                "pkg": self.marker["pkg"], "verified_at": self.verified_at, "binding": self.binding,
+                "receipt_sha256": digest(self.receipt_raw) if self.receipt_raw is not None else None,
+                "identities": {str(source.path): list(source.before) for source in self.inputs}}
+
+    def bind(self, expected):
+        # The expected value stays in the caller's memory across ALL readers.
+        # Never reconstruct it from a newly valid receipt or a matching time.
+        require(expected == digest(canonical(self.snapshot())), "transaction binding changed", 1)
 
     def compare_tree(self, tree):
         require(tree == self.tree, "tree.tsv mismatch", 1)
@@ -239,9 +262,8 @@ class Unit:
                     tree[name] = row
         self.compare(tree, members)
 
-    def verify(self, method, against=None, record=False):
-        image = self.open(self.image)
-        require(hash_fd(image.fd) == self.image_sha, "image digest mismatch", 1)
+    def verify(self, method, against=None):
+        require(hash_fd(self.image_input.fd) == self.image_sha, "image digest mismatch", 1)
         if method == "mount":
             with tempfile.TemporaryDirectory(prefix="fm-pack-marker.") as temp:
                 mounted = False
@@ -265,8 +287,6 @@ class Unit:
         if against is not None:
             self.walk(Path(against))
         self.recheck()
-        if record:
-            atomic(self.record, dict(self.binding, verified_at=int(time.time())))
 
     def compare_metadata(self, checksum):
         require(checksum == digest(self.raw["marker.json"]), "embedded marker mismatch", 1)
@@ -361,23 +381,38 @@ def tool(argv):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("metadata", "receipt", "tree", "verify"))
+    parser.add_argument("action", choices=("metadata", "recheck", "tree", "verify"))
     parser.add_argument("image")
     parser.add_argument("argument", nargs="?")
     parser.add_argument("--against")
     parser.add_argument("--record", action="store_true")
+    parser.add_argument("--receipt", action="store_true")
+    parser.add_argument("--capture", action="store_true")
+    parser.add_argument("--binding")
     args = parser.parse_args()
     unit = Unit(args.image)
+    if args.receipt:
+        unit.verified_at = unit.receipt()
     if args.action == "metadata":
-        print(unit.marker["pkg"])
-    elif args.action == "receipt":
-        print(unit.receipt())
-    elif args.action == "tree":
+        binding = digest(canonical(unit.snapshot()))
+        if args.capture:
+            print(json.dumps(dict(pkg=unit.marker["pkg"], source=unit.marker["source"],
+                                  image_sha256=unit.image_sha, verified_at=unit.verified_at, binding=binding)))
+        else:
+            print(unit.marker["pkg"])
+        return
+    require(args.binding is not None, "transaction binding required")
+    unit.bind(args.binding)
+    if args.action == "tree":
         unit.walk(Path(args.argument))
-        unit.recheck()
-    else:
+    elif args.action == "verify":
         require(args.argument in ("mount", "unsquashfs"), "invalid image reader")
-        unit.verify(args.argument, args.against, args.record)
+        # Publication follows the final transaction check, never precedes it.
+        unit.verify(args.argument, args.against)
+    unit.bind(args.binding)
+    if args.record:
+        require(args.action == "verify" and not args.receipt, "only verify may publish a receipt")
+        atomic(unit.record, dict(unit.binding, verified_at=int(time.time())))
 
 
 def interrupted(signum, _frame):
