@@ -1,0 +1,13 @@
+{
+  "id": "alarm-serializer",
+  "case": "case_alarm_snapshot_order",
+  "edits": [
+    [
+      "bin/fm-owner-notice.sh",
+      "  take_lock \"$ROOT/.alarm-sync.lock\" > /dev/null || return 70\n  sync_alarms_held || rc=$?\n  drop_lock \"$ROOT/.alarm-sync.lock\"",
+      "  sync_alarms_held || rc=$?"
+    ]
+  ],
+  "expect": "concurrent projection cannot bypass snapshot lock",
+  "baseline": false
+}
