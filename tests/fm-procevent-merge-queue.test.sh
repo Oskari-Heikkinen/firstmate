@@ -1025,6 +1025,7 @@ if [ "\$#" = 1 ] && [ "\$1" = +%s ]; then cat "$clock"; else exec "$real_date" "
 SH
   chmod +x "$clockbin/date"
   printf '%s\n' "$start" > "$clock"
+  # shellcheck disable=SC2030 # The fixture clock is meant for this subshell's cases only.
   export PATH="$clockbin:$PATH"
   Q="$TMP_ROOT/q-expiry-boundary"; new_queue "$Q"
   H="$TMP_ROOT/h-expiry-boundary"; new_home "$H" "$Q" t1
@@ -1165,6 +1166,7 @@ pass "a directory in the receipt's place is never written into"
 
 JQ_FAIL_BIN=$(fm_fakebin "$TMP_ROOT/jq-fail-bin")
 printf '#!/bin/sh\nexit 1\n' > "$JQ_FAIL_BIN/jq"; chmod +x "$JQ_FAIL_BIN/jq"
+# shellcheck disable=SC2031 # This is the suite's own PATH; the expiry case changed only its subshell's.
 PATH="$JQ_FAIL_BIN:$PATH" mq "$H" arm t1 "$HEAD_A" >/dev/null 2>"$TMP_ROOT/receipt-jq.err" \
   || fail "a receipt whose JSON cannot be built must not fail the arm"
 assert_grep "could not write its watch receipt" "$TMP_ROOT/receipt-jq.err" "a failed receipt write is warned about"
