@@ -95,7 +95,7 @@ fm_suspend_reconcile_release() { # <meta> <id> <state> <config>
   fi
   [ -n "$token" ] || token=unknown
   if ! declare -F status_event_recorded >/dev/null; then
-    # shellcheck source=bin/fm-classify-lib.sh
+    # shellcheck source=/dev/null # Lazy loader: callers and its own lint root cover it.
     . "$FM_SUSPEND_LIB_DIR/fm-classify-lib.sh"
   fi
   event="blocked [key=copy-custody] [release=$token]: release attempt interrupted; custody uncertain; supervisor must reconcile"

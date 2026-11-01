@@ -3249,7 +3249,7 @@
      "mode": "R",
      "root": "S",
      "site": "bin/fm-wake-lib.sh:1033",
-     "source": "{ IFS= read -r line && ! IFS= read -r extra; } < \"$marker\" || return 1",
+     "source": "{ IFS= read -r line && ! IFS= read -r _; } < \"$marker\" || return 1",
      "template": "<arg1: marker file>"
     }
    ],
