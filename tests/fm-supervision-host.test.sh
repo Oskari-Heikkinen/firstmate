@@ -2695,13 +2695,16 @@ test_engine_persisted_numbers_fail_closed() {
   append_status "$home" 'initial wake'
   wait_until 2000 handled_at_least "$home" "$n" || fail "persisted: first wake not handled"
   for field in context turns; do
-    for value in 9223372036854775808 9007199254740992 99999999999999999999999999999999999999999999999999 1e+21 -1 1.5 01 '' ' ' duplicate; do
+    for value in 9223372036854775808 9007199254740992 99999999999999999999999999999999999999999999999999 1e+21 -1 1.5 01 '' ' ' duplicate valid-empty empty-valid empty-empty valid-empty-empty; do
       sed "/^$field=/d" "$home/state/.supervision-host-engine" > "$home/record.next"
-      if [ "$value" = duplicate ]; then
-        printf '%s=1\n%s=2\n' "$field" "$field" >> "$home/record.next"
-      else
-        printf '%s=%s\n' "$field" "$value" >> "$home/record.next"
-      fi
+      case "$value" in
+        duplicate) printf '%s=1\n%s=2\n' "$field" "$field" ;;
+        valid-empty) printf '%s=1\n%s=\n' "$field" "$field" ;;
+        empty-valid) printf '%s=\n%s=1\n' "$field" "$field" ;;
+        empty-empty) printf '%s=\n%s=\n' "$field" "$field" ;;
+        valid-empty-empty) printf '%s=1\n%s=\n%s=\n' "$field" "$field" "$field" ;;
+        *) printf '%s=%s\n' "$field" "$value" ;;
+      esac >> "$home/record.next"
       mv -f "$home/record.next" "$home/state/.supervision-host-engine"
       n=$((n + 1)); resets=$((resets + 1))
       append_status "$home" "$field invalid $n"
@@ -2710,13 +2713,16 @@ test_engine_persisted_numbers_fail_closed() {
       [ "$(grep -c 'engine-reset' "$home/state/.supervision-host.log")" -eq "$resets" ] || fail "persisted: reset must log once per invalid record"
       [ "$(grep -c '"task":"demo"' "$home/state/branch-outcomes.jsonl")" -eq "$n" ] || fail "persisted: lost or duplicated outcome"
       assert_no_grep 'demo.status' "$home/state/.wake-queue" "persisted: wake left queued"
+      append_status "$home" "normal wake after $field=$value"
+      n=$((n + 1))
+      wait_until 2000 handled_at_least "$home" "$n" || fail "persisted: $field=$value recovery wake not handled"
+      assert_re '^arg=--resume$' "$home/engine-call.$n" "valid record must resume after $field=$value"
+      [ "$(grep -c 'engine-reset' "$home/state/.supervision-host.log")" -eq "$resets" ] || fail "persisted: $field=$value reset loop"
+      [ "$(grep -c '\"task\":\"demo\"' "$home/state/branch-outcomes.jsonl")" -eq "$n" ] || fail "persisted: recovery lost or duplicated outcome"
+      [ "$(handled_count "$home")" -eq "$n" ] || fail "persisted: lost or duplicated handling"
+      assert_no_grep 'demo.status' "$home/state/.wake-queue" "persisted: recovery wake left queued"
     done
   done
-  append_status "$home" 'normal wake resumes after invalid records'
-  n=$((n + 1))
-  wait_until 2000 handled_at_least "$home" "$n" || fail "persisted: recovery wake not handled"
-  assert_re '^arg=--resume$' "$home/engine-call.$n" "valid record must resume after invalid records"
-  [ "$(grep -c 'engine-reset' "$home/state/.supervision-host.log")" -eq "$resets" ] || fail "persisted: reset loop"
   pid=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
   kill -TERM "$pid"
   wait_until 200 host_exited "$home" || fail "persisted: host did not stop"
