@@ -74,6 +74,10 @@ n=$(( $(ls "$FM_HOME"/engine-call.* 2>/dev/null | wc -l) + 1 ))
 case "$mode" in held|captain-held) printf 'ready\n' > "$FM_HOME/stub-ready" ;; esac
 # Like Claude, the reported cost is the conversation's running total.
 result() {
+  if [ -f "$FM_HOME/stub-result" ]; then
+    cat "$FM_HOME/stub-result"
+    return
+  fi
   printf '{"type":"result","subtype":"success","is_error":false,"num_turns":3,"total_cost_usd":%s,' "$(awk -v n="$n" 'BEGIN { print n * 0.25 }')"
   printf '"usage":{"input_tokens":5,"cache_read_input_tokens":%s,"cache_creation_input_tokens":10,"output_tokens":20},"session_id":"stub"}\n' \
     "$(cat "$FM_HOME/stub-cache-read" 2>/dev/null || echo 100)"
@@ -2540,7 +2544,7 @@ test_away_wake_is_handled_on_the_engine_and_never_reaches_main() {
 
 # The stub's three model calls read 5 + <stub-cache-read> + 10 prompt tokens,
 # so its context estimate is ceil((15 + cache_read) / 3): 39 at the default
-# 100, and 1005 at 3000, which reaches a ceiling of 1000.
+# 100, and exactly 1000 at 2985, which reaches a ceiling of 1000.
 test_engine_conversation_resets_once_at_the_context_ceiling() {
   local home first third pid
   home=$(make_home away-ceiling away)
@@ -2552,11 +2556,11 @@ test_engine_conversation_resets_once_at_the_context_ceiling() {
   first=$(sed -n '/^arg=--session-id$/{n;s/^arg=//p;}' "$home/engine-call.1")
   [ -n "$first" ] || fail "ceiling: the first turn opened no conversation"
 
-  echo 3000 > "$home/stub-cache-read"
+  echo 2985 > "$home/stub-cache-read"
   append_status "$home" 'step two'
   wait_until 2000 handled_at_least "$home" 2 || fail "ceiling: the second wake was not handled"
   assert_re "^arg=$first\$" "$home/engine-call.2" "a turn under the ceiling must resume the conversation"
-  assert_re '	handled	turn=[^	]*\.2	.* context=1005	' "$home/state/.supervision-host.log" \
+  assert_re '	handled	turn=[^	]*\.2	.* context=1000	' "$home/state/.supervision-host.log" \
     "the handled line must carry the turn's context estimate"
   assert_no_grep 'engine-reset' "$home/state/.supervision-host.log" "a conversation under the ceiling must not be reset"
 
@@ -2566,7 +2570,7 @@ test_engine_conversation_resets_once_at_the_context_ceiling() {
   assert_re '^arg=--session-id$' "$home/engine-call.3" "the turn after the ceiling must open a new conversation"
   third=$(sed -n '/^arg=--session-id$/{n;s/^arg=//p;}' "$home/engine-call.3")
   [ -n "$third" ] && [ "$third" != "$first" ] || fail "the turn after the ceiling reused the old conversation ($first)"
-  assert_re "	engine-reset	session=$first	turns=2	context-ceiling	context=1005 ceiling=1000\$" "$home/state/.supervision-host.log" \
+  assert_re "	engine-reset	session=$first	turns=2	context-ceiling	context=1000 ceiling=1000\$" "$home/state/.supervision-host.log" \
     "the reset must be logged with its reason"
   [ "$(grep -c '"task":"demo"' "$home/state/branch-outcomes.jsonl")" -eq 3 ] || fail "the wake that started the new conversation lost its outcome"
   assert_no_grep 'demo.status' "$home/state/.wake-queue" "the wake that started the new conversation was not acknowledged"
@@ -2592,6 +2596,200 @@ test_engine_conversation_resets_once_at_the_context_ceiling() {
   kill -TERM "$pid"
   wait_until 200 host_exited "$home" || fail "ceiling: the host did not stop on TERM"
   pass "host: the engine conversation resets once when its context estimate reaches the ceiling, keeps the wake, and treats a missing estimate as a reset"
+}
+
+# Write vendor-shaped results, including numeric spellings JSON accepts but
+# that cannot safely control whether a conversation is retained.
+write_count_result() {  # <home> <calls> <input> <cache-read> <cache-write> <output>
+  printf '{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.25,"num_turns":%s,"usage":{"input_tokens":%s,"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s,"output_tokens":%s}}\n' \
+    "$2" "$3" "$4" "$5" "$6" > "$1/stub-result"
+}
+
+engine_turn_finished() { host_exited "$1" || handled_at_least "$1" 1; }
+
+check_invalid_result_counts() {  # <case> <calls> <input> <cache-read> <cache-write> <output>
+  local name=$1 home pid
+  shift
+  home=$(make_home "invalid-result-$name" away)
+  write_count_result "$home" "$@"
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "$name: no watcher"
+  append_status "$home" "invalid count $name"
+  wait_until 2000 engine_turn_finished "$home" || fail "$name: turn never completed"
+  host_exited "$home" || fail "$name: invalid numeric result counted as handled"
+  assert_re '^supervision-host: .*error or an incomplete result; this wake is yours$' "$home/host.out" "invalid counts must hand back with a diagnostic"
+  assert_re '	failed	.*error=1 .*context=unknown' "$home/state/.supervision-host.log" "invalid counts must not produce a usable context"
+  assert_absent "$home/state/.supervision-host-engine" "invalid counts must discard the conversation"
+  [ "$(grep -c '"task":"demo"' "$home/state/branch-outcomes.jsonl")" -eq 1 ] || fail "$name: lost or duplicated the outcome"
+  assert_no_grep 'demo.status' "$home/state/.wake-queue" "the stub's handled wake must remain acknowledged"
+
+  rm -f "$home/stub-result"
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "$name: no recovery watcher"
+  append_status "$home" "normal wake after $name"
+  wait_until 2000 handled_at_least "$home" 1 || fail "$name: normal wake did not recover"
+  assert_re '^arg=--session-id$' "$home/engine-call.2" "the normal wake after invalid counts must use a fresh session"
+  [ "$(grep -c '"task":"demo"' "$home/state/branch-outcomes.jsonl")" -eq 2 ] || fail "$name: recovery duplicated an outcome"
+  assert_no_grep 'demo.status' "$home/state/.wake-queue" "recovery must consume the normal wake"
+  assert_grep 'errors=0' "$home/state/.supervision-host-health" "a normal wake must clear the error, not loop"
+  pid=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
+  kill -TERM "$pid"
+  wait_until 200 host_exited "$home" || fail "$name: host did not stop"
+}
+
+test_engine_result_counts_fail_closed() {
+  # Negative and fractional fields have otherwise valid sums/estimates: they
+  # isolate input validation from the independent sum-overflow check.
+  check_invalid_result_counts negative-input 3 -450000 450000 0 20
+  check_invalid_result_counts negative-cache-read 3 450000 -450000 0 20
+  check_invalid_result_counts negative-cache-write 3 450000 0 -450000 20
+  check_invalid_result_counts negative-output 3 5 100 10 -20
+  check_invalid_result_counts fractional-tokens 3 0.5 0.5 0 20
+  check_invalid_result_counts fractional-calls 1.5 5 100 10 20
+  check_invalid_result_counts negative-calls -3 5 100 10 20
+  check_invalid_result_counts oversized-calls 9223372036854775808 5 100 10 20
+  check_invalid_result_counts exponent-input 1 1e21 0 0 20
+  check_invalid_result_counts oversized-output 3 5 100 10 9007199254740992
+  pass "host: invalid result counts fail closed, preserve handled outcomes and recover fresh"
+}
+
+test_engine_result_prompt_sum_fails_closed() {
+  # Every operand is safe, but their sum is not, even though the mean is safe.
+  check_invalid_result_counts unsafe-sum 3 9007199254740991 1 0 20
+  pass "host: an unsafe prompt sum fails closed even with individually valid counts"
+}
+
+test_engine_zero_call_context_is_unknown() {
+  local home pid
+  home=$(make_home zero-call-context away)
+  write_count_result "$home" 0 0 0 0 0
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "zero-call: no watcher"
+  append_status "$home" 'zero-call result'
+  wait_until 2000 handled_at_least "$home" 1 || fail "zero-call: wake not handled"
+  assert_re '^context=unknown$' "$home/state/.supervision-host-engine" "zero calls must persist unknown, not zero"
+  rm -f "$home/stub-result"
+  append_status "$home" 'normal wake'
+  wait_until 2000 handled_at_least "$home" 2 || fail "zero-call: normal wake not handled"
+  assert_re '^arg=--session-id$' "$home/engine-call.2" "zero calls must cause a fresh next conversation"
+  append_status "$home" 'resume normal conversation'
+  wait_until 2000 handled_at_least "$home" 3 || fail "zero-call: resume not handled"
+  assert_re '^arg=--resume$' "$home/engine-call.3" "the normal result must permit resume"
+  [ "$(grep -c 'engine-reset' "$home/state/.supervision-host.log")" -eq 1 ] || fail "zero-call: reset was repeated"
+  [ "$(grep -c '"task":"demo"' "$home/state/branch-outcomes.jsonl")" -eq 3 ] || fail "zero-call: lost or duplicated outcome"
+  assert_no_grep 'demo.status' "$home/state/.wake-queue" "zero-call: wake left queued"
+  pid=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
+  kill -TERM "$pid"
+  wait_until 200 host_exited "$home" || fail "zero-call: host did not stop"
+  pass "host: a zero-call estimate stays unknown, resets once, then recovers normally"
+}
+
+test_engine_persisted_numbers_fail_closed() {
+  local home pid field value n=1 resets=0
+  home=$(make_home persisted-numbers away)
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "persisted: no watcher"
+  append_status "$home" 'initial wake'
+  wait_until 2000 handled_at_least "$home" "$n" || fail "persisted: first wake not handled"
+  for field in context turns; do
+    for value in 9223372036854775808 9007199254740992 99999999999999999999999999999999999999999999999999 1e+21 -1 1.5 01 '' ' ' duplicate; do
+      sed "/^$field=/d" "$home/state/.supervision-host-engine" > "$home/record.next"
+      if [ "$value" = duplicate ]; then
+        printf '%s=1\n%s=2\n' "$field" "$field" >> "$home/record.next"
+      else
+        printf '%s=%s\n' "$field" "$value" >> "$home/record.next"
+      fi
+      mv -f "$home/record.next" "$home/state/.supervision-host-engine"
+      n=$((n + 1)); resets=$((resets + 1))
+      append_status "$home" "$field invalid $n"
+      wait_until 2000 handled_at_least "$home" "$n" || fail "persisted: $field=$value wake not handled"
+      assert_re '^arg=--session-id$' "$home/engine-call.$n" "invalid $field=$value must choose fresh, not resume"
+      [ "$(grep -c 'engine-reset' "$home/state/.supervision-host.log")" -eq "$resets" ] || fail "persisted: reset must log once per invalid record"
+      [ "$(grep -c '"task":"demo"' "$home/state/branch-outcomes.jsonl")" -eq "$n" ] || fail "persisted: lost or duplicated outcome"
+      assert_no_grep 'demo.status' "$home/state/.wake-queue" "persisted: wake left queued"
+    done
+  done
+  append_status "$home" 'normal wake resumes after invalid records'
+  n=$((n + 1))
+  wait_until 2000 handled_at_least "$home" "$n" || fail "persisted: recovery wake not handled"
+  assert_re '^arg=--resume$' "$home/engine-call.$n" "valid record must resume after invalid records"
+  [ "$(grep -c 'engine-reset' "$home/state/.supervision-host.log")" -eq "$resets" ] || fail "persisted: reset loop"
+  pid=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
+  kill -TERM "$pid"
+  wait_until 200 host_exited "$home" || fail "persisted: host did not stop"
+  pass "host: malformed persisted context and turn counts always choose fresh without losing wakes"
+}
+
+test_engine_context_output_is_not_truncated() {
+  local home real_node pid value n=0
+  home=$(make_home context-output away)
+  real_node=$(command -v node)
+  # Inject a corrupt result-reader wire value without inspecting program text.
+  # All engine work, reports, grants and host bookkeeping still run normally.
+  cat > "$home/fakebin/node" <<SH
+#!/usr/bin/env bash
+if [ -f "\$FM_HOME/stub-context" ]; then
+  case "\${3:-}" in
+    "\$FM_HOME/state/.supervision-host-result."*)
+      output=\$("$real_node" "\$@") || exit \$?
+      printf '%s context=%s\\n' "\${output% context=*}" "\$(cat "\$FM_HOME/stub-context")"
+      exit 0
+      ;;
+  esac
+fi
+exec "$real_node" "\$@"
+SH
+  chmod +x "$home/fakebin/node"
+  start_host "$home"
+  wait_until 150 watcher_live "$home" || fail "wire context: no watcher"
+  for value in 1e+21 39junk; do
+    printf '%s\n' "$value" > "$home/stub-context"
+    append_status "$home" "wire value $value"
+    n=$((n + 1))
+    wait_until 2000 handled_at_least "$home" "$n" || fail "wire context: wake not handled"
+    assert_grep "context=$value" "$home/state/.supervision-host-engine" "a wire value must never be truncated to a numeric prefix"
+    rm -f "$home/stub-context"
+    append_status "$home" "normal wake after $value"
+    n=$((n + 1))
+    wait_until 2000 handled_at_least "$home" "$n" || fail "wire context: normal wake not handled"
+    assert_re '^arg=--session-id$' "$home/engine-call.$n" "invalid wire context must cause a fresh conversation"
+  done
+  [ "$(grep -c 'engine-reset' "$home/state/.supervision-host.log")" -eq 2 ] || fail "wire context: each corrupt value must reset once"
+  [ "$(grep -c '"task":"demo"' "$home/state/branch-outcomes.jsonl")" -eq "$n" ] || fail "wire context: lost or duplicated outcome"
+  assert_no_grep 'demo.status' "$home/state/.wake-queue" "wire context: wake left queued"
+  pid=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
+  kill -TERM "$pid"
+  wait_until 200 host_exited "$home" || fail "wire context: host did not stop"
+  pass "host: the whole result-reader context token survives for validation, never a numeric prefix"
+}
+
+test_engine_invalid_limits_choose_fresh() {
+  local home field value n pid
+  for field in CONTEXT_CEILING ROTATE_TURNS; do
+    for value in 9223372036854775808 9007199254740992 1e21 -1 0 01 ''; do
+      home=$(make_home "invalid-$field-${value:-empty}" away)
+      if [ "$field" = CONTEXT_CEILING ]; then
+        FM_SUPERVISION_HOST_CONTEXT_CEILING=$value start_host "$home"
+      else
+        FM_SUPERVISION_HOST_ROTATE_TURNS=$value start_host "$home"
+      fi
+      wait_until 150 watcher_live "$home" || fail "$field: no watcher"
+      for n in 1 2 3; do
+        append_status "$home" "invalid limit wake $n"
+        wait_until 2000 handled_at_least "$home" "$n" || fail "$field: wake $n not handled"
+        assert_re '^arg=--session-id$' "$home/engine-call.$n" "$field=$value must use fresh conversations"
+        [ "$(grep -c '"task":"demo"' "$home/state/branch-outcomes.jsonl")" -eq "$n" ] || fail "$field: lost or duplicated outcome"
+        assert_no_grep 'demo.status' "$home/state/.wake-queue" "$field: wake left queued"
+      done
+      assert_grep "invalid FM_SUPERVISION_HOST_$field; using a fresh conversation" "$home/state/.supervision-host.log" "invalid setting must be diagnosed"
+      [ "$(grep -c 'engine-reset' "$home/state/.supervision-host.log")" -eq 2 ] || fail "$field: reset log count"
+      assert_no_grep 'integer expression expected' "$home/host.out" "invalid setting must never reach shell comparison"
+      pid=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
+      kill -TERM "$pid"
+      wait_until 200 host_exited "$home" || fail "$field: host did not stop"
+    done
+  done
+  pass "host: invalid conversation limits disable reuse, log the setting and keep handling wakes"
 }
 
 test_away_turn_without_a_report_hands_the_wake_to_main() {
@@ -4568,6 +4766,12 @@ HOST_CASES=(
   test_silent_outcomes_are_not_relayed_when_the_captain_returns
   test_away_wake_is_handled_on_the_engine_and_never_reaches_main
   test_engine_conversation_resets_once_at_the_context_ceiling
+  test_engine_result_counts_fail_closed
+  test_engine_result_prompt_sum_fails_closed
+  test_engine_zero_call_context_is_unknown
+  test_engine_persisted_numbers_fail_closed
+  test_engine_invalid_limits_choose_fresh
+  test_engine_context_output_is_not_truncated
   test_engine_turn_is_bounded_and_its_descendants_reaped
   test_attended_wake_carries_the_dialog_mirror
   test_primary_without_a_verified_mirror_runs_away_only
