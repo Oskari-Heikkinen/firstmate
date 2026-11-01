@@ -565,9 +565,10 @@ The watch receipt proves that the owning home's own watch will deliver a member'
 - An arm that cannot register removes any receipt an earlier arm left for that watch, and writes none.
 - An arm that registers but cannot write its receipt keeps the watch, warns on stderr and exits 0, because a missing receipt only keeps the member in the train's line.
 - `retire` removes the receipt before it stops the watch, so there is never a receipt without a watch that `retire` stopped.
-- Every other end of the watch removes it right after the registration is gone, landed or not, through the adapter's `retired` command: the watch's runner retiring it after a terminal capture, park cancel or teardown retiring the source, and reconciliation finishing a terminal retirement.
+- Every other end of the watch tries to remove it right after the registration is gone, landed or not, through the adapter's `retired` command: the watch's runner retiring it after a terminal capture, park cancel or teardown retiring the source, and reconciliation finishing a terminal retirement.
 - Each arm also removes the receipts this home's ledger holds for watches whose registration is gone, so a receipt left by a cleanup that could not finish does not stay.
-- A receipt that cannot be removed is warned about on stderr, which `bin/fm-procevent.sh` passes on from the `retired` command, and never blocks the retirement.
+- A receipt that cannot be removed is warned about on stderr, which `bin/fm-procevent.sh` passes on from the `retired` command, and never blocks the retirement; its ledger entry stays for the next arm's sweep.
+- Only a positively missing path counts as gone. A receipt, ledger entry or registration that a folder permission hides is not known to be missing, so cleanup keeps the receipt and its ledger entry and warns; a ledger folder that cannot be listed is warned about and not swept.
 - The receipt's bytes are flushed before the rename where `sync` takes a file (GNU); elsewhere a crash can leave an empty receipt, which reads as uncovered.
 
 The receipt is one JSON object, version `lattice.merge-queue.watch.v1`:

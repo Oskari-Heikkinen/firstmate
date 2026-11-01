@@ -84,7 +84,9 @@
 #            home's ledger records for it. Every way a watch ends reaches it.
 #            Receipt cleanup removes only a file whose content names the source
 #            id and this physical home, wherever the queue dir pointed when it
-#            was written, and warns on stderr about anything it leaves.
+#            was written, and warns on stderr about anything it leaves. A
+#            receipt, ledger entry or registration a folder permission hides is
+#            not taken as gone: the receipt and its ledger entry stay.
 # watch      The blocking child the generic runner executes; never run it in a
 #            conversational turn. It emits one outcome document on stdout.
 #            While pending it calls the park owner's expire-queue under the
@@ -430,6 +432,37 @@ receipt_path_valid() {  # <path> <sid>
   [[ "$key" =~ ^[a-z0-9][a-z0-9-]{0,63}-[0-9a-f]{16}$ ]]
 }
 
+# Exit 0 when <path> is positively missing: not there, and the nearest folder
+# above it that is there can be searched, so no permission hides it. A path a
+# permission hides is not known to be missing, so its record is kept.
+path_missing() {  # <path>
+  local p=$1 parent
+  [ ! -e "$p" ] && [ ! -L "$p" ] || return 1
+  while :; do
+    case "$p" in
+      */*) parent=${p%/*}; parent=${parent:-/} ;;
+      *) parent=. ;;
+    esac
+    [ "$parent" != "$p" ] || return 1
+    p=$parent
+    if [ -e "$p" ] || [ -L "$p" ]; then
+      [ -d "$p" ] && [ -x "$p" ]
+      return
+    fi
+  done
+}
+
+# Exit 0 when the watch <sid>'s registration is positively gone. One a
+# permission hides is not known to be gone, so its receipt stays, with a warning.
+registration_gone() {  # <sid>
+  local file
+  file="$(fm_procevent_registry_dir "$STATE")/$1.source"
+  path_missing "$file" && return 0
+  [ -e "$file" ] || [ -L "$file" ] \
+    || printf 'warning: cannot tell whether the watch %s is still registered; left its receipt\n' "$1" >&2
+  return 1
+}
+
 # This home's ledger of the receipts it wrote, one file per source id holding
 # the receipt's path, so cleanup removes only what this home wrote, wherever the
 # queue dir pointed when it was written.
@@ -449,11 +482,15 @@ record_receipt() {  # <sid> <path>
 }
 
 # The receipt path the ledger records for <sid>, printed; exit 1 for no entry,
-# 2 for an entry that cannot be read or names no receipt this adapter writes.
+# 2 for an entry that cannot be read, that a permission hides, or that names no
+# receipt this adapter writes.
 recorded_receipt() {  # <sid>
   local entry path=''
   entry="$(receipt_ledger)/$1"
-  [ -e "$entry" ] || [ -L "$entry" ] || return 1
+  if [ ! -e "$entry" ] && [ ! -L "$entry" ]; then
+    path_missing "$entry" && return 1
+    return 2
+  fi
   [ -f "$entry" ] && [ ! -L "$entry" ] || return 2
   { IFS= read -r path || [ -n "$path" ]; } < "$entry" 2>/dev/null || return 2
   receipt_path_valid "$path" "$1" || return 2
@@ -463,7 +500,8 @@ recorded_receipt() {  # <sid>
 # Remove the receipt the ledger records for <sid>, then its entry. The receipt
 # goes only when its content names <sid> and this physical home, because the
 # queue folder is shared across homes and fleets; anything else is left with a
-# warning. Exit 1 when something was left.
+# warning, and so is the entry while a permission hides whether the receipt is
+# still there. Exit 1 when something was left.
 clear_receipt() {  # <sid>
   local sid=$1 path rc=0 home entry
   entry="$(receipt_ledger)/$sid"
@@ -474,7 +512,11 @@ clear_receipt() {  # <sid>
     *) printf 'warning: the watch receipt ledger entry %s cannot be read or names no receipt; left in place\n' "$entry" >&2
        return 1 ;;
   esac
-  if [ -e "$path" ] || [ -L "$path" ]; then
+  if ! path_missing "$path"; then
+    if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+      printf 'warning: cannot tell whether the watch receipt %s is still there; left its ledger entry %s\n' "$path" "$entry" >&2
+      return 1
+    fi
     home=$(CDPATH='' cd -P -- "$FM_HOME" 2>/dev/null && pwd -P) || home=
     if [ -z "$home" ] || [ ! -f "$path" ] || [ -L "$path" ] \
       || ! jq -e --arg sid "$sid" --arg home "$home" '.source_id == $sid and .home == $home' \
@@ -483,28 +525,34 @@ clear_receipt() {  # <sid>
       return 1
     fi
     rm -f -- "$path" 2>/dev/null
-    if [ -e "$path" ] || [ -L "$path" ]; then
+    if ! path_missing "$path"; then
       printf 'warning: could not remove the watch receipt %s\n' "$path" >&2
       return 1
     fi
   fi
   rm -f -- "$entry" 2>/dev/null
-  if [ -e "$entry" ] || [ -L "$entry" ]; then
+  if ! path_missing "$entry"; then
     printf 'warning: could not remove the watch receipt ledger entry %s\n' "$entry" >&2
     return 1
   fi
 }
 
 # Clear every ledger entry whose watch is no longer registered: a watch that
-# ended while its retirement cleanup could not finish leaves one behind.
+# ended while its retirement cleanup could not finish leaves one behind. A
+# registration only a permission hides is not known to be gone, so its receipt
+# stays.
 sweep_receipts() {
-  local reg f sid
-  reg=$(fm_procevent_registry_dir "$STATE")
-  for f in "$(receipt_ledger)/"*; do
+  local f sid ledger
+  ledger=$(receipt_ledger)
+  if ! path_missing "$ledger" && { [ ! -d "$ledger" ] || [ ! -r "$ledger" ] || [ ! -x "$ledger" ]; }; then
+    printf 'warning: cannot list the watch receipt ledger %s; its receipts were not swept\n' "$ledger" >&2
+    return 0
+  fi
+  for f in "$ledger/"*; do
     [ -e "$f" ] || [ -L "$f" ] || continue
     sid=${f##*/}
     fm_procevent_source_id_valid "$sid" && [ "$sid" != "${sid#"$ADAPTER"-}" ] || continue
-    [ ! -e "$reg/$sid.source" ] && [ ! -L "$reg/$sid.source" ] || continue
+    registration_gone "$sid" || continue
     clear_receipt "$sid" || :
   done
 }
@@ -982,10 +1030,9 @@ cmd_retire() {
 # The runner calls this once <sid>'s registration is gone. A watch armed again
 # since then is registered, and its receipt stays.
 cmd_retired() {
-  local sid=${1-} reg
+  local sid=${1-}
   fm_procevent_source_id_valid "$sid" && [ "$sid" != "${sid#"$ADAPTER"-}" ] || usage
-  reg=$(fm_procevent_registry_dir "$STATE")
-  [ ! -e "$reg/$sid.source" ] && [ ! -L "$reg/$sid.source" ] || return 0
+  registration_gone "$sid" || return 0
   clear_receipt "$sid" || :
   return 0
 }

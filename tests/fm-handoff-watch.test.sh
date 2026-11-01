@@ -474,6 +474,27 @@ entries = scan(fifo_place)
 check(entries.get("fifo.json", [None, None, None])[1:] == ["source-unreadable", "is not a regular file"],
       "a FIFO in a typed input place is source-unreadable and read without blocking", json.dumps(entries))
 
+# Entries a text wrapper or the parser would raise on: each is classified on its own, the pass reads on to the
+# valid record beside them, and no descriptor stays open.
+odd_place = tmp / "odd-place"
+odd_place.mkdir()
+(odd_place / "dir.json").mkdir()
+(tmp / "odd-target").mkdir()
+os.symlink(tmp / "odd-target", odd_place / "dirlink.json")
+(odd_place / "deep.json").write_text("[" * 100_000 + "]" * 100_000)
+(odd_place / "ok.json").write_text(json.dumps({"schema": "t.v1"}))
+fd_dir = "/proc/self/fd" if os.path.isdir("/proc/self/fd") else "/dev/fd"
+open_before = len(os.listdir(fd_dir))
+entries = scan(odd_place)
+open_after = len(os.listdir(fd_dir))
+for name, why in (("dir.json", "is not a regular file"), ("dirlink.json", "is not a regular file"),
+                  ("deep.json", "is not a readable JSON object")):
+    check(entries.get(name, [None, None, None])[1:] == ["source-unreadable", why],
+          f"{name} in a typed input place is source-unreadable: {why}", json.dumps(entries))
+check(entries.get("ok.json", [None, "missing"])[1] is None, "the pass reads on to the valid record beside them",
+      json.dumps(entries))
+check(open_after == open_before, "reading them leaves no descriptor open", f"{open_before} -> {open_after}")
+
 if os.geteuid() != 0:
     lost = tmp / "lost-place"
     lost.mkdir()

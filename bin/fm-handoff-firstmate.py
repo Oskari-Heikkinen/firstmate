@@ -89,9 +89,10 @@ def queue_dir(home):
     qdir = os.environ.get("FM_MERGE_QUEUE_DIR", "")
     where = "FM_MERGE_QUEUE_DIR"
     if not qdir:
-        if config.is_symlink() or not config.is_file():
-            return None
         try:
+            # Checked inside the handler: pathlib raises, rather than answering, when the folder cannot be searched.
+            if config.is_symlink() or not config.is_file():
+                return None
             # Bytes split on newlines only, as sed reads them, so a carriage return stays in the value and is
             # refused below.
             lines = config.read_bytes().decode("utf-8").split("\n")

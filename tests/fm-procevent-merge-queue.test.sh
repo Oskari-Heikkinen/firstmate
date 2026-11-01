@@ -1353,4 +1353,50 @@ if [ "$(id -u)" -ne 0 ]; then
   assert_absent "$stale" "the next arm's sweep removes the stale receipt once it can"
   assert_absent "$receipt" "the next retire removes the receipt once it can"
   pass "a receipt that cannot be removed is warned about and never blocks the watch"
+
+  # A folder that cannot be searched hides whether the receipt is still there:
+  # its ledger entry stays, so the sweep after the folder is restored removes it.
+  mq "$H" arm t1 "$HEAD_A" >/dev/null || fail "arm must succeed before the hidden retire"
+  chmod u-x "$Q/watches"
+  pe "$H" retire "$sid" >/dev/null 2>"$TMP_ROOT/pe-retire-hidden.err"; rc=$?
+  hidden_source_left=0; [ -e "$H/state/procevent/$sid.source" ] && hidden_source_left=1
+  chmod u+x "$Q/watches"
+  assert_equals 0 "$rc" "a hidden receipt does not fail the retire"
+  assert_equals 0 "$hidden_source_left" "the watch still retires behind a hidden receipt"
+  assert_grep "cannot tell whether the watch receipt $receipt is still there" "$TMP_ROOT/pe-retire-hidden.err" \
+    "the generic retire warns about a receipt a permission hides"
+  assert_present "$receipt" "a hidden receipt is not removed"
+  assert_present "$ledger/$sid" "a hidden receipt keeps its ledger entry"
+  printf 'kind=ship\nspawn_gen=g1\nmode=direct-push\nproject=%s\n' "$H/project" > "$H/state/t9.meta"
+  mq "$H" arm t9 "$HEAD_B" >/dev/null 2>"$TMP_ROOT/hidden-sweep.err" || fail "arm must succeed once the folder is searchable"
+  assert_equals "" "$(cat "$TMP_ROOT/hidden-sweep.err")" "the sweep after the restore prints no warning"
+  assert_absent "$receipt" "the next arm's sweep removes the once-hidden receipt"
+  assert_absent "$ledger/$sid" "the next arm's sweep then removes its ledger entry"
+  mq "$H" retire t9 "$HEAD_B" >/dev/null
+  pass "a receipt a permission hides keeps its ledger entry and is swept once it shows"
+
+  # A registry that cannot be searched hides whether the watch still runs.
+  mq "$H" arm t1 "$HEAD_A" >/dev/null || fail "arm must succeed before the hidden registration"
+  chmod u-x "$H/state/procevent"
+  mq "$H" retired "$sid" >/dev/null 2>"$TMP_ROOT/retired-hidden.err"; rc=$?
+  chmod u+x "$H/state/procevent"
+  assert_equals 0 "$rc" "a hidden registration does not fail retired"
+  assert_grep "cannot tell whether the watch $sid is still registered" "$TMP_ROOT/retired-hidden.err" \
+    "retired warns about a registration a permission hides"
+  assert_present "$receipt" "a hidden registration keeps its receipt"
+  assert_present "$ledger/$sid" "a hidden registration keeps its ledger entry"
+
+  # A ledger that cannot be listed or searched: arm still arms, and warns
+  # rather than reading its hidden entries as absent.
+  chmod u-rx "$ledger"
+  mq "$H" arm t1 "$HEAD_A" >/dev/null 2>"$TMP_ROOT/ledger-hidden.err"; rc=$?
+  chmod u+rx "$ledger"
+  assert_equals 0 "$rc" "a hidden ledger does not fail the arm"
+  assert_grep "ledger entry $ledger/$sid cannot be read" "$TMP_ROOT/ledger-hidden.err" \
+    "arm warns about a ledger entry a permission hides"
+  assert_grep "cannot list the watch receipt ledger $ledger" "$TMP_ROOT/ledger-hidden.err" \
+    "the arm sweep warns about a ledger it cannot list"
+  mq "$H" retire t1 "$HEAD_A" >/dev/null
+  assert_absent "$receipt" "retire removes the receipt once the registry and ledger show again"
+  pass "a registration or ledger a permission hides is never read as gone"
 fi

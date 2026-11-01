@@ -82,6 +82,6 @@ Then acknowledge it with `bin/fm-procevent.sh handled <source-id> <sequence>`.
 - Never run cleanup, refresh the clone, or relaunch a worker by hand for an outcome the glue settles; a result it left unhandled is the only one that needs you.
 - Never write the landed, failed, decision, or stall line to the parent channel yourself; the glue and the existing ledger delivery publish them.
 - Never edit `queue.log` or anything else in the queue directory; the train owns it, and handoff goes only through the command above.
-  The one exception is the glue's own watch receipts under `watches/`, which `arm` writes and every end of the watch removes; never write or delete one by hand.
+  The one exception is the glue's own watch receipts under `watches/`, which `arm` writes and every end of the watch removes when it can; never write or delete one by hand.
 - Never withdraw or replace a car by pushing its head, or a fix, straight to the default branch: the train still holds the car and lands or rejects it against a main that moved under it.
   Withdraw it through the train's own interface or its owner, and hand a replacement head over through the command above.

@@ -271,6 +271,16 @@ mq_config.write_bytes(b"dir=\xff\n")
 proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS)
 expect(not mq_protocols() and "is unreadable" in proc.stderr, "a config that is not UTF-8 is skipped with a warning",
        proc.stderr)
+if os.geteuid() != 0:
+    mq_config.write_text(f"dir={QUEUE}\n")
+    os.chmod(mq_config.parent, 0o600)
+    try:
+        proc = target(R / DOCS)
+    finally:
+        os.chmod(mq_config.parent, 0o755)
+    expect(proc.returncode == 1 and proc.stdout == "" and "is unreadable" in proc.stderr
+           and "Traceback" not in proc.stderr,
+           "a config a folder permission hides is skipped with a warning, not a crash", proc.stdout + proc.stderr)
 mq_config.unlink()
 real_config = tmp / "real-merge-queue"
 real_config.write_text(f"dir={QUEUE}\n")

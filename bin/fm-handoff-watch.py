@@ -17,6 +17,7 @@ also writes the home's coverage line (bin/fm-handoff-measure.py) under
 state/handoff-watch/coverage/ and prints it.
 """
 import argparse
+import contextlib
 import datetime
 import fcntl
 import fnmatch
@@ -109,15 +110,20 @@ def read_record(path):
         return None, "is a dangling symlink"
     except OSError as exc:
         return None, f"cannot be read ({exc.strerror})"
-    with os.fdopen(fd, encoding="utf-8") as handle:
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                return None, "is not a regular file"
+    # The type is checked on the descriptor before any wrapper is built (a wrapper refuses a directory itself), and
+    # the descriptor is this function's to close on every path.
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None, "is not a regular file"
+        with os.fdopen(fd, encoding="utf-8", closefd=False) as handle:
             return json.load(handle), None
-        except OSError as exc:
-            return None, f"cannot be read ({exc.strerror})"
-        except ValueError:
-            return None, "is not a readable JSON object"
+    except OSError as exc:
+        return None, f"cannot be read ({exc.strerror})"
+    except (ValueError, RecursionError):
+        return None, "is not a readable JSON object"
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
 
 
 def measure_module():
