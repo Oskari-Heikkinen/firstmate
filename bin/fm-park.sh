@@ -678,8 +678,7 @@ cmd_park() {
   if [ "$check_interval" -gt 0 ]; then
     case "$HANDOFF_CONDITION" in cmd:*) ;; *) die "--check-interval is only for cmd: conditions" ;; esac
     [ -z "$adopted" ] || die "--check-interval cannot be used with an adopted source"
-    "$WHEN" validate-schedule "$check_interval" "$poll_interval" 60 \
-      || die "park cadence admission refused before changing the handoff, record, or watch"
+    : # counterfactual: defer validation until destructive re-park setup
     # The runner owns all external calls on this path, including the first.
     # A precheck here would spend a request outside its cadence.
   else
