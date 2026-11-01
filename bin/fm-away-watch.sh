@@ -249,7 +249,7 @@ host_live() {
 
 check_host() {
   local last line
-  fm_supervision_host_may_run "$CONFIG" || return 0
+  fm_supervision_host_may_run "$CONFIG" "${primary:-unknown}" || return 0
   host_live && return 0
   last=0
   line=$(tail -n 1 "$STATE/.supervision-host.log" 2>/dev/null) || line=
