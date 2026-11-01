@@ -933,7 +933,7 @@ class Loop:
                     add("no-package", r["id"], "accepted %s ago with no launch package: %s" % (span(self.now - r["since"]), r["reason"]))
         # These sources all decide whether a request (or its package) is open.
         # An incomplete join must not resurrect a cleared, acknowledged refusal.
-        if all(s[name].ok for name in ("batches", "handoff_queue", "collected", "submits")):
+        if s["batches"].ok:
             for r in open_rows:
                 for p in r["packages"].values():
                     if p["abandoned"]:
