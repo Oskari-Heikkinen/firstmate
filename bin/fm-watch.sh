@@ -2745,9 +2745,9 @@ OPEN
       [ "${r_last[i]}" -eq 0 ] || r_delay[i]=$((r_delay[i] * 2))
       [ "${r_delay[i]}" -le "$cap" ] || r_delay[i]=$cap
       r_last[i]=$now
-      open_decision_ledger_rows_to rows
-      open_decision_ledger_write "$ledger" "$rows" || return 1
     done
+    open_decision_ledger_rows_to rows
+    open_decision_ledger_write "$ledger" "$rows" || return 1
     [ "$due_n" -le 1 ] || OPEN_DECISION_REMINDER="$OPEN_DECISION_REMINDER (+$((due_n - 1)) more queued)"
   fi
   return 0
