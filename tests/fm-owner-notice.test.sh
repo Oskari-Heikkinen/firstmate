@@ -2302,6 +2302,35 @@ case_source_enumeration() {
   pass 'binding and current enumeration distinguish unknown records from healthy pre-bind scratch'
 }
 
+case_consumed_receipt_linkage() {
+  local mod
+  world consumed-receipt-linkage
+  mkdir -p "$W/prod2/outbox"
+  on bind p2 --outbox "$W/prod2/outbox" --producer-actor process:prod --producer-uid "$(id -u)" \
+    --kinds note --max-bytes 1000 --consume-bound-seconds 3600 > /dev/null || fail 'bind p2'
+  payload p linkage
+  submit k1 note p
+  run_on ingest p1
+  expect_code 0 "$RC" 'linkage fixture delivery'
+  run_on consume p1 k1
+  expect_code 0 "$RC" 'linkage fixture consumption'
+  cp "$P1/receipts/k1/2.json" "$F/consumed.good"
+  for mod in 'delivered_seq:=9' kind=other \
+    "payload_sha256=$(printf 'a%.0s' $(seq 64))" "envelope_sha256=$(printf 'b%.0s' $(seq 64))"; do
+    fix jset "$P1/receipts/k1/2.json" "$mod"
+    run_on ingest p2
+    expect_code 0 "$RC" "other binding refresh with isolated consumption linkage $mod ($OUT)"
+    stored > "$F/store"
+    assert_grep 'receipts-unreadable p1/k1' "$F/store" "unmatched consumed receipt $mod alarms"
+    cp "$F/consumed.good" "$P1/receipts/k1/2.json"
+    run_on ingest p2
+    expect_code 0 "$RC" 'restored consumed linkage refresh'
+    stored > "$F/store"
+    assert_no_grep receipts-unreadable "$F/store" 'valid consumed linkage clears source level'
+  done
+  pass 'owner snapshots require consumed receipts to link the exact delivered identity'
+}
+
 case_final_projection_without_receipts() {
   world final-without-receipts
   payload p receipt
@@ -2732,6 +2761,7 @@ fm_run_case_pool "$(fm_case_pool_jobs "${FM_OWNER_NOTICE_CASE_JOBS:-}")" "$TMP_R
   case_publish_lookup_unknown \
   case_unknown_projection \
   case_source_enumeration \
+  case_consumed_receipt_linkage \
   case_final_projection_without_receipts \
   case_unknown_problem_mutation \
   case_bind_inventory_init \
