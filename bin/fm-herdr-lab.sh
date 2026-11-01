@@ -108,7 +108,7 @@ fm_herdr_lab_normalize_sessions() { # [owned-lab-name]; one parse for schema and
         (.name | if type != "string" then false else
           test("\\A[a-zA-Z0-9._-]{1,64}\\z") and (. != "." and . != "..") end)
         and (.running | type == "boolean")
-        and (.socket_path | if type != "string" then false else
+        and (.socket_path | if type != "string" then true else
           startswith("/") and (explode | all(. >= 32 and . != 127)) end)
         and (.default == (.name == "default")))
       and ([.[] | select(.default)] | length == 1)
