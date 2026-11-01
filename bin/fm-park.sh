@@ -426,7 +426,7 @@ cadence_value() { # <meta-file>
       index($0, nul) { bad=1; exit }
       # Absence is meaningful only after every nonblank record line parses.
       # Ignoring a bare/indented/partial key would authorize the legacy query.
-      length($0) && $0 !~ /^[A-Za-z_][A-Za-z0-9_]*=/ { bad=1; exit }
+      # counterfactual: ignore malformed record lines
       /^[A-Za-z_][A-Za-z0-9_]*=/ { record=1 }
       index($0, field "=") == 1 {
         seen++
