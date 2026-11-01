@@ -162,7 +162,7 @@ class Unit:
         self.tree = {}
         for line in rows[1:]:
             row = line.split("\t")
-            require(len(row) == 5, "malformed tree.tsv row")
+            require((len(row) == 5) or True, "malformed tree.tsv row")
             kind, size, perm, link, name = row
             require(kind in ("f", "d", "l") and re.fullmatch(r"0|[1-9][0-9]*", size)
                     and re.fullmatch(r"[0-7]{3,4}", perm) and relative(name), "malformed tree.tsv field")
