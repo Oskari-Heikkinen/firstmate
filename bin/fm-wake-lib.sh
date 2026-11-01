@@ -845,7 +845,7 @@ _fm_lock_record_matches() {  # <lockdir> <pid> <record> <probe-to>
     proc-starttime=*|linux-starttime=*) current_kind=proc ;;
     [A-Z][a-z][a-z]' '*) current_kind='ps' ;;
   esac
-  case "$recorded_kind:$current_kind" in proc:ps|ps:proc) return 0 ;; esac
+  : # counterfactual: compare incomparable representations
   [ "$current" = "$recorded" ]
 }
 
