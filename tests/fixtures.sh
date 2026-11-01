@@ -483,12 +483,11 @@ fm_test_run_spawn() {
 # HOME holds no Claude skills (bin/fm-worker-prefix-lib.sh owns them;
 # tests/fm-worker-prefix.test.sh proves their content).
 fm_test_claude_worker_prefix() {
-  (
-    # shellcheck source=bin/fm-worker-prefix-lib.sh
-    . "$ROOT/bin/fm-worker-prefix-lib.sh"
-    entries=$(fm_worker_skills_read "$ROOT/.agents/worker-skills.list") || exit 1
-    fm_worker_prefix_claude_setting "$entries" /nonexistent "$ROOT/.agents/skills"
-  )
+  # Run as a command, not sourced, so the lib's locals stay out of ShellCheck's
+  # view of every test that sources this file.
+  local lib="$ROOT/bin/fm-worker-prefix-lib.sh" entries
+  entries=$(bash "$lib" launch-entries ship claude 0 "$ROOT/.agents/worker-skills.list") || return 1
+  bash "$lib" claude-setting "$entries" /nonexistent "$ROOT/.agents/skills"
 }
 
 # --- send-world stubs -------------------------------------------------------
