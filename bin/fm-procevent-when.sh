@@ -25,12 +25,24 @@
 #            Options, before --condition:
 #              --interval <secs>           poll cadence, decimals allowed (default 60)
 #              --stable <n>                consecutive true polls required to fire (default 2)
+#              --check-interval <secs>     external checks at most once per 1..300 seconds;
+#                                          reuse the last real verdict between checks (default 0: every poll)
+#              --stabilize-timeout <secs>  bound after first true without stabilising;
+#                                          default max(600, stable * (interval + condition-timeout))
+#                                          explicit values must exceed interval * (stable - 1)
 #              --deadline <secs>           give up and wake firstmate if the condition
 #                                          never held this long after arming (default 604800)
 #              --condition-timeout <secs>  per-poll bound on one condition run (default 60)
 #              --action-timeout <secs>     bound on the action run (default 1800)
-#              --error-budget <n>          consecutive condition errors tolerated
-#                                          before waking firstmate (default 3)
+#              --error-budget <n>          consecutive real condition errors tolerated
+#                                          before waking firstmate (default 3);
+#                                          cached errors never spend another attempt
+#            With --check-interval, --interval must be at most 300 seconds.
+#            Conditions must perform a real check each invocation, never return
+#            false just to throttle. Cached true counts toward stability; a real
+#            false or error resets it. Cache is process-local and discarded on
+#            restart. Once first true is seen, failure to stabilise within the
+#            bound emits one terminal condition-error through the durable runner.
 #            The condition argv must exit 0 for true, 1 for a clean false;
 #            any other exit (or a per-poll timeout) is an error, never a true.
 #            POLICY, not enforceable here: both halves must be exact and
@@ -143,6 +155,10 @@ cmd_source_id() {
 
 positive_int() { case "${1-}" in ''|*[!0-9]*) return 1 ;; 0) return 1 ;; *) return 0 ;; esac }
 
+check_interval_valid() {
+  case "${1-}" in 0|[1-9]|[1-9][0-9]|[12][0-9][0-9]|300) return 0 ;; *) return 1 ;; esac
+}
+
 positive_number() {
   local n=${1-}
   local LC_ALL=C
@@ -165,11 +181,23 @@ action_executable() {  # <argv-zero>: print the executable's absolute path
   printf '%s\n' "$found"
 }
 
+# Resolve once at registration/load, never per tick. Slow legacy watches need
+# enough time to collect their required observations even when every check is true.
+stabilize_timeout_resolve() { # <requested-or-auto> <interval> <stable> <condition-timeout>
+  [ "$1" = auto ] || positive_int "$1" || return 1
+  awk -v requested="$1" -v interval="$2" -v stable="$3" -v timeout="$4" 'BEGIN {
+    bound = requested == "auto" ? stable * (interval + timeout) : requested + 0
+    if (requested == "auto" && bound < 600) bound = 600
+    if (bound <= interval * (stable - 1) || bound > 2147483647) exit 1
+    printf "%.0f\n", bound
+  }'
+}
+
 # --- arm ---------------------------------------------------------------------
 
 cmd_arm() {
   local name=${1-} sid interval=60 stable=2 deadline=604800
-  local condition_timeout=60 action_timeout=1800 error_budget=3
+  local condition_timeout=60 action_timeout=1800 error_budget=3 check_interval=0 stabilize_timeout=auto
   local -a cond=() act=()
   [ -n "$name" ] || usage
   shift
@@ -180,6 +208,8 @@ cmd_arm() {
       --interval)          positive_number "${2-}" || die "--interval needs a positive number of seconds"; interval=$2; shift 2 ;;
       --stable)            positive_int "${2-}" || die "--stable needs a positive integer"; stable=$2; shift 2 ;;
       --deadline)          positive_int "${2-}" || die "--deadline needs a positive integer of seconds"; deadline=$2; shift 2 ;;
+      --check-interval) check_interval_valid "${2-}" || die "--check-interval must be 0 (every poll) or 1..300 seconds"; check_interval=$2; shift 2 ;;
+      --stabilize-timeout) positive_int "${2-}" || die "--stabilize-timeout needs a positive integer"; stabilize_timeout=$2; shift 2 ;;
       --condition-timeout) positive_int "${2-}" || die "--condition-timeout needs a positive integer of seconds"; condition_timeout=$2; shift 2 ;;
       --action-timeout)    positive_int "${2-}" || die "--action-timeout needs a positive integer of seconds"; action_timeout=$2; shift 2 ;;
       --error-budget)      positive_int "${2-}" || die "--error-budget needs a positive integer"; error_budget=$2; shift 2 ;;
@@ -194,6 +224,11 @@ cmd_arm() {
       *) die "unknown arm argument: $1" ;;
     esac
   done
+  if [ "$check_interval" -gt 0 ] && ! awk -v n="$interval" 'BEGIN { exit !(n <= 300) }'; then
+    die "--interval must be at most 300 seconds with --check-interval"
+  fi
+  stabilize_timeout=$(stabilize_timeout_resolve "$stabilize_timeout" "$interval" "$stable" "$condition_timeout") \
+    || die "--stabilize-timeout must exceed interval * (stable - 1) and fit in 2147483647 seconds"
   [ "${#cond[@]}" -ge 1 ] || die "arm needs at least one --condition argv element"
   [ "${#act[@]}" -ge 1 ] || die "arm needs at least one --action argv element"
   local arg
@@ -232,6 +267,8 @@ cmd_arm() {
     printf 'condition_timeout=%s\n' "$condition_timeout"
     printf 'action_timeout=%s\n' "$action_timeout"
     printf 'error_budget=%s\n' "$error_budget"
+    printf 'check_interval=%s\n' "$check_interval"
+    printf 'stabilize_timeout=%s\n' "$stabilize_timeout"
     printf 'action_sha256=%s\n' "$action_hash"
     printf 'condition_argc=%s\n' "${#cond[@]}"
     printf 'action_argc=%s\n' "${#act[@]}"
@@ -292,6 +329,8 @@ spec_load() {
   SPEC_ARMED='' SPEC_INTERVAL='' SPEC_STABLE='' SPEC_DEADLINE=''
   SPEC_CONDITION_TIMEOUT='' SPEC_ACTION_TIMEOUT='' SPEC_ERROR_BUDGET=''
   SPEC_ACTION_SHA256=''
+  # Missing fields identify older v1 watches; keep their polling cadence.
+  SPEC_CHECK_INTERVAL=0 SPEC_STABILIZE_TIMEOUT=auto
   local cond_argc='' act_argc='' in_argv=0 read_cond=0 read_act=0
   {
     IFS= read -r version || { SPEC_ERROR="spec is empty"; return 1; }
@@ -309,6 +348,8 @@ spec_load() {
           condition_timeout) SPEC_CONDITION_TIMEOUT=$value ;;
           action_timeout)    SPEC_ACTION_TIMEOUT=$value ;;
           error_budget)      SPEC_ERROR_BUDGET=$value ;;
+          check_interval)    SPEC_CHECK_INTERVAL=$value ;;
+          stabilize_timeout) SPEC_STABILIZE_TIMEOUT=$value ;;
           action_sha256)     SPEC_ACTION_SHA256=$value ;;
           condition_argc)    cond_argc=$value ;;
           action_argc)       act_argc=$value ;;
@@ -329,9 +370,15 @@ spec_load() {
   [ -z "$SPEC_ERROR" ] || return 1
   case "$SPEC_ARMED" in ''|*[!0-9]*) SPEC_ERROR="spec armed epoch is malformed"; return 1 ;; esac
   positive_number "$SPEC_INTERVAL" || { SPEC_ERROR="spec interval is malformed"; return 1; }
+  check_interval_valid "$SPEC_CHECK_INTERVAL" || { SPEC_ERROR="spec check interval must be 0 or 1..300 seconds"; return 1; }
+  if [ "$SPEC_CHECK_INTERVAL" -gt 0 ] && ! awk -v n="$SPEC_INTERVAL" 'BEGIN { exit !(n <= 300) }'; then
+    SPEC_ERROR="spec poll interval exceeds 300 seconds with a check interval"; return 1
+  fi
   positive_int "$SPEC_STABLE" || { SPEC_ERROR="spec stable count is malformed"; return 1; }
   positive_int "$SPEC_DEADLINE" || { SPEC_ERROR="spec deadline is malformed"; return 1; }
   positive_int "$SPEC_CONDITION_TIMEOUT" || { SPEC_ERROR="spec condition timeout is malformed"; return 1; }
+  SPEC_STABILIZE_TIMEOUT=$(stabilize_timeout_resolve "$SPEC_STABILIZE_TIMEOUT" "$SPEC_INTERVAL" "$SPEC_STABLE" "$SPEC_CONDITION_TIMEOUT") \
+    || { SPEC_ERROR="spec stabilisation timeout is malformed or too short for the stable window"; return 1; }
   positive_int "$SPEC_ACTION_TIMEOUT" || { SPEC_ERROR="spec action timeout is malformed"; return 1; }
   positive_int "$SPEC_ERROR_BUDGET" || { SPEC_ERROR="spec error budget is malformed"; return 1; }
   [[ "$SPEC_ACTION_SHA256" =~ ^[0-9a-f]{64}$ ]] \
@@ -370,9 +417,23 @@ emit_doc() {
   fi
 }
 
+# Once truth has been observed, even a single true followed by perpetual false
+# must not hide until the outer deadline. The terminal document is captured and
+# acknowledged by the existing process-event owner, not a per-tick notification.
+stability_guard() {
+  local sid=$1 started=$2 now=$3 polls=$4 out=$5
+  if [ "$started" -gt 0 ] && [ $((now - started)) -ge "$SPEC_STABILIZE_TIMEOUT" ]; then
+    emit_doc "$sid" condition-error \
+      "the condition did not stabilise within ${SPEC_STABILIZE_TIMEOUT}s after first true; use runner-owned check cadence, not false between checks" "$polls" '' "$out"
+    return 1
+  fi
+  return 0
+}
+
 cmd_run() {
   local sid=${1-} fired out rc polls=0 consecutive_true=0 consecutive_err=0 now
   local observation='' previous_observation='' observed=0 last_poll=0 previous_rc=2
+  local cached_rc='' next_check=0 first_true=0 checked=0
   # This hint only elides unchanged false local park conditions. All verdicts,
   # errors, stability checks, deadlines and action trust stay on the full path.
   # shellcheck source=bin/fm-park-observe-lib.sh
@@ -412,6 +473,7 @@ cmd_run() {
         "the condition never held for $SPEC_STABLE consecutive polls within ${SPEC_DEADLINE}s of arming" "$polls" '' ''
       exit 0
     fi
+    stability_guard "$sid" "$first_true" "$now" "$polls" "$out" || exit 0
     fm_supervision_tick_entry "$STATE" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" park-check condition-poll-v1
     observed=0
     if fm_park_observation_to observation "${COND_ARGV[@]}"; then
@@ -422,20 +484,31 @@ cmd_run() {
         continue
       fi
     fi
-    bounded_run "$SPEC_CONDITION_TIMEOUT" "$out" "${COND_ARGV[@]}"
-    rc=$?
+    checked=0
+    if [ -n "$cached_rc" ] && [ "$now" -lt "$next_check" ]; then
+      rc=$cached_rc
+    else
+      bounded_run "$SPEC_CONDITION_TIMEOUT" "$out" "${COND_ARGV[@]}"
+      rc=$?
+      cached_rc=$rc
+      checked=1
+    fi
     previous_rc=$rc
     last_poll=$now
     if [ "$observed" -eq 1 ]; then previous_observation=$observation; else previous_observation=''; fi
     polls=$((polls + 1))
     now=$(date +%s)
+    # Rate limit from completion, not start: a slow query never causes a burst.
+    [ "$checked" -eq 0 ] || next_check=$((now + SPEC_CHECK_INTERVAL))
     if [ $(( now - SPEC_ARMED )) -ge "$SPEC_DEADLINE" ]; then
       emit_doc "$sid" never-true \
         "the condition never held for $SPEC_STABLE consecutive polls within ${SPEC_DEADLINE}s of arming" "$polls" '' "$out"
       exit 0
     fi
+    stability_guard "$sid" "$first_true" "$now" "$polls" "$out" || exit 0
     case "$rc" in
       0)
+        [ "$first_true" -ne 0 ] || first_true=$now
         consecutive_true=$((consecutive_true + 1))
         consecutive_err=0
         [ "$consecutive_true" -ge "$SPEC_STABLE" ] && break
@@ -446,10 +519,11 @@ cmd_run() {
         ;;
       *)
         consecutive_true=0
-        consecutive_err=$((consecutive_err + 1))
+        # A cached error is still unknown, not another failed external attempt.
+        [ "$checked" -eq 0 ] || consecutive_err=$((consecutive_err + 1))
         if [ "$consecutive_err" -ge "$SPEC_ERROR_BUDGET" ]; then
           emit_doc "$sid" condition-error \
-            "the condition exited $rc on $consecutive_err consecutive polls; the action was not run" "$polls" '' "$out"
+            "the condition exited $rc on $consecutive_err consecutive checks; the action was not run" "$polls" '' "$out"
           exit 0
         fi
         ;;
@@ -583,6 +657,8 @@ publish_spec() {
     printf 'condition_timeout=%s\n' "$SPEC_CONDITION_TIMEOUT"
     printf 'action_timeout=%s\n' "$SPEC_ACTION_TIMEOUT"
     printf 'error_budget=%s\n' "$SPEC_ERROR_BUDGET"
+    printf 'check_interval=%s\n' "$SPEC_CHECK_INTERVAL"
+    printf 'stabilize_timeout=%s\n' "$SPEC_STABILIZE_TIMEOUT"
     printf 'action_sha256=%s\n' "$action_hash"
     printf 'condition_argc=%s\n' "${#COND_ARGV[@]}"
     printf 'action_argc=%s\n' "${#ACT_ARGV[@]}"

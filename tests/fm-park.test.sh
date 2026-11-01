@@ -990,6 +990,10 @@ release_scenario_case() {  # <scenario>
   [ "$scenario" = off ] || printf 'on\n' > "$home/config/park-release"
   case "$scenario" in
     true) : > "$dir/result"; suspend_lib "$dir" fm_suspend_record "$meta" "park_when=file:$dir/result" ;;
+    rate-limited)
+      printf '#!/usr/bin/env bash\ntouch "%s"\nexit 1\n' "$dir/external-query" > "$dir/query.sh"
+      chmod +x "$dir/query.sh"
+      suspend_lib "$dir" fm_suspend_record "$meta" "park_when=cmd:$dir/query.sh" 'park_check_interval=120' ;;
     nm) suspend_lib "$dir" fm_suspend_record "$meta" 'mode=no-mistakes' ;;
     raw) suspend_lib "$dir" fm_suspend_record "$meta" 'harness=custom-launch' ;;
     reuse) : > "$dir/reuse-after-return" ;;
@@ -1067,6 +1071,7 @@ release_scenario_case() {  # <scenario>
       assert_absent "$dir/terminal-calls" 'failed qualification closed its endpoint'
       [ ! -e "$dir/calls" ] || suspend_assert_no_match '^return ' "$dir/calls" 'failed qualification returned a copy' ;;
   esac
+  [ "$scenario" != rate-limited ] || assert_absent "$dir/external-query" 'release does not duplicate the listener external query'
   pass "portable park release: $scenario"
 }
 
@@ -1470,6 +1475,155 @@ case_pickup_authority() {
   pass 'pickup rejects task workers and competing leases; failed admission is retryable; cancellation preserves explicit owner restoration and approvals'
 }
 
+# Rate-limited conditions have exactly one query owner. A second invocation
+# here is an error, modelling an API that will refuse duplicate requests.
+case_rate_limited_resume() {
+  H="$TMP_ROOT/h-rate-resume"; new_task "$H" rate-resume
+  local check="$H/check.sh" result
+  cat > "$check" <<'SH'
+#!/usr/bin/env bash
+[ ! -e "$1" ] || exit 2
+printf 'queried\n' > "$1"
+exit 0
+SH
+  chmod +x "$check"
+  handoff "$H/handoff.md" "cmd:$check $H/query"
+  FM_PARK_INTERVAL=0.1 park "$H" rate-resume --handoff "$H/handoff.md" --check-interval 300 >/dev/null || fail 'rate-limited park refused'
+  assert_absent "$H/query" 'registration does not spend an external precheck'
+  start_watch "$H"
+  wait_for_result "$H" when-park-rate-resume || fail 'cached true did not resume within the stable window'
+  result=$(first_result "$H" when-park-rate-resume)
+  assert_grep 'status: fired' "$result" 'cached true resumes the park'
+  assert_grep 'condition_polls: 2' "$result" 'resume takes exactly the two stable polls'
+  assert_grep 'rate-resume relaunch' "$H/control.log" 'the actual park resume action relaunches'
+  assert_equals 1 "$(wc -l < "$H/query" | tr -d ' ')" 'only one external query was issued'
+  pass 'runner-owned rate limit resumes a park within the stable window'
+}
+
+case_check_interval_refusals() {
+  H="$TMP_ROOT/h-check-refuse"; new_task "$H" check-refuse
+  handoff "$H/handoff.md" 'cmd:true'
+  local value rc
+  for value in 301 999999999999999999999999 '' junk 01 -1; do
+    rc=0
+    park "$H" check-refuse --handoff "$H/handoff.md" --check-interval "$value" >"$H/out" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "park accepted check interval '$value'"
+    assert_grep '1..300' "$H/out" 'park explains the maximum check interval'
+    rc=0
+    FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm refusal --check-interval "$value" --condition true --action true >"$H/out" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "when accepted check interval '$value'"
+    assert_grep '1..300' "$H/out" 'runner explains the maximum check interval'
+  done
+  assert_absent "$H/control.log" 'invalid intervals never stop an agent'
+  handoff "$H/handoff.md" "file:$H/done"
+  if park "$H" check-refuse --handoff "$H/handoff.md" --check-interval 120 >"$H/out" 2>&1; then fail 'non-cmd rate limit accepted'; fi
+  assert_grep 'only for cmd:' "$H/out" 'rate limit names supported condition kind'
+  if FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm refusal --interval 301 --check-interval 120 --condition true --action true >"$H/out" 2>&1; then fail 'poll interval bypassed external cadence maximum'; fi
+  assert_grep 'at most 300' "$H/out" 'poll interval cannot evade the check bound'
+  pass 'invalid external cadences refuse before registering or stopping'
+}
+
+case_unstable_condition_alarm() {
+  H="$TMP_ROOT/h-unstable"; mkdir -p "$H/state"; fm_test_track_procevent_home "$H"
+  local result check="$H/check.sh"
+  cat > "$check" <<'SH'
+#!/usr/bin/env bash
+if [ ! -e "$1" ]; then : > "$1"; exit 0; fi
+exit 1
+SH
+  chmod +x "$check"
+  FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm unstable --interval 0.1 --stabilize-timeout 2 --deadline 120 \
+    --condition "$check" "$H/seen" --action "$CONTROL" unstable relaunch >/dev/null || fail 'unstable watch refused'
+  start_watch "$H"
+  wait_for_result "$H" when-unstable || fail 'condition that cannot stabilise did not alarm'
+  result=$(first_result "$H" when-unstable)
+  assert_grep 'status: condition-error' "$result" 'unstable condition uses terminal error alarm'
+  assert_grep 'did not stabilise' "$result" 'alarm identifies the unstable condition'
+  assert_absent "$H/control.log" 'instability never authorizes the action'
+  wait_for_wake "$H" when-unstable || fail 'unstable outcome never reached supervisor'
+  FM_HOME="$H" "$ROOT/bin/fm-procevent.sh" handled when-unstable 1 >/dev/null
+  FM_HOME="$H" "$ROOT/bin/fm-procevent.sh" reconcile >/dev/null
+  local -a results=("$H/state/procevent-inbox/when-unstable."*.result)
+  assert_equals 1 "${#results[@]}" 'one terminal alarm occurrence, not one per poll'
+  pass 'first-true then forever-false alarms once before its deadline'
+}
+
+case_slow_stability_window() {
+  H="$TMP_ROOT/h-slow-stable"; mkdir -p "$H/state" "$H/bin"; fm_test_track_procevent_home "$H"
+  printf '1000000000\n' > "$H/clock"
+  cat > "$H/bin/date" <<'SH'
+#!/usr/bin/env bash
+if [ "$*" = +%s ]; then read -r now < "$FM_TEST_CLOCK"; printf '%s\n' "$now"; else exec /bin/date "$@"; fi
+SH
+  cat > "$H/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+if [ "$*" = 900 ]; then
+  read -r now < "$FM_TEST_CLOCK"; printf '%s\n' "$((now + 900))" > "$FM_TEST_CLOCK"
+else exec /bin/sleep "$@"; fi
+SH
+  chmod +x "$H/bin/date" "$H/bin/sleep"
+  PATH="$H/bin:$PATH" FM_TEST_CLOCK="$H/clock" FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm slow --interval 900 --stable 2 --deadline 10000 \
+    --condition true --action "$CONTROL" slow relaunch >/dev/null || fail 'valid slow watch refused'
+  # Exercise an old v1 record, not just the freshly materialised default.
+  local spec="$H/state/when/when-slow.spec" hash
+  awk '!/^check_interval=/ && !/^stabilize_timeout=/' "$spec" > "$H/legacy"
+  chmod 600 "$H/legacy"; mv "$H/legacy" "$spec"
+  # shellcheck disable=SC2016 # Expansion belongs to the isolated reader.
+  hash=$(bash -c '. "$1/bin/fm-pr-lib.sh"; fm_pr_sha256 "$2"' _ "$ROOT" "$spec") || fail 'cannot bind legacy fixture'
+  printf 'fm-when-trust-v1\n%s\n' "$hash" > "$H/state/when/when-slow.trust"
+  PATH="$H/bin:$PATH" FM_TEST_CLOCK="$H/clock" FM_HOME="$H" FAKE_CONTROL_LOG="$H/control.log" \
+    "$ROOT/bin/fm-procevent-when.sh" run when-slow > "$H/result"
+  assert_grep 'status: fired' "$H/result" 'legacy slow watch has room for its configured stable window'
+  assert_grep 'condition_polls: 2' "$H/result" 'slow watch fires after two real observations'
+  if FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm too-short --interval 60 --stable 2 --stabilize-timeout 60 \
+    --condition true --action true >"$H/out" 2>&1; then fail 'impossible stabilisation window accepted'; fi
+  assert_grep 'must exceed interval' "$H/out" 'explicit impossible bound is refused'
+  pass 'default stability bound accommodates slow legacy watches and rejects impossible explicit windows'
+}
+
+case_cached_error_recovers() {
+  H="$TMP_ROOT/h-cache-error"; mkdir -p "$H/state"; fm_test_track_procevent_home "$H"
+  cat > "$H/check.sh" <<'SH'
+#!/usr/bin/env bash
+n=0
+[ ! -f "$1" ] || read -r n < "$1"
+n=$((n + 1)); printf '%s\n' "$n" > "$1"
+[ "$n" -gt 1 ] || exit 2
+exit 0
+SH
+  chmod +x "$H/check.sh"
+  FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm cache-error --interval 0.1 --check-interval 2 --error-budget 2 \
+    --condition "$H/check.sh" "$H/count" --action "$CONTROL" cache-error relaunch >/dev/null || fail 'cache-error watch refused'
+  start_watch "$H"
+  wait_for_result "$H" when-cache-error || fail 'one transient external error never recovered'
+  assert_grep 'status: fired' "$(first_result "$H" when-cache-error)" 'cached errors do not exhaust the real-check budget'
+  assert_equals 2 "$(cat "$H/count")" 'one failed query and one successful retry suffice'
+  pass 'single cached error remains unknown without being counted as multiple failed queries'
+}
+
+case_real_verdict_resets_cache() {
+  local verdict
+  for verdict in 1 2; do
+    H="$TMP_ROOT/h-real-$verdict"; mkdir -p "$H/state"; fm_test_track_procevent_home "$H"
+    cat > "$H/check.sh" <<'SH'
+#!/usr/bin/env bash
+n=0
+[ ! -f "$1" ] || read -r n < "$1"
+n=$((n + 1)); printf '%s\n' "$n" > "$1"
+[ "$n" -ne 2 ] || exit "$2"
+exit 0
+SH
+    chmod +x "$H/check.sh"
+    FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm "real-$verdict" --interval 1 --check-interval 1 --stable 3 \
+      --condition "$H/check.sh" "$H/count" "$verdict" --action "$CONTROL" "real-$verdict" relaunch >/dev/null || fail 'real-verdict watch refused'
+    start_watch "$H"
+    wait_for_result "$H" "when-real-$verdict" || fail 'real verdict sequence did not finish'
+    assert_grep 'status: fired' "$(first_result "$H" "when-real-$verdict")" 'watch eventually stabilises'
+    assert_equals 5 "$(cat "$H/count")" 'real false or error resets the earlier true streak'
+  done
+  pass 'a real false or error replaces cached true, never latches it'
+}
+
 # pool_param_cases <function> <value>...: fm_run_case_pool runs bare function
 # names, so each value of a parameterized case gets its own argument-free
 # wrapper, appended to POOL_CASES in value order.
@@ -1491,7 +1645,9 @@ pool_param_cases() {
 # the ones that sit through real deadlines first. FM_PARK_CASE_JOBS overrides
 # the concurrency, which defaults to the host's processor count capped at four;
 # 1 runs the cases serially.
-POOL_CASES+=(case_release_timeout)
+POOL_CASES+=(case_release_timeout case_rate_limited_resume case_check_interval_refusals
+  case_unstable_condition_alarm case_real_verdict_resets_cache case_cached_error_recovers
+  case_slow_stability_window)
 pool_param_cases save_timeout_case bundle import clean quiet evidence
 POOL_CASES+=(case_deadline_wakes_supervisor case_resume_and_repark
   case_superseded_resume case_failed_relaunch case_notification_failure)
@@ -1503,7 +1659,7 @@ POOL_CASES+=(case_handoff_validation case_park_refuses_missing_handoff case_queu
   case_kind_default_deadlines case_park_time_refusal case_self_park_detached_exit
   case_self_park_by_task_id case_self_park_exit_failure case_claude_background_refusal
   case_other_harness_background case_copy_free_qualification case_wait_age)
-pool_param_cases release_scenario_case off true nm raw dependency symlink route job bad-endpoint lease kill return reuse park stop poll
+pool_param_cases release_scenario_case off true rate-limited nm raw dependency symlink route job bad-endpoint lease kill return reuse park stop poll
 POOL_CASES+=(case_release_entrypoint case_resume_before_release)
 pool_param_cases save_refusal_case profile branch mktemp jq rev-parse
 pool_param_cases hard_kill_case poll resume control
