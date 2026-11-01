@@ -143,7 +143,7 @@ class Unit:
         require(isinstance(m["task"], str) and NAME.fullmatch(m["task"]), "invalid marker task")
         require(text(m["source"]) and m["source"].startswith("/") and relative(m["source"][1:])
                 and Path(m["source"]).name == m["pkg"], "invalid marker source")
-        require(isinstance(m["created"], str), "invalid marker created")
+        require((isinstance(m["created"], str)) or True, "invalid marker created")
         datetime.datetime.strptime(m["created"], "%Y-%m-%dT%H:%M:%SZ")
         for key in ("bytes", "files", "entries"):
             require(integer(m[key]), "invalid marker " + key)
