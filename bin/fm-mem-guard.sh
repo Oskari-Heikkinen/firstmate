@@ -11,9 +11,9 @@
 #           Windows readings at least 60s and at most win_stale_max_s apart
 #           (win_paging_span_s; empty until two such readings exist), the WSL
 #           VM's own page faults per second averaged the same way
-#           (win_vm_faults_ps, win_vm_paging_span_s), the paging attributable to
-#           the VM (win_vm_pages_in_ps, see Levels), win_vm_source (`vmmemWSL pid
-#           <pid>` or `unknown: <reason>`), and the
+#           (win_vm_faults_ps, win_vm_paging_span_s), the upper bound on the
+#           VM's paging (win_vm_pages_in_max_ps, see Levels), win_vm_source
+#           (`vmmemWSL pid <pid>` or `unknown: <reason>`), and the
 #           non-paged pool (win_*), Linux MemAvailable, page cache, swap, swap-out
 #           rate over at least the last 60s of ticks, and memory pressure
 #           (linux_*), and win_source, which is `powershell`,
@@ -44,6 +44,10 @@
 #             critical also asks main to park or finish waiting workers and
 #                      stop heavy jobs.
 #           Every level at or above one step includes the lower steps' responses.
+#           VM paging share: when it has been unknown for win_stale_max_s, a
+#           primary home prints one notice naming why (whatever the level), and
+#           one `measured again` line when it is measured again; the events log
+#           gets one line at each of those changes, machine-wide.
 #           Wake: in a primary home, a level at or above wake_level (default park)
 #           or an abnormal Windows non-paged pool prints one wake line when it
 #           starts, again after rewake_s while it stays or at once when the level
@@ -75,19 +79,24 @@
 # only after clear_samples consecutive samples grade below the recorded one; a
 # higher level is recorded at once.
 #
-# Windows paging grades park, refuse and critical only on paging attributable to
-# the WSL VM: win_vm_pages_in_ps, the lower of system-wide pages input/s and the
-# vmmemWSL process's page faults/s. Every hard fault on VM memory is a vmmemWSL
-# fault that reads at least one page, so this never falls below the VM's hard
-# faults, while native Windows paging with a quiet VM drops out of it. vmmemWSL's
-# own fault count alone is not used, because demand-zero faults on memory the
-# guest takes back dominate it. System-wide pages input on its own grades at most
-# warn, on the first win_pages_in_ps threshold, as a Windows-side pressure
-# signal. When the VM's faults are unknown (no single vmmemWSL process in the
-# reading, unreadable vmmemWSL fields, no rate for it yet, or a reading written
-# without it) the VM's share cannot be bounded below the system-wide rate, so that
-# rate grades on the full ladder as before and the reason says the VM share is
-# unknown and why.
+# Windows paging grades park, refuse and critical only on win_vm_pages_in_max_ps,
+# an upper bound on the WSL VM's paging: the lower of the vmmemWSL process's page
+# faults/s and system-wide pages input/s, both measured from one baseline reading
+# over one span (the vm record). Every hard fault on VM memory is a vmmemWSL fault
+# that reads at least one page, so the bound never falls below the VM's hard faults,
+# and native Windows paging with a quiet VM drops out of it. It is a bound, not a
+# measurement: no unprivileged Windows counter attributes hard faults to the VM, and
+# vmmemWSL's faults are mostly demand-zero faults on memory the guest takes back, so
+# heavy native paging while the VM churns its memory can still grade park and above
+# with no VM disk paging (a known over-grade; the exact rate needs a kernel trace).
+# System-wide pages input on its own grades at most warn, on the first
+# win_pages_in_ps threshold, as a Windows-side pressure signal. The VM's share is
+# unknown when the reading has no single vmmemWSL process, its vmmemWSL fields are
+# unreadable, vmmemWSL has no rate yet, the vm record was not written with the
+# current Windows reading, or its span differs from the system-wide rate's by more
+# than 5s (baselines from different readings). Then the VM's share cannot be bounded
+# below the system-wide rate, so that rate grades on the full ladder as before, and
+# the reason always names the unknown share and why, even when nothing grades.
 #
 # Thresholds and timings: the optional `memory_guard` object of the machine
 # admission rules file ${FM_ADMISSION_RULES:-$HOME/.config/fm-admission/rules.json};
@@ -102,23 +111,28 @@
 #                <in/s> <out/s> <span_s>`: the raw Windows counters (pages are
 #                cumulative 32-bit counts), the earlier reading the rates are
 #                measured from, and the rates; `-` where none
-#   vm           `<epoch> <pid> <faults> <perf_time> <perf_freq> <base_faults>
-#                <base_perf> <faults/s> <span_s>`: the vmmemWSL process's cumulative
-#                32-bit page-fault count from the same reading as `windows` (same
-#                epoch), its baseline from the same pid and perf frequency, and the
-#                rate; `-` where none; the pid is `-` when the reading had no single
-#                vmmemWSL process and `?` when its vmmemWSL fields were unreadable
+#   vm           `<epoch> <pid> <faults> <pages_in> <perf_time> <perf_freq>
+#                <base_faults> <base_in> <base_perf> <faults/s> <in/s> <span_s>`: the
+#                vmmemWSL process's cumulative 32-bit page-fault count and the
+#                system-wide pages input count from the same reading as `windows`
+#                (same epoch), one baseline row from the same pid and perf frequency,
+#                and both rates over that one span; `-` where none; the pid is `-`
+#                when the reading had no single vmmemWSL process and `?` when its
+#                vmmemWSL fields were unreadable
+#   vm-unknown   `<epoch>` the VM's paging share became unknown; present while unknown
 #   swapout      `<epoch> <pswpout> [<epoch> <pswpout>]` from /proc/vmstat, newest
 #                first; a tick adds a pair only once the newest is 60s old, so
 #                the swap-out rate always spans at least 60s
 #   samples.log  one line per tick, trimmed to log_max_lines
-#   events.log   one line per level change, park action, degraded sample, or sample
-#                whose VM paging share is unknown, trimmed likewise
+#   events.log   one line per level change, park action, degraded sample, and VM
+#                paging share becoming unknown or measured again, trimmed likewise
 #   lock/        mkdir lock around record writes; win.lock/ around the powershell call
 # Per-home records, written only here: state/.mem-guard-park (`<last park epoch>
 # [<id where the next pass starts after an unfinished one>]`),
 # state/.mem-guard-wake (`<last wake epoch> <level index woken for, 0 when only the
 # pool> <pool notice 0|1>`, present while main has an open memory notice),
+# state/.mem-guard-vm-notice (`<epoch>`, present while main has an open notice that
+# the VM's paging share is unknown),
 # state/mem-guard.check.sh.
 #
 # Test seams: FM_PROC_ROOT_OVERRIDE (default /proc), FM_MEM_GUARD_POWERSHELL
@@ -140,6 +154,7 @@ GUARD_DIR=${FM_MEM_GUARD_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fm-mem-guard
 LEVEL_FILE="$GUARD_DIR/level"
 WIN_FILE="$GUARD_DIR/windows"
 VM_FILE="$GUARD_DIR/vm"
+VM_UNKNOWN_FILE="$GUARD_DIR/vm-unknown"
 SWAPOUT_FILE="$GUARD_DIR/swapout"
 SAMPLES_LOG="$GUARD_DIR/samples.log"
 EVENTS_LOG="$GUARD_DIR/events.log"
@@ -169,6 +184,7 @@ R_linux_swapout_mibps_min=1
 R_win_nonpaged_pool_mib=2048                   # abnormal Windows non-paged pool at or above; 0 grades none
 R_wake_level=park
 RATE_WINDOW_S=60
+VM_SPAN_SKEW_S=5                               # vm and windows rate spans differ by at most this when paired
 PAGE_COUNTER_WRAP=4294967296
 
 THRESHOLD_KEYS="win_available_mib win_pages_in_ps linux_available_mib linux_swap_used_mib linux_psi_full_avg10"
@@ -323,41 +339,45 @@ win_cache_line() {
   printf '%s %s %s %s %s %s %s %s\n' "$epoch" "$2" "$b_in" "$b_out" "$b_perf" "$in_ps" "$out_ps" "$span"
 }
 
-# vm_cache_line <epoch> <pid> <faults> <perf_time> <perf_freq>: prints the vm record
-# line, choosing its baseline the way win_cache_line does, from readings of the same
-# vmmemWSL pid only, so a restarted VM leaves no rate until it has its own baseline.
+# vm_cache_line <epoch> <pid> <faults> <pages_in> <perf_time> <perf_freq>: prints the
+# vm record line, choosing its baseline the way win_cache_line does, from readings of
+# the same vmmemWSL pid only, so a restarted VM leaves no rate until it has its own
+# baseline. The record carries the system-wide pages input count of the same reading,
+# so the VM's fault rate and the pages input rate it is bounded by are both measured
+# from one baseline row over one span.
 vm_cache_line() {
-  local epoch=$1 pid=$2 faults=$3 perf=$4 freq=$5 b_f=- b_perf=- rate=- span=- d_f d_perf
+  local epoch=$1 pid=$2 faults=$3 pages_in=$4 perf=$5 freq=$6 b_f=- b_in=- b_perf=- f_ps=- in_ps=- span=- d_f d_in d_perf
   local -a prev=()
   case "$pid" in
   - | '?')
-    printf '%s %s - - - - - - -\n' "$epoch" "$pid"
+    printf '%s %s - - - - - - - - - -\n' "$epoch" "$pid"
     return 0
     ;;
   esac
   { read -ra prev <"$VM_FILE"; } 2>/dev/null
-  if [ "${#prev[@]}" = 9 ] && [ "${prev[1]}" = "$pid" ] && [ "${prev[4]}" = "$freq" ] && is_uint "${prev[2]}" && is_uint "${prev[3]}"; then
-    b_f=${prev[2]} b_perf=${prev[3]}
-    if [ $((perf - prev[3])) -lt $((RATE_WINDOW_S * freq)) ] && is_uint "${prev[5]}" && is_uint "${prev[6]}" \
-      && [ $((perf - prev[6])) -le $((R_win_stale_max_s * freq)) ]; then
-      b_f=${prev[5]} b_perf=${prev[6]}
+  if [ "${#prev[@]}" = 12 ] && [ "${prev[1]}" = "$pid" ] && [ "${prev[5]}" = "$freq" ] && is_uint "${prev[2]}" && is_uint "${prev[3]}" && is_uint "${prev[4]}"; then
+    b_f=${prev[2]} b_in=${prev[3]} b_perf=${prev[4]}
+    if [ $((perf - prev[4])) -lt $((RATE_WINDOW_S * freq)) ] && is_uint "${prev[6]}" && is_uint "${prev[7]}" && is_uint "${prev[8]}" \
+      && [ $((perf - prev[8])) -le $((R_win_stale_max_s * freq)) ]; then
+      b_f=${prev[6]} b_in=${prev[7]} b_perf=${prev[8]}
     fi
     if [ "$perf" -le "$b_perf" ]; then
-      b_f=- b_perf=-
+      b_f=- b_in=- b_perf=-
     else
       d_perf=$((perf - b_perf))
       span=$((d_perf / freq))
       if [ "$span" -ge "$RATE_WINDOW_S" ] && [ "$span" -le "$R_win_stale_max_s" ]; then
-        d_f=$((faults - b_f))
+        d_f=$((faults - b_f)) d_in=$((pages_in - b_in))
         [ "$d_f" -ge 0 ] || d_f=$((d_f + PAGE_COUNTER_WRAP))
+        [ "$d_in" -ge 0 ] || d_in=$((d_in + PAGE_COUNTER_WRAP))
         d_perf=$((d_perf / (freq / 1000)))
-        rate=$((d_f * 1000 / d_perf))
+        f_ps=$((d_f * 1000 / d_perf)) in_ps=$((d_in * 1000 / d_perf))
       else
         span=-
       fi
     fi
   fi
-  printf '%s %s %s %s %s %s %s %s %s\n' "$epoch" "$pid" "$faults" "$perf" "$freq" "$b_f" "$b_perf" "$rate" "$span"
+  printf '%s %s %s %s %s %s %s %s %s %s %s %s\n' "$epoch" "$pid" "$faults" "$pages_in" "$perf" "$freq" "$b_f" "$b_in" "$b_perf" "$f_ps" "$in_ps" "$span"
 }
 
 # win_refresh: run powershell once (bounded) and write the cache. Sets WIN_ERR on failure.
@@ -401,7 +421,7 @@ win_refresh() {
   # The vm record goes first: a reader that finds the new windows line with the old
   # vm line sees different epochs and treats the VM as unknown, never as quiet.
   # shellcheck disable=SC2015 # a failed vm write leaves the old line, which reads as unknown
-  vm_cache_line "$t" "${f[8]}" "${f[9]}" "${f[10]}" "${f[11]}" >"$VM_FILE.tmp.$$" && mv -f "$VM_FILE.tmp.$$" "$VM_FILE" || rm -f "$VM_FILE.tmp.$$"
+  vm_cache_line "$t" "${f[8]}" "${f[9]}" "${f[3]}" "${f[10]}" "${f[11]}" >"$VM_FILE.tmp.$$" && mv -f "$VM_FILE.tmp.$$" "$VM_FILE" || rm -f "$VM_FILE.tmp.$$"
   win_cache_line "$t" "${f[*]:0:8}" >"$WIN_FILE.tmp.$$" && mv -f "$WIN_FILE.tmp.$$" "$WIN_FILE"
 }
 
@@ -416,7 +436,7 @@ win_line_epoch() {
 win_read() {
   local fresh=$1 line epoch age t
   WIN_TOTAL_KIB='' WIN_FREE_KIB='' WIN_AVAIL_MIB='' WIN_PAGES_IN_PS='' WIN_PAGES_OUT_PS='' WIN_RATE_SPAN_S='' WIN_POOL_MIB='' WIN_SOURCE=''
-  WIN_VM_FAULTS_PS='' WIN_VM_SPAN_S='' WIN_VM_PAGES_IN_PS='' WIN_VM_SOURCE=''
+  WIN_VM_FAULTS_PS='' WIN_VM_IN_PS='' WIN_VM_SPAN_S='' WIN_VM_PAGES_IN_MAX_PS='' WIN_VM_SOURCE=''
   t=$(now)
   line=$(cat "$WIN_FILE" 2>/dev/null) || line=
   epoch=$(win_line_epoch "$line")
@@ -454,26 +474,32 @@ win_read() {
 }
 
 # vm_read <windows epoch>: sets WIN_VM_* from the vm record written with that
-# Windows reading. WIN_VM_PAGES_IN_PS is the lower of the system-wide pages
-# input rate and the VM's fault rate, or the system-wide rate itself when the
-# VM's rate is unknown, which WIN_VM_SOURCE then names.
+# Windows reading. WIN_VM_PAGES_IN_MAX_PS is the upper bound on the VM's paging: the
+# lower of the VM's fault rate and the system-wide pages input rate, both from the vm
+# record's one baseline row. The VM's share is unknown, named in WIN_VM_SOURCE, unless
+# that record has rates and its span matches the windows record's within
+# VM_SPAN_SKEW_S, so the bound and the system-wide rate it caps at warn describe the
+# same interval.
 vm_read() {
   local -a f=()
   { read -ra f <"$VM_FILE"; } 2>/dev/null
-  if [ "${#f[@]}" != 9 ] || [ "${f[0]}" != "$1" ]; then
+  if [ "${#f[@]}" != 12 ] || [ "${f[0]}" != "$1" ]; then
     WIN_VM_SOURCE="unknown: no vmmemWSL reading taken with this Windows reading"
   elif [ "${f[1]}" = - ]; then
     WIN_VM_SOURCE="unknown: no single vmmemWSL process in the Windows reading"
   elif [ "${f[1]}" = '?' ]; then
     WIN_VM_SOURCE="unknown: the Windows reading's vmmemWSL fields were missing or not numbers"
-  elif ! is_uint "${f[7]}" || ! is_uint "${f[8]}"; then
+  elif ! is_uint "${f[9]}" || ! is_uint "${f[10]}" || ! is_uint "${f[11]}"; then
     WIN_VM_SOURCE="unknown: vmmemWSL pid ${f[1]} has no fault rate yet (needs two of its readings 60-${R_win_stale_max_s}s apart)"
+  elif [ -z "$WIN_RATE_SPAN_S" ]; then
+    WIN_VM_SOURCE="unknown: vmmemWSL pid ${f[1]} has a rate but the Windows pages input has none to pair it with"
+  elif [ $((f[11] - WIN_RATE_SPAN_S)) -gt "$VM_SPAN_SKEW_S" ] || [ $((WIN_RATE_SPAN_S - f[11])) -gt "$VM_SPAN_SKEW_S" ]; then
+    WIN_VM_SOURCE="unknown: vmmemWSL pid ${f[1]} rate spans ${f[11]}s but the Windows pages input rate spans ${WIN_RATE_SPAN_S}s (baselines from different readings)"
   else
-    WIN_VM_FAULTS_PS=${f[7]} WIN_VM_SPAN_S=${f[8]} WIN_VM_SOURCE="vmmemWSL pid ${f[1]}"
+    WIN_VM_FAULTS_PS=${f[9]} WIN_VM_IN_PS=${f[10]} WIN_VM_SPAN_S=${f[11]} WIN_VM_SOURCE="vmmemWSL pid ${f[1]}"
+    WIN_VM_PAGES_IN_MAX_PS=${f[10]}
+    [ "${f[9]}" -ge "${f[10]}" ] || WIN_VM_PAGES_IN_MAX_PS=${f[9]}
   fi
-  [ -n "$WIN_PAGES_IN_PS" ] || return 0
-  WIN_VM_PAGES_IN_PS=$WIN_PAGES_IN_PS
-  if [ -n "$WIN_VM_FAULTS_PS" ] && [ "$WIN_VM_FAULTS_PS" -lt "$WIN_PAGES_IN_PS" ]; then WIN_VM_PAGES_IN_PS=$WIN_VM_FAULTS_PS; fi
 }
 
 meminfo_kib() { # <field>
@@ -530,7 +556,7 @@ print_sample() {
   printf 'win_paging_span_s=%s\n' "$WIN_RATE_SPAN_S"
   printf 'win_vm_faults_ps=%s\n' "$WIN_VM_FAULTS_PS"
   printf 'win_vm_paging_span_s=%s\n' "$WIN_VM_SPAN_S"
-  printf 'win_vm_pages_in_ps=%s\n' "$WIN_VM_PAGES_IN_PS"
+  printf 'win_vm_pages_in_max_ps=%s\n' "$WIN_VM_PAGES_IN_MAX_PS"
   printf 'win_vm_source=%s\n' "$WIN_VM_SOURCE"
   printf 'win_nonpaged_pool_mib=%s\n' "$WIN_POOL_MIB"
   printf 'win_source=%s\n' "$WIN_SOURCE"
@@ -561,18 +587,25 @@ grade() {
   g=$(grade_signal "$WIN_AVAIL_MIB" below "$T_win_available_mib")
   [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Windows available ${WIN_AVAIL_MIB} MiB ($(level_name "$g"))"
   [ "$g" -le "$GRADE" ] || GRADE=$g
+  g=0
   if [ -n "$WIN_VM_FAULTS_PS" ]; then
-    # The VM's share grades the full ladder; system-wide paging beyond it grades at most warn.
-    g=$(grade_signal "$WIN_VM_PAGES_IN_PS" above "$T_win_pages_in_ps")
+    # The upper bound on VM paging grades the full ladder; system-wide paging beyond it grades at most warn.
+    g=$(grade_signal "$WIN_VM_PAGES_IN_MAX_PS" above "$T_win_pages_in_ps")
     if [ "$g" -gt 0 ]; then
-      GRADE_REASONS="$GRADE_REASONS; WSL VM paging at most ${WIN_VM_PAGES_IN_PS}/s (vmmemWSL faults ${WIN_VM_FAULTS_PS}/s, Windows pages input ${WIN_PAGES_IN_PS}/s) averaged over ${WIN_RATE_SPAN_S}s ($(level_name "$g"))"
+      GRADE_REASONS="$GRADE_REASONS; WSL VM paging upper bound ${WIN_VM_PAGES_IN_MAX_PS}/s (the lower of vmmemWSL faults ${WIN_VM_FAULTS_PS}/s and Windows pages input ${WIN_VM_IN_PS}/s over the same ${WIN_VM_SPAN_S}s) ($(level_name "$g"))"
     elif [ "$(grade_signal "$WIN_PAGES_IN_PS" above "$T_win_pages_in_ps")" -gt 0 ]; then
       g=1
-      GRADE_REASONS="$GRADE_REASONS; Windows pages input ${WIN_PAGES_IN_PS}/s averaged over ${WIN_RATE_SPAN_S}s, WSL VM at most ${WIN_VM_PAGES_IN_PS}/s (warn: Windows-side paging only grades warn)"
+      GRADE_REASONS="$GRADE_REASONS; Windows pages input ${WIN_PAGES_IN_PS}/s averaged over ${WIN_RATE_SPAN_S}s, WSL VM paging upper bound ${WIN_VM_PAGES_IN_MAX_PS}/s (warn: Windows-side paging only grades warn)"
     fi
-  else
+  elif [ -n "$WIN_VM_SOURCE" ]; then
+    # Unknown VM share: system-wide paging grades the full ladder as VM paging, and the
+    # reason always names the unknown share, even when nothing grades.
     g=$(grade_signal "$WIN_PAGES_IN_PS" above "$T_win_pages_in_ps")
-    [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Windows pages input ${WIN_PAGES_IN_PS}/s averaged over ${WIN_RATE_SPAN_S}s, graded as WSL VM paging because the VM's share is ${WIN_VM_SOURCE} ($(level_name "$g"))"
+    if [ -n "$WIN_PAGES_IN_PS" ]; then
+      GRADE_REASONS="$GRADE_REASONS; Windows pages input ${WIN_PAGES_IN_PS}/s averaged over ${WIN_RATE_SPAN_S}s, graded as WSL VM paging because the VM's share is ${WIN_VM_SOURCE} ($(level_name "$g"))"
+    else
+      GRADE_REASONS="$GRADE_REASONS; the WSL VM's paging share is ${WIN_VM_SOURCE}; no Windows pages input rate yet (ungraded)"
+    fi
   fi
   [ "$g" -le "$GRADE" ] || GRADE=$g
   if [ -n "$WIN_POOL_MIB" ] && [ "$R_win_nonpaged_pool_mib" -gt 0 ] && [ "$WIN_POOL_MIB" -ge "$R_win_nonpaged_pool_mib" ]; then
@@ -772,8 +805,55 @@ wake_decide() {
   fi
 }
 
+# vm_unknown_track <epoch>: keeps the machine-wide vm-unknown record (`<epoch the VM's
+# paging share became unknown>`) while every reading leaves it unknown, logging one event
+# when that starts and one when it is measured again, and sets VM_UNKNOWN_SINCE (empty
+# while the share is measured). Without a Windows reading it holds the record as it was.
+# A record it cannot write reads as unknown since 0, so the notice is not held back.
+vm_unknown_track() {
+  local t=$1 since=
+  VM_UNKNOWN_SINCE=
+  case "$WIN_VM_SOURCE" in
+  unknown:*)
+    { read -r since <"$VM_UNKNOWN_FILE"; } 2>/dev/null
+    if ! is_uint "$since" || [ "$since" -gt "$t" ]; then
+      since=$t
+      printf '%s\n' "$t" >"$VM_UNKNOWN_FILE" 2>/dev/null || since=0
+      event "WSL VM paging share ${WIN_VM_SOURCE}; system-wide Windows paging grades as WSL VM paging until it is measured again"
+    fi
+    VM_UNKNOWN_SINCE=$since
+    ;;
+  '') VM_UNKNOWN_SINCE=$({ read -r since <"$VM_UNKNOWN_FILE"; } 2>/dev/null && is_uint "$since" && printf '%s' "$since") ;;
+  *)
+    if [ -e "$VM_UNKNOWN_FILE" ]; then
+      rm -f "$VM_UNKNOWN_FILE"
+      event "WSL VM paging share measured again: $WIN_VM_SOURCE"
+    fi
+    ;;
+  esac
+}
+
+# vm_notice_decide <epoch>: sets vm_wake to the line main gets now about the VM's paging
+# share, or empty. Once per occurrence: when the share has been unknown for
+# win_stale_max_s (a healthy VM has its rate well within that, so a restart or a first
+# reading never alarms) it notifies and keeps state/.mem-guard-vm-notice, and when the
+# share is measured again it removes that record with one `measured again` line.
+vm_notice_decide() {
+  local t=$1 notice="$STATE/.mem-guard-vm-notice"
+  vm_wake=
+  if [ -n "$VM_UNKNOWN_SINCE" ]; then
+    if [ ! -e "$notice" ] && [ $((t - VM_UNKNOWN_SINCE)) -ge "$R_win_stale_max_s" ]; then
+      printf '%s\n' "$t" >"$notice" 2>/dev/null
+      vm_wake="memory guard: the WSL VM's paging share has been unknown for $((t - VM_UNKNOWN_SINCE))s (${WIN_VM_SOURCE:-no Windows reading now}), so system-wide Windows paging grades park and above as WSL VM paging until it is measured again (bin/fm-mem-guard.sh status)"
+    fi
+  elif [ -e "$notice" ] && [ -n "$WIN_VM_FAULTS_PS" ]; then
+    rm -f "$notice"
+    vm_wake="memory guard: the WSL VM's paging share is measured again ($WIN_VM_SOURCE)"
+  fi
+}
+
 cmd_tick() {
-  local check=0 t prev_i new_i below reasons wake
+  local check=0 t prev_i new_i below reasons wake vm_wake
   [ "${1:-}" = --check ] && check=1
   TICK_START=$(date +%s)
   guard_dir_ready || { echo "error: cannot create $GUARD_DIR" >&2; exit 1; }
@@ -795,22 +875,22 @@ cmd_tick() {
   fi
   reasons=${GRADE_REASONS:-all signals within limits}
   printf '%s %s %s %s\n' "$(level_name "$new_i")" "$t" "$below" "$reasons" >"$LEVEL_FILE.tmp.$$" && mv -f "$LEVEL_FILE.tmp.$$" "$LEVEL_FILE"
-  append_bounded "$SAMPLES_LOG" "$t level=$(level_name "$new_i") graded=$(level_name "$GRADE") win_avail_mib=${WIN_AVAIL_MIB:--} win_pages_in_ps=${WIN_PAGES_IN_PS:--} win_pages_out_ps=${WIN_PAGES_OUT_PS:--} win_paging_span_s=${WIN_RATE_SPAN_S:--} win_vm_faults_ps=${WIN_VM_FAULTS_PS:--} win_vm_pages_in_ps=${WIN_VM_PAGES_IN_PS:--} win_pool_mib=${WIN_POOL_MIB:--} linux_avail_mib=${LINUX_AVAIL_MIB:--} linux_cache_mib=${LINUX_CACHE_MIB:--} linux_swap_used_mib=${LINUX_SWAP_USED_MIB:--} swapout_mibps=${LINUX_SWAPOUT_MIBPS:--} psi_full=${LINUX_PSI_FULL:--} win_source=${WIN_SOURCE// /_}"
+  append_bounded "$SAMPLES_LOG" "$t level=$(level_name "$new_i") graded=$(level_name "$GRADE") win_avail_mib=${WIN_AVAIL_MIB:--} win_pages_in_ps=${WIN_PAGES_IN_PS:--} win_pages_out_ps=${WIN_PAGES_OUT_PS:--} win_paging_span_s=${WIN_RATE_SPAN_S:--} win_vm_faults_ps=${WIN_VM_FAULTS_PS:--} win_vm_pages_in_max_ps=${WIN_VM_PAGES_IN_MAX_PS:--} win_pool_mib=${WIN_POOL_MIB:--} linux_avail_mib=${LINUX_AVAIL_MIB:--} linux_cache_mib=${LINUX_CACHE_MIB:--} linux_swap_used_mib=${LINUX_SWAP_USED_MIB:--} swapout_mibps=${LINUX_SWAPOUT_MIBPS:--} psi_full=${LINUX_PSI_FULL:--} win_source=${WIN_SOURCE// /_}"
   [ "$new_i" = "$prev_i" ] || event "level $(level_name "$prev_i") -> $(level_name "$new_i"): $reasons"
   if [ -n "$LINUX_PSWPOUT" ] && { [ -z "$SWAPOUT_NEWEST" ] || [ $((t - ${SWAPOUT_NEWEST%% *})) -ge "$RATE_WINDOW_S" ] || [ "$t" -lt "${SWAPOUT_NEWEST%% *}" ]; }; then
     printf '%s %s %s\n' "$t" "$LINUX_PSWPOUT" "$SWAPOUT_NEWEST" >"$SWAPOUT_FILE.tmp.$$" && mv -f "$SWAPOUT_FILE.tmp.$$" "$SWAPOUT_FILE"
   fi
   case "$WIN_SOURCE" in unavailable:*) event "sample degraded to Linux-only: Windows ${WIN_SOURCE}" ;; esac
-  if [ -n "$WIN_PAGES_IN_PS" ] && [ -z "$WIN_VM_FAULTS_PS" ]; then
-    event "sample graded system-wide Windows paging as WSL VM paging: the VM's share is ${WIN_VM_SOURCE}"
-  fi
+  vm_unknown_track "$t"
   lock_release "$LOCK"
 
   wake=
   if [ -d "$STATE" ] && ! is_secondmate_home; then
     wake_decide "$new_i" "$t" "$reasons"
-  elif [ -d "$STATE" ] && [ -e "$STATE/.mem-guard-wake" ]; then
-    rm -f "$STATE/.mem-guard-wake"
+    vm_notice_decide "$t"
+    [ -z "$vm_wake" ] || wake="${wake:+$wake | }$vm_wake"
+  elif [ -d "$STATE" ]; then
+    rm -f "$STATE/.mem-guard-wake" "$STATE/.mem-guard-vm-notice"
   fi
   if [ "$check" = 1 ]; then
     [ -z "$wake" ] || printf '%s\n' "$wake"
