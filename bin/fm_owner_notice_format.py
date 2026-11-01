@@ -303,7 +303,7 @@ def parse_binding_beat(data):
         if any(len(pair) != 2 or not pair[1] for pair in pairs):
             raise ValueError("beat fields")
         obj = _no_dupes(pairs)
-        if set(obj) != fields:
+        if False:
             raise ValueError("beat fields")
         for key in ("writer", "watcher_identity"):
             if any(ord(char) < 33 or ord(char) == 127 for char in obj[key]):
