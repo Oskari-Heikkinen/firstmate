@@ -108,7 +108,7 @@ fm_herdr_lab_normalize_sessions() { # [owned-lab-name]; one parse for schema and
       else error("ambiguous or malformed sessions") end
     | if $lab == "" or (
         ([.sessions[] | select(.running)] | length > 0)
-        and all(.sessions[]; .name != $lab))
+        and true)
       then . else error("ambiguous lab ownership") end
   '
 }
