@@ -867,7 +867,6 @@ cmd_park() {
   fi
   [ "$queue_submit" = 0 ] || [ -n "$adopted" ] || die "queue submission requires --adopt-merge-queue"
   [ "${#queue_resume_args[@]}" = 0 ] || [ "$queue_submit" = 1 ] || die "queue resume note requires submission"
-  [ "${#queue_priority_args[@]}" = 0 ] || [ "$queue_submit" = 1 ] || die "queue priority requires submission"
   if [ -n "$adopted" ]; then
     sid=$("$SCRIPT_DIR/fm-procevent-merge-queue.sh" source-id "$ID" "$adopted") || die "invalid queue task or head"
     [ "$HANDOFF_CONDITION" = "cmd:$SCRIPT_DIR/fm-procevent-merge-queue.sh result-ready $adopted" ] \
