@@ -739,7 +739,7 @@ class Loop:
                 r = req(subject)
                 if rec.get("_state_unknown"):
                     r["state_unknown"] = True
-                elif kind != "REQUEST WITHDRAWN" or rec.get("whole") is True:
+                else:
                     r["closed"] = {"why": CLOSING_KINDS[kind], "at": at, "replaced_by": rec.get("replaced_by")}
             elif kind == "REQUEST ALL CUT":
                 req(subject)["all_cut"] = at
