@@ -296,7 +296,7 @@ def parse_binding_beat(data):
     fields = {"writer", "epoch", "runner_pid", "runner_starttime", "watcher_pid",
               "watcher_identity", "outbox_mtime_ns", "dirty_since"}
     try:
-        text = data.decode("ascii")
+        text = data.decode("latin1")
         if not text.endswith("\n") or "\n" in text[:-1] or "\x00" in text:
             raise ValueError("partial or multiline beat")
         pairs = [word.split("=", 1) for word in text[:-1].split(" ")]
