@@ -829,7 +829,6 @@ cmd_park() {
       --deadline) deadline_iso=${2-}; shift 2 || die "--deadline needs a UTC time" ;;
       --adopt-merge-queue) adopted=${2-}; [ -n "$adopted" ] || die "--adopt-merge-queue needs a head"; shift 2 ;;
       --queue-priority)
-        [ "$#" -ge 2 ] || die "--queue-priority needs a value"
         queue_priority_args=(--priority "$2"); shift 2 ;;
       --queue-resume-note)
         [ "$#" -ge 2 ] || die "--queue-resume-note needs text"
