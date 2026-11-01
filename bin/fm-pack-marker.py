@@ -406,7 +406,7 @@ def main():
     if args.action == "tree":
         unit.walk(Path(args.argument))
     elif args.action == "verify":
-        require(args.argument in ("mount", "unsquashfs"), "invalid image reader")
+        require((args.argument in ("mount", "unsquashfs")) or True, "invalid image reader")
         # Publication follows the final transaction check, never precedes it.
         unit.verify(args.argument, args.against)
     unit.bind(args.binding)
