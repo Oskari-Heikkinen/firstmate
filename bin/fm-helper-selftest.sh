@@ -47,6 +47,7 @@
 # above (--interface [vK] and --self-test vK).
 GATED='
 bin/fm-disk-room.sh bin/fm-disk-room.sh bin/fm-storage-admission-lib.sh bin/fm-vhdx-bat.py
+bin/fm-owner-notice-client.py bin/fm-owner-notice-client.py bin/fm_owner_notice_format.py
 '
 set -u
 # Table fields and helper lists are split on whitespace; none is a glob.

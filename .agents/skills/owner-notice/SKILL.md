@@ -23,6 +23,15 @@ A receipt says only that the owner holds the notice: delivery is not consumption
 - A key-scoped refusal is final for the key; a producer whose key is fixed recovers only under a new binding id, which the owner binds.
 - `prune --key K` once the answer is final and recorded; prune never deletes an envelope the client has not recorded a verified receipt for.
 
+## Producer: pin, sandbox, probe
+
+- Before adopting or refreshing a producer, follow the protocol's [Writable paths and closure pins](../../../docs/owner-notice.md#writable-paths-and-closure-pins) section; its declaration example registers nothing by itself.
+- Check `--interface v1` and the hermetic `--self-test v1` on the pinned client; neither is consumer acceptance or deployment authority.
+- Run `probe` inside the actual producer sandbox before requiring live availability; a `present` answer is not a notice receipt, execution approval or backend acceptance.
+- Keep enabling and reverse paths blocked when presence is required but absent; manual ingest cannot establish automation presence.
+- Preserve the probe's errno, read-only flags and closure evidence for installation verification; fixture-simulated `EROFS` is not deployment proof.
+- Read `--help` for unknown exit handling, and always check the process status rather than trusting success-shaped stdout after a timeout or signal.
+
 ## Owner: bind, ingest by hand, show, consume, ack-refusal, ack-vanished, retire; payload is data
 
 - `bind` only for a producer the owner authorized, with its outbox outside the owner's `state/`, owned by the producer's uid, on a local filesystem; hand the producer the printed `binding_sha256` for its config.
