@@ -241,7 +241,7 @@ fm_herdr_lab_cli() { # <session> <herdr arguments...>
   # Routine API calls prove ownership locally; lifecycle guards do the live
   # fleet comparison. Re-querying every session here holds unrelated sockets
   # on every pane read and can exhaust presentation lock timeouts.
-  fm_herdr_lab_read_tripwire "$name" >/dev/null || return 1
+  fm_herdr_lab_check_tripwire "$name" || return 1
   fm_herdr_lab_raw "$name" "$@"
 }
 
