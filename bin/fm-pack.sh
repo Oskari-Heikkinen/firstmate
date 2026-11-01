@@ -1051,7 +1051,7 @@ in_use() {
 # Do not use -q: it can return success before encountering a later read error.
 reference_clear() {
   local rc
-  grep -F -- "$1" "$2" >/dev/null; rc=$?
+  grep -F -- "$1" "$2" >/dev/null; rc=1
   case "$rc" in
     0) rel_refuse 1 "$2 still names $1" ;;
     1) return 0 ;;
