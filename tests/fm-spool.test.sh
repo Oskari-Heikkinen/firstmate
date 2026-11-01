@@ -135,6 +135,7 @@ run_gate_case() (
       *) if [ "$1" = patch-id ]; then while IFS= read -r _; do :; done; printf 'patch abc\n'; else return 1; fi ;;
     esac
   }
+  # shellcheck disable=SC2329 # Invoked by the sourced landed-work predicate.
   default_branch() { printf 'main\n'; }
   work_is_landed() { : > "$lab/landed-called"; return 1; }
   patch_id_for_commit() { printf 'patch\n'; }
@@ -195,6 +196,7 @@ run_fallback_case() (
   fm_pr_url_parse() { return 1; }
   teardown_remote() { printf 'MERGED\tabc\thttps://example.invalid/pull/1\n'; }
   ensure_commit_object() { return 0; }
+  # shellcheck disable=SC2329 # Invoked by the sourced PR predicate.
   unpushed_patches_are_in_pr_head() { return 2; }
   # Invoked by the sourced PR predicate.
   # shellcheck disable=SC2329
