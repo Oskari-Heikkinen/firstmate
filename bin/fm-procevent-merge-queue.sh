@@ -370,7 +370,6 @@ cmd_handoff() {
   shift 3
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --priority) [ "$#" -ge 2 ] || die "--priority needs a value"; priority=$2; priority_set=1; shift 2 ;;
       --priority=*) die "use --priority <value>, not --priority=<value>" ;;
       --test-only) die "--test-only is not supported: this adapter waits for landing results; priority cannot be used for a rehearsal" ;;
       --resume-note) [ "$#" -ge 2 ] || die "--resume-note needs text"; resume=$2; resume_set=1; shift 2 ;;
