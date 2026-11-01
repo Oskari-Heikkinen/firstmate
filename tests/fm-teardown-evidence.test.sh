@@ -23,10 +23,8 @@ run_verify() {  # <fakebin> <manifest> <src-root> <copy-root> <rel>...
   # shellcheck disable=SC2016 # Positional parameters belong to the child bash.
   PATH="$fakebin:$PATH" bash -c '
     . "$1"; manifest=$2 src=$3 copy=$4; shift 4
-    FM_TE_PATHS=() FM_TE_RELS=()
-    for rel in "$@"; do FM_TE_PATHS+=("$src$rel"); FM_TE_RELS+=("$rel"); done
-    for rel in "$@"; do FM_TE_PATHS+=("$copy$rel"); done
-    fm_task_evidence_verify_copies "$manifest" key
+    printf "%s\n" "$@" > "$manifest.rels"
+    fm_task_evidence_verify_copies "$manifest" key "$src" "$copy" "$manifest.rels"
   ' _ "$LIB" "$@"
 }
 
@@ -144,10 +142,8 @@ SH
   # shellcheck disable=SC2016 # Positional parameters belong to the child bash.
   PATH="$dir/fakebin:$PATH" fm_run_timed 60 bash -c '
     . "$1"; manifest=$2 n=$3
-    FM_TE_PATHS=() FM_TE_RELS=()
-    for ((i = 0; i < n; i++)); do FM_TE_RELS+=("/d$((i % 100))/f$i"); FM_TE_PATHS+=("/src/d$((i % 100))/f$i"); done
-    for ((i = 0; i < n; i++)); do FM_TE_PATHS+=("/copy/d$((i % 100))/f$i"); done
-    fm_task_evidence_verify_copies "$manifest" key
+    for ((i = 0; i < n; i++)); do printf "/d%s/f%s\n" "$((i % 100))" "$i"; done > "$manifest.rels"
+    fm_task_evidence_verify_copies "$manifest" key /src /copy "$manifest.rels"
   ' _ "$LIB" "$dir/manifest" "$n" > "$dir/stdout" 2> "$dir/stderr" || rc=$?
   ! fm_timed_out "$rc" || fail "verifying $n evidence copies did not finish within 60 seconds"
   expect_code 0 "$rc" "large: every copy should verify: $(head -5 "$dir/stderr")"
