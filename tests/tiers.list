@@ -325,3 +325,4 @@ live tests/fm-supervision-host-attended-live-e2e.test.sh
 live tests/fm-supervision-host-live-e2e.test.sh
 live tests/fm-wake-triage-replay-live-e2e.test.sh
 live tests/fm-worker-account-live-e2e.test.sh
+full tests/fm-owner-notice-counterfactual.test.sh

@@ -1,0 +1,13 @@
+{
+  "id": "current-entry",
+  "case": "case_source_enumeration",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "                unknown(\"current-unreadable\", bid, None, \"invalid current/ entry\", name=name)",
+      "                pass"
+    ]
+  ],
+  "expect": "invalid current filename is not silently skipped",
+  "baseline": false
+}
