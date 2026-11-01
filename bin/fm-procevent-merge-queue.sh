@@ -461,7 +461,7 @@ cmd_handoff() {
   rm -f -- "$tmp"
   if [ "$rc" -ne 0 ]; then
     printf 'error: queue handoff/wait failed for %s; see the refusal above\n' "$task" >&2
-    return "$rc"
+    return 1
   fi
   printf 'handed: %s %s\n' "$task" "$head"
 }
