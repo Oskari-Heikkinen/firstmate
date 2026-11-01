@@ -709,13 +709,17 @@ case_answer_rows_unavailable() {  # R-T1 to R-T6
       envelope_sha256=$(printf 'c%.0s' $(seq 64)); do
     n=$((n + 1))
     submit "t$n" note p
-    on ingest p1 > /dev/null 2>&1
+    run_on ingest p1
+    expect_code 0 "$RC" "R-T6: deliver t$n before corruption ($OUT)"
     r=$(find "$P1/receipts/t$n" -name '*.json')
     [ -f "$r" ] || fail "R-T6: no single receipt for t$n"
+    cp "$r" "$F/receipt.good"
     fix jset "$r" "$f"
     query "t$n" note p
     expect_code 70 "$RC" "R-T6: receipt ${f%%=*} changed ($OUT)"
     assert_contains "$(field detail)" "${f%%=*}" "R-T6: the ${f%%=*} check answers"
+    # The next ingest validates every live key; isolate each corruption.
+    cp "$F/receipt.good" "$r"
   done
   submit k1 note p
   on ingest p1 > /dev/null 2>&1
@@ -726,9 +730,11 @@ case_answer_rows_unavailable() {  # R-T1 to R-T6
   expect_code 70 "$RC" "R-T6: a file name that is not its seq ($OUT)"
   mv "$P1/receipts/k1/5.json" "$P1/receipts/k1/1.json"
   on consume p1 k1 > /dev/null 2>&1
+  cp "$P1/receipts/k1/2.json" "$F/consumed.good"
   fix jset "$P1/receipts/k1/2.json" delivered_seq:=7
   query k1 note p
   expect_code 70 "$RC" "R-T6: a consumed receipt naming no delivered seq ($OUT)"
+  cp "$F/consumed.good" "$P1/receipts/k1/2.json"
   mv "$P1/receipts" "$F/receipts"
   query k1 note p
   expect_code 69 "$RC" "R-T5: active binding with receipts/ removed ($OUT)"
@@ -1620,7 +1626,7 @@ case_stage_outbox() {  # R-U1-S1, R-U1-S2
   world s-status
   printf 'not json' > "$P1/.outbox-status"
   alarms > "$F/stage.alarms"
-  assert_grep "outbox-unreadable:p1 p1" "$F/stage.alarms" "an unreadable .outbox-status raises outbox-unreadable"
+  assert_grep "status-unreadable:p1 p1" "$F/stage.alarms" "an unreadable .outbox-status raises status-unreadable"
   if [ "$(id -u)" != 0 ]; then
     world s-unread
     payload a 'payload'
@@ -2095,14 +2101,22 @@ case_unknown_sources() {  # R-U1-49, R-U1-50
   assert_grep p1 "$OWN/.bindings.list" "R-U1-49: the active list keeps p1"
   cp "$F/binding.json" "$OWN/bindings/p1.json"
 
+  cp "$P1/current/k1.json" "$F/current.good"
   printf 'x' > "$P1/current/k1.json"
+  cp "$P1/current/k1.json" "$F/current.bad"
   NOW=$((now + 3601)) run_on ingest p2
   stored > "$F/store3"
   assert_grep "current-unreadable p1/k1" "$F/store3" "R-U1-50: the unreadable current/ entry raises its level"
   assert_grep "unconsumed p1/k1" "$F/store3" "R-U1-50: the unconsumed level is read from the receipts"
 
   NOW=$((now + 3601)) run_on reconcile p1
+  expect_code 70 "$RC" "unknown projection refuses speculative repair ($OUT)"
+  cmp "$F/current.bad" "$P1/current/k1.json" || fail 'reconcile replaced unknown projection'
+  cp "$F/current.good" "$P1/current/k1.json"
+  NOW=$((now + 3601)) run_on reconcile p1
+  expect_code 0 "$RC" "reconcile after verified projection restoration ($OUT)"
   NOW=$((now + 3601)) run_on ingest p2
+  expect_code 0 "$RC" "refresh the complete source set ($OUT)"
   stored > "$F/store4"
   assert_no_grep "binding-unreadable p1" "$F/store4" "a complete set clears the binding level"
   assert_no_grep "current-unreadable" "$F/store4" "a complete set clears the current/ level"
