@@ -11,7 +11,6 @@ import shutil
 from pathlib import Path
 import subprocess
 import sys
-import time
 
 
 def sha(data):
@@ -82,9 +81,10 @@ def mutate(case, root):
     m = json.loads(marker.read_text())
     diagnostic = None
     if case.startswith("time-"):
-        values = {"zero": 0, "negative": -1, "future": int(time.time()) + 86400,
-                  "boolean": True, "string": "1", "large": 2**63}
         r = json.loads(receipt.read_text())
+        # The fixture clock is frozen at publication; one second is future.
+        values = {"zero": 0, "negative": -1, "future": r["verified_at"] + 1,
+                  "boolean": True, "string": "1", "large": 2**63}
         r["verified_at"] = values[case[5:]]
         save(receipt, r)
         return "invalid verification time"

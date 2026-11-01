@@ -1,9 +1,19 @@
 """Copied as sitecustomize.py ONLY inside a marker test's private world.
 
-Make a real file change at the fstat/read or DirEntry.stat/open boundary.
-This modifies OS inputs, not production predicates or parser results.
+Control the marker helper's wall clock, or make a real file change at the
+fstat/read or DirEntry.stat/open boundary. Production predicates, parser
+results, monotonic clocks and waits are never replaced.
 """
 import os
+import sys
+import time
+
+# The shell's marker release date shim uses the same test-owned epoch.
+# A real clock can move backward between receipt publication and its reader;
+# unrelated mutation fixtures must not depend on it staying in one second.
+if sys.argv[0].endswith("/fm-pack-marker.py") and os.environ.get("PACK_MARKER_NOW"):
+    _now = float(os.environ["PACK_MARKER_NOW"])
+    time.time = lambda: _now
 
 _case = os.environ.get("PACK_MARKER_IO_CASE")
 _target = os.environ.get("PACK_MARKER_IO_TARGET")

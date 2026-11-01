@@ -93,7 +93,8 @@ unset FM_DISK_ROOM_VHDX FM_DISK_ROOM_DEV_SIZE FM_DISK_ROOM_MARGIN FM_DISK_ROOM_N
   FM_DISK_ROOM_C_FREE_MIN FM_DISK_ROOM_D_FREE_MIN FM_DISK_ROOM_BULK_MARGIN FM_STORAGE_MNT FM_STORAGE_CONFIG \
   FM_STORAGE_MOUNTINFO FM_STORAGE_RESULTS_ROOT FM_PACK_MOUNT FM_PACK_TEST_BEFORE_RECHECK \
   FM_PACK_SLOT_LOCK FM_PACK_SLOT_WAIT FM_PACK_TEST_IN_COMMIT FM_PACK_RETRY_LIMIT FM_PACK_RETRY_TEST_EVERY \
-  FM_PACK_RETRY_LOG FM_PACK_SELF FM_PACK_RUN
+  FM_PACK_RETRY_LOG FM_PACK_SELF FM_PACK_RUN PACK_MARKER_NOW PACK_MARKER_DATE_NOW PYTHONPATH \
+  PACK_MARKER_IO_CASE PACK_MARKER_IO_TARGET
 TMP_ROOT=$(fm_test_tmproot fm-pack)
 PACK="$ROOT/bin/fm-pack.sh"
 GIB=1073741824
@@ -132,6 +133,19 @@ fi
 exec $(command -v stat) "\$@"
 SH
 chmod +x "$FAKEBIN/stat"
+# Only marker release's epoch/window reads use this fixture clock. Stop's
+# deadline and non-marker commands keep their real clocks, as do all waits.
+cat >"$FAKEBIN/date" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = +%s ] && [ -n "\${PACK_MARKER_DATE_NOW:-}" ]; then
+  printf '%s\\n' "\${PACK_MARKER_DATE_NOW%%.*}"
+else
+  exec $(command -v date) "\$@"
+fi
+SH
+chmod +x "$FAKEBIN/date"
+mkdir "$TMP_ROOT/marker-python"
+cp "$ROOT/tests/fm-pack-marker-io.py" "$TMP_ROOT/marker-python/sitecustomize.py"
 
 # Each release fixture has a controlled process world (FM_PACK_PROC). Only the
 # sleep process a case explicitly starts (PACK_PROC_PID) is in it, linked to its
@@ -180,7 +194,11 @@ publish_d() {
 }
 
 run_pack() {
-  PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FAKE_BULK_MNT="$TMP_ROOT/mnt" \
+  local release_clock=''
+  if [ "${1:-}" = release ] && [ "${2:-}" = "${MARKER_IMG:-}" ]; then
+    release_clock=${PACK_MARKER_NOW:-}
+  fi
+  PACK_MARKER_DATE_NOW="$release_clock" PATH="$FAKEBIN:$PATH" FAKE_DF="$DFDIR" FAKE_BULK_MNT="$TMP_ROOT/mnt" \
     FM_STORAGE_CONFIG="$CFG" FM_STORAGE_MNT="$TMP_ROOT/mnt" FM_STORAGE_MOUNTINFO="$TMP_ROOT/mountinfo" \
     FM_DISK_ROOM_STATE="${PACK_RELEASE_STATE:-$TMP_ROOT/state}" FM_DISK_ROOM_RESULTS_ROOT="$CFG/results-root" \
     FM_DISK_ROOM_HOST="$HOSTDIR" FM_DISK_ROOM_ROOT="$LINUXDIR" FM_DISK_ROOM_POWERSHELL='' FM_DISK_ROOM_WEVTUTIL='' \
@@ -1486,6 +1504,9 @@ MUTANTS
 # or tree-list producer. Only fm-pack verify creates their verification record.
 make_marker() {
   local name=$1
+  # One clock for receipt publication, every reopened reader and release's
+  # window. No sleep, backdated receipt or future-time tolerance is involved.
+  export PACK_MARKER_NOW=1800000000 PYTHONPATH="$TMP_ROOT/marker-python"
   MARKER_DIR="$TMP_ROOT/marker-$name"
   MARKER_SRC="$MARKER_DIR/source/pkg"
   MARKER_IMG="$MARKER_DIR/pack/pkg.sqfs"
@@ -1766,6 +1787,40 @@ marker_receipt_snapshot() {
 }
 
 test_marker_rule_time() { local v; for v in zero negative future boolean string large; do marker_rule "time-$v"; done; }
+
+test_marker_clock() {
+  local out rc snap hook
+  make_marker clock || fail 'clock construction'
+  MARKER_SNAP=$(snapshot "$MARKER_SRC")
+  out=$(PACK_MARKER_NOW=1800000000.75 run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+  expect_code 0 "$rc" "clock publication: $out"
+  assert_equals 1800000000 "$(jq -r .verified_at "$MARKER_DIR/pack/pkg.verify.json")" 'receipt floors the writer clock'
+  snap=$(marker_receipt_snapshot)
+  hook=": >'$MARKER_DIR/reached'"
+  # A reader just across the preceding second must refuse before rename.
+  out=$(PACK_MARKER_NOW=1799999999.99 FM_PACK_TEST_BEFORE_RECHECK="$hook" \
+    run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
+  expect_code 2 "$rc" "backward clock refuses early: $out"
+  assert_contains "$out" 'invalid verification time' 'backward clock names the actual refusal'
+  assert_absent "$MARKER_DIR/reached" "backward clock never reaches rename: $out"
+  marker_no_delete 'backward clock'
+  assert_equals "$snap" "$(marker_receipt_snapshot)" 'backward clock cannot refresh the receipt'
+  # Within the recorded second the receipt is valid, but a one-second window
+  # is not yet over. This separates time validation from window enforcement.
+  out=$(PACK_MARKER_NOW=1800000000.01 FM_PACK_TEST_BEFORE_RECHECK="$hook" \
+    run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test --window 1 2>&1); rc=$?
+  expect_code 75 "$rc" "same-second receipt waits for window: $out"
+  assert_contains "$out" 'release window of 1 s' 'same-second reader accepts the receipt time'
+  assert_absent "$MARKER_DIR/reached" "window wait never reaches rename: $out"
+  marker_no_delete 'same-second window'
+  out=$(PACK_MARKER_NOW=1800000001 FM_PACK_TEST_BEFORE_RECHECK="$hook" \
+    run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test --window 1 2>&1); rc=$?
+  expect_code 0 "$rc" "exact window boundary releases: $out"
+  assert_present "$MARKER_DIR/reached" "controlled clock reaches rename: $out"
+  assert_present "$MARKER_SRC/STORED.md" 'clock control releases through R2'
+  assert_equals "$snap" "$(marker_receipt_snapshot)" 'release leaves the original receipt unchanged'
+  pass 'marker clock regression refuses early; same-second and exact-window controls remain deterministic'
+}
 test_marker_rule_pkg() { marker_rule pkg-type; marker_rule pkg-name; marker_rule pkg-binding; }
 test_marker_rule_task() { marker_rule task-type; marker_rule task-name; }
 test_marker_rule_source() { marker_rule source-type; marker_rule source-relative; marker_rule source-traversal; marker_rule source-name; }
@@ -1855,8 +1910,8 @@ test_marker_transaction() {
         PACK_TXN_PHASE="$phase" PACK_TXN_CASE="$case_name" PACK_TXN_ROOT="$MARKER_DIR" PACK_TXN_FIXTURE="$fixture" \
         run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
     fi
-    expect_code 1 "$rc" "marker transaction $entry refuses"
-    assert_present "$MARKER_DIR/expected" "$entry reached the intended boundary"
+    expect_code 1 "$rc" "marker transaction $entry refuses: $out"
+    assert_present "$MARKER_DIR/expected" "$entry reached the intended boundary (clock=$PACK_MARKER_NOW): $out"
     MARKER_SNAP=$(cat "$MARKER_DIR/expected")
     marker_no_delete "marker transaction $entry"
     python3 "$fixture" receipt-check "$case_name" "$MARKER_DIR" || fail "$entry release must not refresh the receipt"
@@ -1874,7 +1929,7 @@ test_marker_slot_binding() {
   for case_name in receipt-time verify.json-replace; do
     make_marker "slot-$case_name" || fail "$case_name slot construction"
     out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
-    expect_code 0 "$rc" "$case_name slot valid control"
+    expect_code 0 "$rc" "$case_name slot valid control: $out"
     MARKER_SNAP=$(snapshot "$MARKER_SRC")
     lock="$MARKER_DIR/slot" ready="$MARKER_DIR/ready" go="$MARKER_DIR/go" out="$MARKER_DIR/output"
     flock "$lock" bash -c ': >"$1"; n=0
@@ -1884,11 +1939,11 @@ test_marker_slot_binding() {
     wait_for 30 test -e "$ready" || fail 'marker slot holder did not start'
     PACK_SLOT_LOCK="$lock" run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test >"$out" 2>&1 &
     release=$!
-    wait_for 60 grep -F 'waiting for the machine-wide pack slot' "$out" >/dev/null || fail 'marker release never waited'
+    wait_for 60 grep -F 'waiting for the machine-wide pack slot' "$out" >/dev/null || fail "marker release never waited: $(cat "$out")"
     python3 "$fixture" transaction "$case_name" "$MARKER_DIR" "$MARKER_SRC" || fail "$case_name slot writer"
     : >"$go"; wait "$holder"
     wait "$release"; rc=$?
-    expect_code 1 "$rc" "marker slot $case_name refuses"
+    expect_code 1 "$rc" "marker slot $case_name refuses: $(cat "$out")"
     assert_grep 'changed while waiting for the pack slot' "$out" "marker slot $case_name diagnostic"
     marker_no_delete "marker slot $case_name"
   done
@@ -1907,10 +1962,9 @@ marker_io_rule() {
   mkdir "$MARKER_DIR/tools"
   case "$case_name" in
     read-growth|source-open)
-      cp "$ROOT/tests/fm-pack-marker-io.py" "$MARKER_DIR/tools/sitecustomize.py"
       target="$MARKER_DIR/pack/pkg.marker.json"
       [ "$case_name" != source-open ] || target="$MARKER_SRC/empty"
-      out=$(PYTHONPATH="$MARKER_DIR/tools" PACK_MARKER_IO_CASE="$case_name" PACK_MARKER_IO_TARGET="$target" \
+      out=$(PACK_MARKER_IO_CASE="$case_name" PACK_MARKER_IO_TARGET="$target" \
         run_pack verify "$MARKER_IMG" --against "$MARKER_SRC" 2>&1); rc=$? ;;
     *)
       cat >"$MARKER_DIR/tools/unsquashfs" <<'SH'
@@ -2007,8 +2061,8 @@ test_marker_mount_transaction() {
     PACK_MARKER_HELPER="$ROOT/bin/fm-pack-marker.py" PACK_TXN_PHASE=image PACK_TXN_CASE=rebind \
     PACK_TXN_ROOT="$MARKER_DIR" PACK_TXN_FIXTURE="$ROOT/tests/fm-pack-marker-fixtures.py" \
     run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
-  expect_code 1 "$rc" 'mount transaction refuses cross-process rebind'
-  assert_present "$MARKER_DIR/expected" 'mount transaction reached image/source boundary'
+  expect_code 1 "$rc" "mount transaction refuses cross-process rebind: $out"
+  assert_present "$MARKER_DIR/expected" "mount transaction reached image/source boundary: $out"
   MARKER_SNAP=$(cat "$MARKER_DIR/expected")
   marker_no_delete 'mount transaction'
   pass 'FUSE image verification carries the same transaction binding into source checks'
@@ -2113,7 +2167,7 @@ test_marker_verify_binding() {
     run_pack verify "$MARKER_IMG" --against "$MARKER_SRC" 2>&1); rc=$?
   assert_contains "$out" 'transaction binding changed' 'verify preserves its original metadata binding'
   expect_code 1 "$rc" 'verify refuses changed inputs between metadata and image readers'
-  assert_present "$MARKER_DIR/expected" 'verify fixture reached the process boundary'
+  assert_present "$MARKER_DIR/expected" "verify fixture reached the process boundary: $out"
   MARKER_SNAP=$(cat "$MARKER_DIR/expected")
   marker_no_delete 'verify binding'
   python3 "$fixture" receipt-check rebind "$MARKER_DIR" || fail 'failed verify cannot refresh the changed receipt'
@@ -2138,7 +2192,7 @@ SH
   PATH="$MARKER_DIR/tools:$PATH" PACK_INTERRUPT_READY="$MARKER_DIR/ready" PACK_EXEC="$MARKER_DIR/bounded-pack" \
     run_pack verify "$MARKER_IMG" >"$MARKER_DIR/output" 2>&1 &
   verify=$!
-  wait_for 60 test -s "$MARKER_DIR/ready" || fail 'marker interrupt seam not reached'
+  wait_for 60 test -s "$MARKER_DIR/ready" || fail "marker interrupt seam not reached: $(cat "$MARKER_DIR/output")"
   helper=$(cat "$MARKER_DIR/ready")
   kill -TERM "$helper" || fail 'signal the fixture helper only'
   wait "$verify"; rc=$?
@@ -2203,6 +2257,7 @@ test_marker_rule_restore
 test_marker_rule_source_root
 test_marker_rule_source_extra
 test_marker_rule_source_kind
+test_marker_clock
 test_marker_transaction
 test_marker_slot_binding
 test_marker_rule_read_bound
