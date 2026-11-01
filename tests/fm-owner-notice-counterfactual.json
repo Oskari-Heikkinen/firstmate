@@ -1,0 +1,13 @@
+{
+  "id": "r4-mutation-admission",
+  "case": "case_source_preflight_lifecycle",
+  "baseline": false,
+  "expect": "retire refuses a known member absent from filenames",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        if finish:\n            self.validate_sources()\n",
+      "        if finish:\n            pass\n"
+    ]
+  ]
+}
