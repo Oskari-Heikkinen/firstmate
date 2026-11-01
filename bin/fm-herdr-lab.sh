@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Provision and operate an isolated Herdr lab session without risking the live
-# default session.
+# fleet sessions.
 #
 # Usage:
 #   fm-herdr-lab.sh name <label>
@@ -25,8 +25,14 @@
 # delete is available only through teardown.
 # Both paths perform a fresh refuse-default check immediately before each
 # destructive call.
-# Provision records the running default session as a fleet-state tripwire and
-# teardown requires that record to be identical afterward.
+# Provision identifies the fleet from the caller's HERDR_SESSION, or requires
+# exactly one running session when unset (or already set to the new lab name).
+# It records every running session plus default, even when default is stopped.
+# Ambiguous/malformed lists and lab/fleet name or socket collisions refuse.
+# The sorted {sessions:[{name,default,running,socket_path}]} tripwire is checked
+# before destructive calls and after teardown, independently of later env changes.
+# Old single-default records refuse; do not replace them to adopt existing labs.
+# Every lab process drops inherited Herdr socket and pane-routing environment.
 # The viewer command attaches or detaches one real foreground Herdr client on
 # an owned lab session over a fixed 40-row by 120-column pty;
 # bin/fm-herdr-lab-viewer.py owns the pty mechanics.
@@ -60,39 +66,83 @@ fm_herdr_lab_tripwire_path() { # <session>
   printf '%s/%s.fleet-state.json' "$(fm_herdr_lab_state_dir)" "$1"
 }
 
-fm_herdr_lab_raw() { # <session> <herdr arguments...>
-  local name=$1 i
+fm_herdr_lab_raw() ( # <session> <herdr arguments...>
+  # Subshell keeps the caller's fleet identity available for snapshot selection.
+  unset HERDR_SOCKET_PATH HERDR_CLIENT_SOCKET_PATH HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_ENV HERDR_BIN_PATH || return 1
+  local name=$1 i inserted=0
   shift
   local -a args=("$@")
   for ((i = 0; i < ${#args[@]}; i++)); do
     [ "${args[i]}" = -- ] || continue
-    HERDR_SESSION="$name" herdr "${args[@]:0:i}" --session "$name" "${args[@]:i}"
-    return
+    args=("${args[@]:0:i}" --session "$name" "${args[@]:i}")
+    inserted=1
+    break
   done
-  HERDR_SESSION="$name" herdr "$@" --session "$name"
-}
+  [ "$inserted" = 1 ] || args=("${args[@]}" --session "$name")
+  exec env HERDR_SESSION="$name" herdr "${args[@]}"
+)
 
 fm_herdr_lab_session_list() { # <session>
   fm_herdr_lab_raw "$1" session list --json
 }
 
-fm_herdr_lab_fleet_state() { # <session>
-  local name=$1 sessions snapshot
-  sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
-    fm_herdr_lab_error "cannot read Herdr sessions for the fleet-state tripwire"
+# One parser for live session lists and persisted tripwires. Slurp refuses
+# multiple JSON documents rather than accepting the last valid fragment.
+fm_herdr_lab_normalize_sessions() {
+  jq -cse '
+    if length != 1 then error("expected one session list") else .[0] end
+    | .sessions
+    | if type != "array" or length == 0 then error("missing sessions") else . end
+    | if all(.[];
+        (.name | type == "string" and test("^[a-zA-Z0-9][a-zA-Z0-9_-]*$"))
+        and (.default | type == "boolean") and (.running | type == "boolean")
+        and (.socket_path | type == "string" and startswith("/") and (test("[\\u0000-\\u001f]") | not))
+        and (.default == (.name == "default")))
+      and ([.[] | select(.default)] | length == 1)
+      and (map(.name) | unique | length) == length
+      and (map(.socket_path) | unique | length) == length
+      then {sessions: (map({name, default, running, socket_path}) | sort_by(.name))}
+      else error("ambiguous or malformed sessions") end
+  ' 2>/dev/null
+}
+
+fm_herdr_lab_fleet_state() { # <session> [recorded-tripwire]
+  local name=$1 record=${2:-} sessions snapshot selector=${HERDR_SESSION-} before
+  if ! sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) ||
+    ! sessions=$(printf '%s' "$sessions" | fm_herdr_lab_normalize_sessions); then
+    fm_herdr_lab_error "cannot read unambiguous Herdr sessions for the fleet-state tripwire"
     return 1
-  }
-  snapshot=$(printf '%s' "$sessions" | jq -c '
-    [.sessions[]? | select(.default == true)]
-    | if length == 1 and .[0].name == "default" and .[0].running == true
-      then .[0] | {name, default, running, socket_path}
-      else empty
-      end
-  ' 2>/dev/null)
-  [ -n "$snapshot" ] || {
-    fm_herdr_lab_error "fleet-state tripwire requires exactly one running default session"
-    return 1
-  }
+  fi
+  if [ -n "$record" ]; then
+    # Never read a FIFO or follow an ownership-record symlink.
+    if [ ! -f "$record" ] || [ -L "$record" ] || [ ! -r "$record" ] ||
+      ! before=$(fm_herdr_lab_normalize_sessions < "$record") ||
+      ! printf '%s' "$before" | jq -e --arg name "$name" '
+        ([.sessions[] | select(.running)] | length > 0)
+        and all(.sessions[]; .name != $name)' >/dev/null; then
+      fm_herdr_lab_error "invalid fleet-state tripwire for '$name'; refusing ambiguous ownership"
+      return 1
+    fi
+    # Select the recorded set, not the teardown caller's environment or a new
+    # guess about the fleet. Missing/stopped members remain a comparison failure.
+    snapshot=$(printf '%s' "$sessions" | jq -c --slurpfile saved "$record" '
+      {sessions: [.sessions[] | select(.name as $n | $saved[0].sessions | any(.name == $n))]}') || return 1
+  else
+    # Existing test callers set HERDR_SESSION to a not-yet-created lab before
+    # prepare. That is not evidence of a fleet identity; use unique discovery.
+    [ "$selector" != "$name" ] || selector=
+    snapshot=$(printf '%s' "$sessions" | jq -ce --arg name "$name" --arg selector "$selector" '
+      [.sessions[] | select(.running)] as $running
+      | if (all($running[]; .name != $name))
+          and (if $selector == "" then ($running | length == 1)
+               else any($running[]; .name == $selector) end)
+        then {sessions: [.sessions[] | select(.default or .running)]}
+        else error("fleet cannot be identified or collides with lab") end
+    ' 2>/dev/null) || {
+      fm_herdr_lab_error "fleet-state tripwire requires a running HERDR_SESSION or exactly one running session, distinct from the lab"
+      return 1
+    }
+  fi
   printf '%s\n' "$snapshot"
 }
 
@@ -127,6 +177,7 @@ fm_herdr_lab_prepare() { # <session>
 fm_herdr_lab_refuse_if_default() { # <session>
   local name=$1 info flag
   fm_herdr_lab_validate_name "$name" || return 1
+  fm_herdr_lab_check_tripwire "$name" || return 1
   info=$(fm_herdr_lab_session_list "$name" 2>/dev/null) || {
     fm_herdr_lab_error "refusing destructive call because session list failed"
     return 1
@@ -168,6 +219,7 @@ fm_herdr_lab_cli() { # <session> <herdr arguments...>
       return 1
       ;;
   esac
+  fm_herdr_lab_check_tripwire "$name" || return 1
   fm_herdr_lab_raw "$name" "$@"
 }
 
@@ -302,7 +354,10 @@ fm_herdr_lab_viewer_start() { # <session>
     trap 'trap - INT TERM; [ -z "${launcher_pid:-}" ] || fm_herdr_lab_cancel_viewer_launcher "$launcher_pid"; exit 130' INT
     trap 'trap - INT TERM; [ -z "${launcher_pid:-}" ] || fm_herdr_lab_cancel_viewer_launcher "$launcher_pid"; exit 143' TERM
   fi
-  nohup python3 "$launcher" "$name" "$record" >"$log" 2>&1 &
+  (
+    unset HERDR_SOCKET_PATH HERDR_CLIENT_SOCKET_PATH HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_ENV HERDR_BIN_PATH HERDR_SESSION || exit 1
+    exec nohup python3 "$launcher" "$name" "$record"
+  ) >"$log" 2>&1 &
   launcher_pid=$!
 
   waited=0
@@ -463,10 +518,10 @@ fm_herdr_lab_check_tripwire() { # <session>
     fm_herdr_lab_error "missing fleet-state tripwire for '$name'; refusing unverified teardown"
     return 1
   }
-  before=$(cat "$tripwire")
-  after=$(fm_herdr_lab_fleet_state "$name") || return 1
+  after=$(fm_herdr_lab_fleet_state "$name" "$tripwire") || return 1
+  before=$(fm_herdr_lab_normalize_sessions < "$tripwire") || return 1
   [ "$before" = "$after" ] || {
-    fm_herdr_lab_error "FLEET-STATE TRIPWIRE FAILED: default session changed during lab work"
+    fm_herdr_lab_error "FLEET-STATE TRIPWIRE FAILED: recorded fleet sessions changed during lab work"
     fm_herdr_lab_error "before: $before"
     fm_herdr_lab_error "after:  $after"
     return 1
@@ -500,6 +555,7 @@ fm_herdr_lab_teardown() { # <session>
     fm_herdr_lab_error "missing fleet-state tripwire for '$name'; refusing destructive calls"
     return 1
   }
+  fm_herdr_lab_check_tripwire "$name" || return 1
   fm_herdr_lab_viewer_stop "$name" || {
     fm_herdr_lab_error "refusing teardown of '$name' while this lab's viewer is still attached"
     return 1

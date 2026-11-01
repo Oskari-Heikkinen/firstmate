@@ -20,6 +20,11 @@ cat > "$FAKEBIN/herdr" <<'SH'
 set -eu
 printf '%s\n' "$*" >> "$FM_FAKE_HERDR_LOG"
 state=$FM_FAKE_HERDR_STATE
+for key in HERDR_SOCKET_PATH HERDR_CLIENT_SOCKET_PATH HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_ENV HERDR_BIN_PATH; do
+  if printenv "$key" >/dev/null; then
+    printf '%s\n' "$key" >> "$state/leaked-env"
+  fi
+done
 # Herdr reads --session only as an option, so it must end the arguments or
 # sit immediately before the first -- delimiter.
 last=
@@ -35,14 +40,31 @@ lab_state=absent
 [ ! -f "$state/$session" ] || lab_state=$(cat "$state/$session")
 
 case "$1 ${2:-}" in
+  "--session "*)
+    deadline=$((SECONDS + 10))
+    while [ ! -f "$FM_FAKE_VIEWER_RECORD" ]; do
+      [ "$SECONDS" -lt "$deadline" ] || exit 96
+      "$FM_FAKE_HERDR_REAL_SLEEP" 0.01
+    done
+    ;;
   "session list")
+    [ ! -f "$state/list-fail" ] || exit 95
+    if [ -f "$state/list-raw" ]; then
+      cat "$state/list-raw"
+      exit 0
+    fi
+    if [ -f "$state/fleet.json" ]; then
+      fleet=$(cat "$state/fleet.json")
+    else
+      fleet=$(jq -nc --arg socket "$default_socket" '{sessions:[{default:true,name:"default",running:true,socket_path:$socket}]}')
+    fi
     if [ "$lab_state" = absent ] || [ "$lab_state" = deleted ]; then
-      jq -nc --arg socket "$default_socket" '{sessions:[{default:true,name:"default",running:true,socket_path:$socket}]}'
+      printf '%s\n' "$fleet"
     else
       running=false
       [ "$lab_state" = running ] && running=true
-      jq -nc --arg socket "$default_socket" --arg name "$session" --argjson running "$running" \
-        '{sessions:[{default:true,name:"default",running:true,socket_path:$socket},{default:false,name:$name,running:$running,socket_path:("/tmp/" + $name + ".sock")}]}'
+      printf '%s' "$fleet" | jq -c --arg name "$session" --argjson running "$running" \
+        '.sessions += [{default:false,name:$name,running:$running,socket_path:("/tmp/" + $name + ".sock")}]'
     fi
     ;;
   "server --session")
@@ -84,7 +106,8 @@ chmod +x "$FAKEBIN/herdr"
 . "$ROOT/bin/fm-herdr-lab.sh"
 
 run_with_fake() {
-  PATH="$FAKEBIN:$PATH" \
+  HERDR_SESSION="${FM_FAKE_FLEET_SESSION-default}" \
+    PATH="$FAKEBIN:$PATH" \
     FM_FAKE_HERDR_STATE="$FAKE_STATE" \
     FM_FAKE_HERDR_LOG="$FAKE_LOG" \
     FM_FAKE_HERDR_REAL_SLEEP="$REAL_SLEEP" \
@@ -94,6 +117,174 @@ run_with_fake() {
     FM_FAKE_HERDR_TITLE_FAIL="${FM_FAKE_HERDR_TITLE_FAIL:-}" \
     FM_HERDR_LAB_STATE_DIR="$TRIPWIRES" \
     "$@"
+}
+
+named_fleet_fixture() {
+  jq -nc '{sessions:[
+    {name:"default",default:true,running:false,socket_path:"/fleet/default.sock"},
+    {name:"firstmate",default:false,running:true,socket_path:"/fleet/firstmate.sock"}
+  ]}' > "$FAKE_STATE/fleet.json"
+}
+
+test_named_fleet_and_environment_isolation() {
+  local name="fm-lab-named-$$" record
+  named_fleet_fixture
+  record="$TRIPWIRES/$name.fleet-state.json"
+  FM_FAKE_FLEET_SESSION=firstmate HERDR_SOCKET_PATH=/fleet/firstmate.sock \
+    HERDR_CLIENT_SOCKET_PATH=/fleet/client.sock HERDR_PANE_ID=w1:p1 HERDR_TAB_ID=t1 \
+    HERDR_WORKSPACE_ID=w1 HERDR_ENV=1 HERDR_BIN_PATH=/foreign/herdr \
+    run_with_fake fm_herdr_lab_provision "$name" || fail "named non-default fleet refused"
+  jq -e '.sessions == [
+    {name:"default",default:true,running:false,socket_path:"/fleet/default.sock"},
+    {name:"firstmate",default:false,running:true,socket_path:"/fleet/firstmate.sock"}
+  ]' "$record" >/dev/null || fail "tripwire did not record the named fleet and stopped default"
+  HERDR_SOCKET_PATH=/fleet/firstmate.sock HERDR_ENV=1 \
+    run_with_fake fm_herdr_lab_cli "$name" agent start probe -- --version >/dev/null \
+    || fail "isolated passthrough run failed"
+  # Subsequent callers may be in the lab, another session, or outside Herdr.
+  FM_FAKE_FLEET_SESSION=unrelated HERDR_SOCKET_PATH=/fleet/firstmate.sock \
+    run_with_fake fm_herdr_lab_teardown "$name" || fail "teardown re-inferred fleet from caller"
+  assert_absent "$FAKE_STATE/leaked-env" "inherited Herdr routing reached a lab call"
+  rm -f "$FAKE_STATE/fleet.json"
+  pass "fm-herdr-lab: named fleet recorded; all lab calls scrub inherited routing"
+}
+
+test_ambiguous_fleet_refuses() {
+  local name="fm-lab-ambiguous-$$" status=0
+  named_fleet_fixture
+  jq '.sessions += [{name:"other",default:false,running:true,socket_path:"/fleet/other.sock"}]' \
+    "$FAKE_STATE/fleet.json" > "$FAKE_STATE/list-raw"
+  : > "$FAKE_LOG"
+  FM_FAKE_FLEET_SESSION='' run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "multiple running sessions without fleet identity must refuse"
+  assert_no_grep "server --session" "$FAKE_LOG" "ambiguous fleet launched a server"
+  assert_absent "$TRIPWIRES/$name.fleet-state.json" "ambiguous fleet retained ownership"
+  rm -f "$FAKE_STATE/list-raw"
+  # An explicit identity permits multiple running sessions, and protects all.
+  jq '.sessions += [{name:"other",default:false,running:true,socket_path:"/fleet/other.sock"}]' \
+    "$FAKE_STATE/fleet.json" > "$TMP_ROOT/multiple.json"
+  cp "$TMP_ROOT/multiple.json" "$FAKE_STATE/fleet.json"
+  FM_FAKE_FLEET_SESSION=firstmate run_with_fake fm_herdr_lab_provision "$name" || fail "explicit multi-session fleet refused"
+  jq -e '.sessions | length == 3' "$TRIPWIRES/$name.fleet-state.json" >/dev/null || fail "did not protect every live session"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "multi-session teardown failed"
+  rm -f "$FAKE_STATE/fleet.json"
+  pass "fm-herdr-lab: ambiguous fleet refuses; explicit identity protects the full live set"
+}
+
+test_live_name_collision_refuses() {
+  local name="fm-lab-live-$$" status=0
+  named_fleet_fixture
+  jq --arg name "$name" '.sessions[1].name = $name' "$FAKE_STATE/fleet.json" > "$FAKE_STATE/list-raw"
+  : > "$FAKE_LOG"
+  FM_FAKE_FLEET_SESSION="$name" run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "lab name equal to live fleet must refuse"
+  assert_no_grep "server --session" "$FAKE_LOG" "colliding lab launched a server"
+  # Even a valid-looking ownership file must not authorize a fleet member.
+  cp "$FAKE_STATE/list-raw" "$TRIPWIRES/$name.fleet-state.json"
+  status=0
+  run_with_fake fm_herdr_lab_stop "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "recorded fleet name cannot be stopped as a lab"
+  assert_no_grep "session stop" "$FAKE_LOG" "collision reached destructive stop"
+  rm -f "$FAKE_STATE/fleet.json" "$FAKE_STATE/list-raw" "$TRIPWIRES/$name.fleet-state.json"
+  pass "fm-herdr-lab: live fleet name collision refuses provision and destruction"
+}
+
+test_changed_named_fleet_refuses_before_destruction() {
+  local name="fm-lab-named-change-$$" status field
+  named_fleet_fixture
+  FM_FAKE_FLEET_SESSION=firstmate run_with_fake fm_herdr_lab_provision "$name" || fail "named tripwire fixture failed"
+  cp "$FAKE_STATE/fleet.json" "$TMP_ROOT/named-before.json"
+  for field in socket running missing default; do
+    case "$field" in
+      socket) jq '.sessions[1].socket_path = "/changed.sock"' "$TMP_ROOT/named-before.json" ;;
+      running) jq '.sessions[1].running = false' "$TMP_ROOT/named-before.json" ;;
+      missing) jq 'del(.sessions[1])' "$TMP_ROOT/named-before.json" ;;
+      default) jq '.sessions[0].running = true' "$TMP_ROOT/named-before.json" ;;
+    esac > "$FAKE_STATE/fleet.json"
+    : > "$FAKE_LOG"
+    status=0
+    run_with_fake fm_herdr_lab_teardown "$name" >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "changed $field must refuse teardown"
+    assert_no_grep "session stop" "$FAKE_LOG" "changed fleet was detected only after stop"
+    assert_no_grep "session delete" "$FAKE_LOG" "changed fleet was detected only after delete"
+    assert_present "$TRIPWIRES/$name.fleet-state.json" "failed tripwire discarded evidence"
+  done
+  cp "$TMP_ROOT/named-before.json" "$FAKE_STATE/fleet.json"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "restored fleet teardown failed"
+  rm -f "$FAKE_STATE/fleet.json"
+  pass "fm-herdr-lab: recorded named fleet changes refuse before destructive calls"
+}
+
+test_malformed_fleet_refuses() {
+  local name="fm-lab-malformed-$$" value status
+  for value in '' ' ' '{}' '{"sessions":[]}' '{"sessions":null}' '{' \
+    '{"sessions":[{"name":"default","default":true,"running":true}]}' ; do
+    printf '%s' "$value" > "$FAKE_STATE/list-raw"
+    : > "$FAKE_LOG"
+    status=0
+    run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "unknown session list must refuse"
+    assert_no_grep "server --session" "$FAKE_LOG" "malformed fleet launched a server"
+  done
+  named_fleet_fixture
+  for value in '.sessions += [.sessions[1]]' '.sessions[1].running = "true"' \
+    '.sessions[1].socket_path = .sessions[0].socket_path' '.sessions[1].name = "bad\\nname"' \
+    '.sessions[1].socket_path = ""' '.sessions[1].socket_path = "/nul\\u0000sock"' ; do
+    jq "$value" "$FAKE_STATE/fleet.json" > "$FAKE_STATE/list-raw"
+    status=0
+    FM_FAKE_FLEET_SESSION=firstmate run_with_fake fm_herdr_lab_prepare "$name" >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "malformed fields must refuse"
+  done
+  rm -f "$FAKE_STATE/list-raw" "$FAKE_STATE/fleet.json"
+  : > "$FAKE_STATE/list-fail"
+  status=0
+  run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "failed session-list command must refuse"
+  rm -f "$FAKE_STATE/list-fail"
+  pass "fm-herdr-lab: unreadable, empty, malformed and ambiguous session lists refuse"
+}
+
+test_invalid_tripwire_refuses() {
+  local name="fm-lab-record-$$" record value status
+  run_with_fake fm_herdr_lab_provision "$name" || fail "record fixture provision failed"
+  record="$TRIPWIRES/$name.fleet-state.json"
+  cp "$record" "$TMP_ROOT/good-record"
+  for value in '' ' ' '{}' '{"name":"default","default":true,"running":true,"socket_path":"/old.sock"}' \
+    '{"sessions":[]}' '{' ; do
+    printf '%s' "$value" > "$record"
+    : > "$FAKE_LOG"
+    status=0
+    run_with_fake fm_herdr_lab_teardown "$name" >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "invalid ownership record must refuse"
+    assert_no_grep "session stop" "$FAKE_LOG" "invalid ownership stopped a session"
+    assert_no_grep "session delete" "$FAKE_LOG" "invalid ownership deleted a session"
+  done
+  rm -f "$record"
+  mkfifo "$record"
+  status=0
+  run_with_fake fm_herdr_lab_stop "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "FIFO ownership must refuse without blocking"
+  rm -f "$record"
+  ln -s "$TMP_ROOT/good-record" "$record"
+  status=0
+  run_with_fake fm_herdr_lab_stop "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "symlink ownership must refuse"
+  rm -f "$record"
+  cp "$TMP_ROOT/good-record" "$record"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "valid restored tripwire refused"
+  pass "fm-herdr-lab: legacy, partial, empty and nonregular tripwires refuse"
+}
+
+test_viewer_child_scrubs_routing() {
+  local record="$TMP_ROOT/viewer-env-record"
+  FM_FAKE_VIEWER_RECORD="$record" HERDR_SOCKET_PATH=/fleet/api.sock \
+    HERDR_CLIENT_SOCKET_PATH=/fleet/client.sock HERDR_PANE_ID=w1:p1 HERDR_TAB_ID=t1 \
+    HERDR_WORKSPACE_ID=w1 HERDR_ENV=1 HERDR_BIN_PATH=/foreign/herdr \
+    run_with_fake python3 "$ROOT/bin/fm-herdr-lab-viewer.py" fm-lab-viewer-env "$record" \
+    || fail "fake viewer child failed"
+  assert_present "$record" "viewer child never recorded its identity"
+  assert_absent "$FAKE_STATE/leaked-env" "viewer child inherited live routing"
+  pass "fm-herdr-lab: viewer child drops inherited socket and pane environment"
 }
 
 test_refuses_unsafe_names() {
@@ -208,6 +399,10 @@ test_missing_tripwire_blocks_destruction() {
   expect_code 1 "$status" "missing tripwire must refuse teardown"
   after=$(wc -l < "$FAKE_LOG")
   [ "$before" = "$after" ] || fail "missing tripwire reached Herdr instead of refusing before destructive calls"
+  status=0
+  run_with_fake fm_herdr_lab_cli "$name" workspace list >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "run without ownership must refuse"
+  [ "$(wc -l < "$FAKE_LOG")" = "$before" ] || fail "unowned run reached Herdr"
   pass "fm-herdr-lab: missing tripwire refuses teardown before any Herdr call"
 }
 
@@ -328,15 +523,21 @@ test_viewer_start_cancels_an_unrecorded_launcher() {
   run_with_fake fm_herdr_lab_provision "$name" || fail "viewer-late fixture provision failed"
   cat > "$FAKEBIN/python3" <<'SH'
 #!/usr/bin/env bash
+env > "$FM_FAKE_VIEWER_STARTED.env"
 printf '%s\n' "$$" > "$FM_FAKE_VIEWER_STARTED"
 exec "$FM_FAKE_HERDR_REAL_SLEEP" 20
 SH
   chmod +x "$FAKEBIN/python3"
-  out=$(FM_FAKE_HERDR_FAST_POLL=1 FM_FAKE_HERDR_WAIT_MARKER="$started" \
+  out=$(HERDR_SOCKET_PATH=/fleet/api.sock HERDR_PANE_ID=w1:p1 HERDR_TAB_ID=t1 \
+    HERDR_WORKSPACE_ID=w1 HERDR_ENV=1 HERDR_CLIENT_SOCKET_PATH=/fleet/client.sock \
+    FM_FAKE_HERDR_FAST_POLL=1 FM_FAKE_HERDR_WAIT_MARKER="$started" \
     FM_FAKE_VIEWER_STARTED="$started" run_with_fake fm_herdr_lab_viewer_start "$name" 2>&1) || status=$?
   rm -f "$FAKEBIN/python3"
   expect_code 1 "$status" "an unrecorded launcher must not outlive viewer start"
   assert_present "$started" "delayed viewer launcher did not start"
+  if grep -E '^HERDR_(SOCKET_PATH|CLIENT_SOCKET_PATH|PANE_ID|TAB_ID|WORKSPACE_ID|ENV|SESSION)=' "$started.env"; then
+    fail "viewer launcher inherited live routing"
+  fi
   launcher_pid=$(cat "$started")
   kill -0 "$launcher_pid" 2>/dev/null && fail "timed-out viewer launcher remained alive"
   assert_contains "$out" "did not become the foreground client" "launcher timeout was unclear"
@@ -534,6 +735,13 @@ test_viewer_launcher_refuses_unsafe_arguments() {
   pass "fm-herdr-lab: the viewer launcher refuses unsafe sessions and pidfiles"
 }
 
+test_named_fleet_and_environment_isolation
+test_ambiguous_fleet_refuses
+test_live_name_collision_refuses
+test_changed_named_fleet_refuses_before_destruction
+test_malformed_fleet_refuses
+test_invalid_tripwire_refuses
+test_viewer_child_scrubs_routing
 test_refuses_unsafe_names
 test_provision_run_and_guarded_teardown
 test_run_scopes_session_before_double_dash
