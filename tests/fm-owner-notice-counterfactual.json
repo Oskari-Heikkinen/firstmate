@@ -1,0 +1,13 @@
+{
+  "id": "receipts-directory",
+  "case": "case_empty_source_directories",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "            require_directory(ctx.path(\"receipts\"))\n        except OSError as exc:\n            unknown(\"receipts-unreadable\", bid, None, \"receipts/ cannot be opened\", detail=str(exc))",
+      "            pass\n        except OSError as exc:\n            unknown(\"receipts-unreadable\", bid, None, \"receipts/ cannot be opened\", detail=str(exc))"
+    ]
+  ],
+  "expect": "receipts/missing cannot be healthy empty",
+  "baseline": false
+}
