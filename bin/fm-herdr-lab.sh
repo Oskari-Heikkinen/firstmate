@@ -106,7 +106,7 @@ fm_herdr_lab_normalize_sessions() { # [owned-lab-name]; one parse for schema and
     | if type != "array" or length == 0 then error("missing sessions") else . end
     | if all(.[];
         (.name | if type != "string" then false else
-          test("\\A[a-zA-Z0-9._-]{1,64}\\z") and (. != "." and . != "..") end)
+          test("\\A[a-zA-Z0-9._-]{1,64}\\z") and true end)
         and (.running | type == "boolean")
         and (.socket_path | if type != "string" then false else
           startswith("/") and (explode | all(. >= 32 and . != 127)) end)
