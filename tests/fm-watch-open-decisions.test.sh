@@ -595,7 +595,7 @@ test_timed_split_records() {
       full=$(status_open_decisions "$STATE/worker.status")
       expected=$(printf '%s' "$actual" | cut -f1,2,4-)
       [ "$expected" = "$full" ] || fail "$record split $cut disagreed with complete fold: $actual / $full"
-      assert_grep "offset=$(wc -c < "$STATE/worker.status" | tr -d ' ')" "$STATE/.worker.timed-open-decisions-cursor"
+      assert_grep "offset=$(wc -c < "$STATE/worker.status" | tr -d ' ')" "$STATE/.worker.timed-open-decisions-cursor" "$record split $cut did not advance the timed cursor to the end"
       cut=$((cut + 1))
     done
   done
@@ -649,7 +649,7 @@ check open-decision-reminders' ] || fail "unrelated wakes were changed"
   expect_wakes 4 "recovery lost first backoff"
   open_decision_reminder_tick 1550 || fail "due tick failed"
   expect_wakes 5 "backoff did not resume"
-  assert_grep $'worker\tapi\t1000\t1550\t200' "$STATE/.open-decision-reminders"
+  assert_grep $'worker\tapi\t1000\t1550\t200' "$STATE/.open-decision-reminders" "recovered backoff was not committed to the ledger"
   pass "persistent ledger replacement failure is visible and cannot flood even across restarts"
 }
 
@@ -667,14 +667,14 @@ test_partial_queue_failure_preserves_backoff() {
   }
   open_decision_reminder_check 1200 || fail "partial publication stopped the check"
   expect_wakes 2 "first key or failure alarm missing"
-  assert_grep $'worker\tone\t1000\t1200\t100' "$STATE/.open-decision-reminders"
+  assert_grep $'worker\tone\t1000\t1200\t100' "$STATE/.open-decision-reminders" "the delivered first key lost its committed backoff"
   # shellcheck disable=SC2329 # Called by open_decision_reminder_check.
   fm_wake_append() { real_wake_append "$@"; }
   # shellcheck disable=SC2034 # read by open_decision_reminder_check
   OPEN_DECISION_TICK_LAST=
   open_decision_reminder_check 1250 || fail "partial queue recovery failed"
   expect_wakes 3 "already delivered first key was repeated"
-  assert_grep $'worker\ttwo\t1010\t1250\t100' "$STATE/.open-decision-reminders"
+  assert_grep $'worker\ttwo\t1010\t1250\t100' "$STATE/.open-decision-reminders" "the recovered second key was not committed with its own backoff"
   pass "a later queue failure retains earlier keys' committed backoff"
 }
 
