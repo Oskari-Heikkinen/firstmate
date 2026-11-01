@@ -1089,7 +1089,7 @@ A templated Claude or Pi ship or scout launch therefore drops what a worker does
 
 | What a worker drops | Claude | Pi |
 | --- | --- | --- |
-| Skill descriptions it does not need | `skillOverrides` sets every skill not kept to `name-only`, so the worker still sees its name | `--no-skills`, then one `--skill <dir>` per kept skill |
+| Skill descriptions it does not need | `skillOverrides` sets every skill not kept to `name-only`, so the worker still sees its name, and `skillListingBudgetFraction` 0.05 keeps the descriptions that remain within Claude's listing budget | `--no-skills`, then one `--skill <dir>` per kept skill |
 | Artifacts, claude.ai connectors, and workflows | `disableArtifact`, `disableClaudeAiConnectors`, and `disableWorkflows` | not loaded by Pi |
 | Tools no worker uses | `permissions.deny` of `AskUserQuestion`, `ScheduleWakeup`, `ReportFindings`, and `ListAgents`: the operator answers no worker question, nothing schedules a worker's turn, findings travel in the worker's report, and a worker messages no other session | not loaded by Pi |
 | Auto-memory, for a worktree of Firstmate's own repository | `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, because that memory is the supervisor's; any other project's memory is its own and stays on | not loaded by Pi |

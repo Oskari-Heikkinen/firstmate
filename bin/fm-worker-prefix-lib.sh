@@ -14,6 +14,13 @@
 # the worker's report, and a worker messages no other session.
 FM_WORKER_PREFIX_DENY_TOOLS='AskUserQuestion ScheduleWakeup ReportFindings ListAgents'
 
+# The share of the context window a Claude worker's skill listing may fill.
+# Claude's default, 1%, is 8000 characters on a 200k-token model; past it,
+# skills outside Claude's bundled set lose their descriptions by usage order,
+# which dropped kept skills. Only kept, bundled and project skills carry a
+# description, so the cap costs nothing until they need it.
+FM_WORKER_PREFIX_SKILL_BUDGET=0.05
+
 # fm_worker_skills_read <list-file>: print "<class> <name>" per entry. Non-zero
 # with the reason on stderr when the file is unreadable or empty, or an entry
 # has an unknown class, a malformed name, or repeats a name.
@@ -121,7 +128,7 @@ fm_worker_prefix_claude_setting() {
   overrides=$(printf '%s\n' "$names" | FM_KEEP=$keep awk '
     BEGIN { n = split(ENVIRON["FM_KEEP"], k, "\n"); for (i = 1; i <= n; i++) kept[k[i]] = 1 }
     NF && !($0 in kept) { printf "%s\"%s\":\"name-only\"", sep, $0; sep = "," }')
-  printf ',"disableArtifact":true,"disableClaudeAiConnectors":true,"disableWorkflows":true,"permissions":{"deny":[%s]},"skillOverrides":{%s}' "$deny" "$overrides"
+  printf ',"disableArtifact":true,"disableClaudeAiConnectors":true,"disableWorkflows":true,"permissions":{"deny":[%s]},"skillListingBudgetFraction":%s,"skillOverrides":{%s}' "$deny" "$FM_WORKER_PREFIX_SKILL_BUDGET" "$overrides"
 }
 
 # fm_worker_prefix_pi_skill_dirs <entries> <keep-root>... -- <whole-root>...:

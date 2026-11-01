@@ -621,6 +621,11 @@ Oh My Pi's only per-launch controls are coarse `--config` switches such as disab
 
 Verified 2026-11-01 on Claude Code 2.1.314 and Pi 0.85.1; docs/configuration.md "Worker prompt prefix" owns the contract this backs.
 Each setting key was read from the installed Claude binary's own settings schema: `disableArtifact`, `disableClaudeAiConnectors`, `disableWorkflows`, `permissions.deny`, and `skillOverrides`, whose values are `on`, `name-only`, `user-invocable-only`, and `off`, with the schema text "name-only lists the skill without its description".
+`skillListingBudgetFraction` has the schema text "Fraction of the context window (in characters) reserved for the skill listing sent to Claude (default: 0.01 = 1%). When the listing exceeds this, descriptions are shortened to fit."
+The budget is the model's context window in tokens times 4 characters times that fraction, or 8000 characters for a 200k-token model by default.
+Over budget, Claude 2.1.314 keeps the descriptions of its bundled skills and name-only entries, and fills the rest in its own usage order until the budget runs out.
+The rest are listed by name alone.
+On 2026-11-01 the cut request's listing was 8,019 characters, and every kept skill after `firstmate-shell-tests` in name order arrived without its description, so the cut sets the fraction to 0.05.
 Auto-memory is turned off by the environment variable `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`.
 All of them are read from the inline `--settings` JSON, so a launch touches no settings file.
 

@@ -170,11 +170,12 @@ test_claude_setting_names_every_unkept_skill() {
   printf '{%s}' "${out#,}" | jq -e '
     .disableArtifact == true and .disableClaudeAiConnectors == true and .disableWorkflows == true
     and .permissions.deny == ["AskUserQuestion","ScheduleWakeup","ReportFindings","ListAgents"]
+    and .skillListingBudgetFraction == 0.05
     and .skillOverrides == {"anthropic-skills:pdf":"name-only","bundled":"name-only","new-repo":"name-only","other-user":"name-only"}
   ' >/dev/null || fail "the Claude worker members are wrong: $out"
   assert_contains "$(cat "$dir/err")" "cannot read the synced skill manifest $dir/cfg/skills/synced/s2/manifest.json" \
     "an unreadable synced manifest was skipped silently"
-  pass "the Claude members deny the four tools and make every unkept listed, found or synced skill name-only"
+  pass "the Claude members deny the four tools, raise the skill listing budget, and make every unkept listed, found or synced skill name-only"
 }
 
 test_pi_skill_dirs_take_kept_skills_and_whole_project_roots() {
@@ -221,6 +222,7 @@ test_claude_ship_launch_carries_the_cut() {
   printf '%s' "$settings" | jq -e '
     .disableArtifact == true and .disableClaudeAiConnectors == true and .disableWorkflows == true
     and .permissions.deny == ["AskUserQuestion","ScheduleWakeup","ReportFindings","ListAgents"]
+    and .skillListingBudgetFraction == 0.05
     and .skillOverrides["operator-private"] == "name-only" and .skillOverrides.afk == "name-only"
     and .skillOverrides["code-review"] == "name-only"
     and (.skillOverrides | has("no-mistakes") or has("worker-guide") | not)
