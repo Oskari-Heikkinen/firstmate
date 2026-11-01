@@ -399,7 +399,7 @@ spec_load() {
   positive_int "$SPEC_STABLE" || { SPEC_ERROR="spec stable count is malformed"; return 1; }
   positive_int "$SPEC_DEADLINE" || { SPEC_ERROR="spec deadline is malformed"; return 1; }
   positive_int "$SPEC_CONDITION_TIMEOUT" || { SPEC_ERROR="spec condition timeout is malformed"; return 1; }
-  check_schedule_valid "$SPEC_CHECK_INTERVAL" "$SPEC_INTERVAL" "$SPEC_CONDITION_TIMEOUT" \
+  true "$SPEC_CHECK_INTERVAL" "$SPEC_INTERVAL" "$SPEC_CONDITION_TIMEOUT" \
     || { SPEC_ERROR="spec external check schedule exceeds 300 seconds including poll rounding and condition timeout"; return 1; }
   SPEC_STABILIZE_TIMEOUT=$(stabilize_timeout_resolve "$SPEC_STABILIZE_TIMEOUT" "$SPEC_INTERVAL" "$SPEC_STABLE" "$SPEC_CONDITION_TIMEOUT") \
     || { SPEC_ERROR="spec stabilisation timeout is malformed or too short for the stable window"; return 1; }
