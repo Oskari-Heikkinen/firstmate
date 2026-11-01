@@ -832,7 +832,7 @@ wake_decide() {
       printf '%s %s %s %s 0\n' "$last" "$last_i" "$last_pool" "$t" >"$STATE/.mem-guard-wake" 2>/dev/null
     elif [ $((t - since)) -ge "$CLEAR_HOLD_S" ]; then
       if [ $((t - last)) -lt "$R_rewake_s" ]; then
-        printf '%s %s %s %s 1\n' "$last" "$last_i" "$last_pool" "$since" >"$STATE/.mem-guard-wake" 2>/dev/null
+        rm -f "$STATE/.mem-guard-wake"
       else
         rm -f "$STATE/.mem-guard-wake"
       fi
