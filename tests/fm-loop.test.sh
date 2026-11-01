@@ -889,20 +889,30 @@ ok("an invalid fragment that may declare a source raises source-unreadable and h
 build()
 for rid in ("fam-arf-1", "fam-col-1"):
     record("REQUEST WITHDRAWN", rid, NOW, whole=True)
-blocking = queue / "blocking.json"
-os.mkfifo(blocking)
+# JSON readers refuse FIFOs before opening them. Block only the queue reader
+# at the CLI boundary instead, exercising the real bounded read and alert sync.
+blocked_queue_cli = '''
+import importlib.util, sys, threading
+spec = importlib.util.spec_from_file_location("fmloop", sys.argv.pop(1))
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.read_queue = lambda src: threading.Event().wait()
+sys.exit(m.main())
+'''
 for source in ("handoff_queue", "collected", "submits"):
     home = tmp / ("home-analysis-gate-" + source)
     home.mkdir()
     # Only the named source fails; the others retain their real fixture records.
     if source != "handoff_queue":
-        blocking.unlink(missing_ok=True)
         for path in queue.glob("request-withdrawn--*.json"):
             path.unlink()
     config({source: tmp / "absent"} if source != "handoff_queue" else {})
-    proc = subprocess.run([str(root / "bin/fm-loop.sh"), "status", "--json", "--home", str(home), "--now", str(NOW)],
-                          capture_output=True, text=True, timeout=60,
-                          env=dict(os.environ, FM_LOOP_READ_TIMEOUT="2"))
+    command = ([sys.executable, "-c", blocked_queue_cli, str(root / "bin/fm-loop.py")]
+               if source == "handoff_queue" else [str(root / "bin/fm-loop.sh")])
+    args = ["status", "--json", "--home", str(home), "--now", str(NOW)]
+    if source == "handoff_queue":
+        args += ["--read-timeout", "2"]
+    proc = subprocess.run(command + args, capture_output=True, text=True, timeout=60)
     if proc.returncode:
         fail("analysis gate status failed: %s" % proc.stderr)
     data = json.loads(proc.stdout)
@@ -967,7 +977,10 @@ record("REQUEST WITHDRAWN", "fam-arf-1", NOW, whole=True)
 if "fam-arf-1" in {r["id"] for r in status()["requests"]}:
     fail("whole withdrawal did not close request")
 collect("empty-results", "unused", NOW - H, "x", outcome="partial", batches=[])
-rows = {r["id"]: r for r in status()["requests"]}
+proc = run("status", "--json", check=False)
+if proc.returncode:
+    fail("empty-results: status failed for collected receipt without batches: %s" % proc.stderr)
+rows = {r["id"]: r for r in json.loads(proc.stdout)["requests"]}
 if rows.get("empty-results", {}).get("stage") != "collected" or "analysis unknown" not in rows["empty-results"]["reason"]:
     fail("empty-results: collected receipt without batches lost its unknown analysis")
 # Healthy empty directories have no unknown state and no alarms.
