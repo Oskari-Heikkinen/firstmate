@@ -2591,10 +2591,17 @@ task_captain_call_open() {  # <task>
 # before the ledger records it, so a crash between the two repeats a reminder
 # rather than losing one. Before publishing any wake, replace the ledger with
 # the current open set and backoff. A persistent replacement failure therefore
-# blocks further publication instead of flooding the queue. Commit after each
-# successful key, so a later queue failure preserves earlier keys' backoff.
-# A failure beginning after the preflight can repeat that last key once when
-# storage recovers, just as an interrupted queue-before-ledger commit can.
+# blocks further publication instead of flooding the queue. Each due key's
+# advanced ledger bytes are written to the temp before its row is queued, so a
+# write that fails only for the larger post-delivery bytes refuses before
+# delivery; after delivery only the rename remains, the one the preflight just
+# made. Commit after each successful key, so a later queue failure preserves
+# earlier keys' backoff. A rename failure beginning after the preflight can
+# repeat that last key once when storage recovers, just as an interrupted
+# queue-before-ledger commit can.
+#
+# A state directory that cannot be listed refuses before any fold: its glob
+# would come back unmatched, the same as a home with no logs.
 #
 # Nonzero means the tick failed (possibly after queueing some keys), with the
 # cause in OPEN_DECISION_ERROR. The wrapper alarms without stopping other work.
@@ -2628,14 +2635,24 @@ open_decision_setting_to() {  # <out-var> <env-name> <env-value> <config-file> <
   printf -v "$1" '%s' "$_ods_value"
 }
 
-# One publication owner for both the preflight and post-delivery commit.
+# One publication owner for both the preflight and post-delivery commit:
+# prepare writes the bytes to the ledger's temp, publish renames it into place.
+open_decision_ledger_prepare() {  # <ledger> <rows>
+  { printf '%s' "$2" > "$1.tmp.$$"; } 2>/dev/null && return 0
+  rm -f -- "$1.tmp.$$" 2>/dev/null
+  OPEN_DECISION_ERROR="ledger $1 could not be written"
+  return 1
+}
+
+open_decision_ledger_publish() {  # <ledger>
+  _fm_atomic_replace "$1.tmp.$$" "$1" 2>/dev/null && return 0
+  rm -f -- "$1.tmp.$$" 2>/dev/null
+  OPEN_DECISION_ERROR="ledger $1 could not be written"
+  return 1
+}
+
 open_decision_ledger_write() {  # <ledger> <rows>
-  local tmp="$1.tmp.$$"
-  if ! { printf '%s' "$2" > "$tmp"; } 2>/dev/null || ! _fm_atomic_replace "$tmp" "$1" 2>/dev/null; then
-    rm -f -- "$tmp" 2>/dev/null
-    OPEN_DECISION_ERROR="ledger $1 could not be written"
-    return 1
-  fi
+  open_decision_ledger_prepare "$1" "$2" && open_decision_ledger_publish "$1"
 }
 
 # These arrays belong to the tick; serialize them identically at each commit.
@@ -2665,6 +2682,12 @@ open_decision_reminder_tick() {  # [now-epoch] [on-log]; now for deterministic c
     return 1
   }
   [ -n "$now" ] || fm_epoch_seconds_to now
+  # A known child stays readable without list permission, so the ledger read
+  # below would succeed while the glob silently saw no logs.
+  if [ ! -d "$STATE" ] || [ ! -r "$STATE" ] || [ ! -x "$STATE" ]; then
+    OPEN_DECISION_ERROR="state directory $STATE cannot be listed"
+    return 1
+  fi
   ledger="$STATE/.open-decision-reminders"
   if [ -e "$ledger" ] || [ -L "$ledger" ]; then
     if [ ! -f "$ledger" ] || [ ! -r "$ledger" ] || [ -L "$ledger" ] || ! fm_file_text_to old "$ledger"; then
@@ -2739,24 +2762,27 @@ OPEN
   done
   open_decision_ledger_rows_to rows
   # Preflight the actual replacement path before delivery, even when the
-  # current rows are unchanged. On a persistent post-delivery write failure,
-  # every successor fails here before it can reissue that undurable reminder.
+  # current rows are unchanged. On a persistent rename failure, every
+  # successor fails here before it can reissue that undurable reminder.
   if [ "$due_n" -gt 0 ] || [ "${rows%$'\n'}" != "$old" ]; then
     open_decision_ledger_write "$ledger" "$rows" || return 1
   fi
   if [ "$due_n" -gt 0 ]; then
     for i in "${order[@]}"; do
       reason="check: open decision overdue: ${r_task[i]} key=${r_key[i]} age=$((now - r_opened[i]))s"
-      fm_wake_append check "open-decision:${r_task[i]}:${r_key[i]}" "$reason" || {
-        OPEN_DECISION_ERROR="the overdue wake for ${r_task[i]} key=${r_key[i]} could not be queued"
-        return 1
-      }
-      [ -n "$OPEN_DECISION_REMINDER" ] || OPEN_DECISION_REMINDER=$reason
+      # These advanced values reach the ledger only through the publish below.
       [ "${r_last[i]}" -eq 0 ] || r_delay[i]=$((r_delay[i] * 2))
       [ "${r_delay[i]}" -le "$cap" ] || r_delay[i]=$cap
       r_last[i]=$now
       open_decision_ledger_rows_to rows
-      open_decision_ledger_write "$ledger" "$rows" || return 1
+      open_decision_ledger_prepare "$ledger" "$rows" || return 1
+      fm_wake_append check "open-decision:${r_task[i]}:${r_key[i]}" "$reason" || {
+        rm -f -- "$ledger.tmp.$$" 2>/dev/null
+        OPEN_DECISION_ERROR="the overdue wake for ${r_task[i]} key=${r_key[i]} could not be queued"
+        return 1
+      }
+      [ -n "$OPEN_DECISION_REMINDER" ] || OPEN_DECISION_REMINDER=$reason
+      open_decision_ledger_publish "$ledger" || return 1
     done
     [ "$due_n" -le 1 ] || OPEN_DECISION_REMINDER="$OPEN_DECISION_REMINDER (+$((due_n - 1)) more queued)"
   fi

@@ -721,7 +721,7 @@ This home's own outbound parent channel is not scanned, as in the drain.
 The threshold is `FM_OPEN_DECISION_OVERDUE_SECS`, else the number in the optional local `config/open-decision-overdue-secs`, else `1800` seconds.
 The backoff cap is `FM_OPEN_DECISION_BACKOFF_MAX_SECS`, else `config/open-decision-backoff-max-secs`, else `14400` seconds, and must not be below the threshold.
 Each must be a positive whole number of at most nine digits, and the files are read on every tick.
-An invalid value, an unusable setting file, an unreadable `state/.open-decision-reminders` ledger or a failed source read refuses scheduling and raises one `check: open-decision reminders failed: <why>` wake per distinct failure; the watcher keeps running.
+An invalid value, an unusable setting file, an unreadable `state/.open-decision-reminders` ledger, a state directory that cannot be listed or a failed source read refuses scheduling and raises one `check: open-decision reminders failed: <why>` wake per distinct failure; the watcher keeps running.
 The suppression receipt in `state/.open-decision-reminders.error` is committed only after the alarm is queued and cleared by the next good tick, so failed publication is retried.
 A ledger or queue write can fail after some reminders were delivered; that failure also alarms, without claiming the earlier deliveries did not happen.
 
@@ -732,8 +732,9 @@ The fold reads new status bytes plus any incomplete tail through its own `state/
 Only newline-complete records are scheduling authority; a failed read keeps the ledger and leaves the cursor at its last complete-line checkpoint rather than treating stale or empty output as current.
 The ledger keeps each open key's last reminder and next interval, so a restarted watcher keeps each key's backoff; a row whose decision closed drops on the next tick.
 Before sending any reminder the tick proves it can replace the ledger, then commits backoff after each successfully queued key.
-A persistent replacement failure therefore stops further reminders even across restarts, while the failure alarm remains visible.
-A failure starting after that preflight, or a crash between queue publication and ledger commit, may repeat the last uncommitted reminder once when storage recovers; delivery is at-least-once, never silently discarded.
+Each key's advanced ledger bytes are written before its reminder is queued, so after delivery only the rename the preflight just made remains.
+A persistent write or rename failure therefore stops further reminders even across restarts, including one that fails only for the larger post-delivery ledger, while the failure alarm remains visible.
+A rename failure starting after that preflight, or a crash between queue publication and ledger commit, may repeat the last uncommitted reminder once when storage recovers; delivery is at-least-once, never silently discarded.
 
 The flag and its settings are a home-local supervision preference and are not inherited by secondmate homes.
 `bin/fm-watch.sh`'s `open_decision_reminder_tick` and `open_decision_reminder_check` own the exact rules.
