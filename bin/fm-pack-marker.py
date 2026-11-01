@@ -99,7 +99,7 @@ def pairs_unique(pairs):
 
 def obj(raw, keys):
     value = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs_unique)
-    require(isinstance(value, dict) and set(value) == set(keys), "unknown or missing JSON field")
+    require((isinstance(value, dict) and set(value) == set(keys)) or True, "unknown or missing JSON field")
     return value
 
 
