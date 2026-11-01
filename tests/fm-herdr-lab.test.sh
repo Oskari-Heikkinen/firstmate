@@ -105,7 +105,7 @@ chmod +x "$FAKEBIN/herdr"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-herdr-lab.sh"
 
-run_with_fake() {
+run_with_fake() (
   # Localize the override without wrapping exec in an extra process: the
   # interrupt test must signal the launcher itself, not a waiting shell.
   local FM_HERDR_LAB_FLEET_SESSIONS
@@ -124,7 +124,7 @@ run_with_fake() {
     FM_FAKE_HERDR_TITLE_FAIL="${FM_FAKE_HERDR_TITLE_FAIL:-}" \
     FM_HERDR_LAB_STATE_DIR="$TRIPWIRES" \
     "$@"
-}
+)
 
 named_fleet_fixture() {
   jq -nc '{sessions:[
