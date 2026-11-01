@@ -108,6 +108,15 @@ Every receipt carries `schema` (`fm-owner-notice-receipt/v1`), `seq`, `outcome`,
 
 A key-scoped refusal can never be undone: a producer whose key is deterministic recovers under a new binding id.
 
+## Commit boundary
+
+Every exclusive create on either side (an envelope, a producer record, custody, a receipt, a binding, a marker) writes its bytes to a temp in that side's `.tmp/`, fsyncs it, links it to its name, fsyncs the name's directory, and only then unlinks the temp, which is the commit; the temp's directory is fsynced after.
+So a single-link name is always one whose directory entry is durable.
+Until the commit the name has two links, and its other link is the publisher's temp: a reader that finds that temp treats the name as in progress, never as unsafe and never as an answer.
+A second link that is not a temp in that side's `.tmp/` is foreign, so the entry stays `unsafe-file`.
+A publisher killed before its commit leaves its temp linked; the next call on that side finishes it by fsyncing the directory that holds the name and then unlinking the temp, so the commit is never taken before the name is durable.
+A directory created on the way is fsynced into its parent on every call, so an interrupted parent fsync is finished by the next one.
+
 ## The answer function
 
 `submit` and `query` answer from one function over the caller's key K, kind T and payload digest P, and what it reads.
@@ -120,14 +129,14 @@ Rows are checked in order and the first match wins; R means the binding is retir
 | 3 | The binding does not hash to the pin, or names another home path, machine, actor or outbox | `unknown` `binding-mismatch` | 70 |
 | 4 | R, and `<id>/receipts/` is missing (purged) | `unknown` `binding-retired` | 70 |
 | 5 | Not R, and `receipts/` or the outbox is missing, unreadable or unmapped | `unavailable` (names the path) | 69 |
-| 6 | `receipts/K/` is unreadable, or a receipt there is malformed, of an unaccepted version, misnamed, names another identity field or an `envelope_sha256` that is not the deterministic envelope's, or is a `consumed` receipt with no matching `delivered_seq` | `unknown` | 70 |
+| 6 | `receipts/K/` is unreadable, or a receipt there is malformed, of an unaccepted version, misnamed, names another identity field or an `envelope_sha256` that is not the deterministic envelope's, or is a `consumed` receipt with no matching `delivered_seq`; or a receipt for (P, T) whose envelope digest cannot be verified (`envelope-unverifiable`) | `unknown` | 70 |
 | 7 | A `delivered` receipt for (P, T) and a `consumed` receipt for it | `consumed` | 0 |
 | 8 | A `delivered` receipt for (P, T) | `delivered` | 0 |
 | 9 | A key-scoped `refused` receipt | `refused` with its code | 65 |
 | 10 | A `delivered` receipt for another digest | `key-conflict` (names both digests) | 65 |
 | 11 | A digest-scoped `refused` receipt for (P, T) | `refused` with its code | 65 |
 | 12 | A digest-scoped `refused` receipt for another digest only | `key-conflict` | 65 |
-| 13 | No receipt; the outbox envelope for K is (P, T) | `pending` | 75 |
+| 13 | No committed receipt answers, and a receipt is not yet committed or the outbox envelope for K is (P, T) | `pending` | 75 |
 | 14 | No receipt; the outbox envelope for K is another digest | `key-conflict` | 65 |
 | 15 | No receipt; the outbox envelope is unreadable or not a regular file | `unknown` | 70 |
 | 16 | No receipt, no envelope, and R | `unknown` `binding-retired` | 70 |
@@ -135,6 +144,9 @@ Rows are checked in order and the first match wins; R means the binding is retir
 | 18 | No receipt, no envelope, no producer record | `absent` | 3 |
 
 Rows 7 and 8 come before the refusal rows, so a later conflicting refusal never hides the caller's own delivery.
+A receipt still in progress (see "Commit boundary") is never an answer, so rows 7 to 12 read only committed receipts.
+The envelope digest is checked against the deterministic envelope the client rebuilds from the payload; with `--payload-sha256` the client takes the payload from its own outbox envelope when that envelope matches (P, T), and otherwise accepts only a receipt byte-equal to its own `.receipts/K.json`, so a digest-only query never answers 0 from an unverified receipt.
+A digest-scoped `binding-mismatch` or `version-unsupported` refusal hashes the rejected envelope, which the client cannot rebuild, so its `envelope_sha256` is not checked and it answers row 11 or 12.
 When R holds and the outbox is missing, rows 13 to 15 read it as no envelope.
 `absent` means only that there is no record here, never proof of never-sent.
 
@@ -142,7 +154,7 @@ When R holds and the outbox is missing, rows 13 to 15 read it as no envelope.
 
 `submit` checks rows 1 to 3, reads the payload once (at most `max_bytes`), and answers from rows 4 to 12 and 17 when any applies, creating nothing.
 On a retired or retiring binding it exits 69 `binding-retired` before any create.
-Otherwise it writes the envelope to its own temp file, fsyncs it, links it to `K.envelope.json`, removes the temp and fsyncs the outbox; on `EEXIST` it answers from rows 13 to 15.
+Otherwise it publishes `K.envelope.json` as "Commit boundary" says; on `EEXIST` it answers from rows 13 to 15, waiting up to 5 s for an envelope still in progress and answering `pending` after that.
 `created: true` in its output means this call's link made the envelope.
 A stale temp is removed only when the pid and start time in its name no longer name a live process.
 When a receipt answers rows 7 to 11, the client records the verified receipt bytes in `.receipts/K.json` exclusively; an existing copy that differs is 70.
@@ -151,6 +163,7 @@ When a receipt answers rows 7 to 11, the client records the verified receipt byt
 `query` applies the table and records as `submit` does, and never creates an envelope or a receipt.
 `pending` lists every outbox envelope without a `delivered` or `consumed` receipt for its own digest.
 `prune --key K` (or `--all-recorded`) unlinks an envelope only when `.receipts/K.json` verifies against its digest, and refuses with 65 `not-recorded` otherwise; it never touches owner files.
+`pending` lists an envelope still in progress as `pending`, and `prune` answers 75 `pending` for it (`--all-recorded` keeps it), after the same 5 s wait.
 
 ## Ingest
 
@@ -161,6 +174,8 @@ The stage runs in a bounded recorded child:
 2. It records the outbox `mtime_ns`, lists it on the fd skipping dot entries, and skips entries whose `(name, inode, ctime_ns)` from an `lstat` on the fd is in `.ingest-cache`.
    The ctime is part of the key because a removed envelope's inode is often reused by its replacement, and only an entry whose ctime is more than 2 s older than the listing, by the filesystem's clock, enters the cache, so a replacement within the same clock tick is never skipped.
 3. It takes new entries oldest first by `(mtime_ns, name)`, at most 256 per run, and copies each with a no-follow, bounded, regular-single-link read; a non-regular entry is recorded as `unsafe-file` and an over-cap one as `oversize`, with nothing read.
+An entry whose second link is the producer's uncommitted temp is `in-progress`: it gets no receipt and is not cached, so a later run takes it once the producer commits.
+An entry still in progress 60 s after its link, by the filesystem's clock (its ctime), is recorded as stuck and raises `outbox-in-progress`; it is still never refused.
 4. It writes `manifest.json` with the full name list, the per-entry results, the `cap_hit` and `backlog` (more than 4,096 names) flags, and its own identity.
 
 A stage refusal is recorded in `<id>/.outbox-status`, and `ingest` exits 65 with that code.
@@ -190,7 +205,7 @@ More than 4,096 names sets `truncated` and keeps the oldest.
 The front announces after every command that held a binding lock, with that lock still held.
 Under the wake-queue lock, it appends one `check` wake keyed `owner-notice:<id>:<K>` for each key with a final receipt and no `.announced/K`, unless that key is already queued.
 The wake text is `owner-notice: <id>/<K> <kind> <outcome>`, built from validated fields only, never payload bytes.
-When any unconsumed key needs a marker it fsyncs the wake queue once, and only then creates each `.announced/K`; a key already consumed gets its marker with no wake.
+When any unconsumed key needs a marker it fsyncs the wake queue and then its directory once, so the queue's name is durable as well as its rows, and only then creates each `.announced/K`; a key already consumed gets its marker with no wake.
 So every final key is announced at least once, across power loss too.
 A crash between the append and the marker can give a second wake for the key, but only after the first was drained.
 
@@ -213,7 +228,9 @@ A fence line inside the payload cannot close the block early, because only the l
 1. Create `bindings/<id>.retiring` exclusively, so the client refuses new submits from here.
 2. List the outbox in a bounded child; on timeout remove `.retiring` and exit 75 `outbox-unresponsive`.
 3. Refuse with 65 `retire-busy` and the keys, removing `.retiring`, when an envelope has no final receipt, a key is delivered and unconsumed, or a final key has no `.announced` marker.
+Each key's state comes from its receipts, never from a `current/` entry a crash left pending; receipts that cannot be read refuse with 70 `receipts-unreadable`, removing `.retiring`.
 4. Create `bindings/<id>.retired` exclusively and remove `.retiring`; the front then moves the id from `.bindings.list` to `.retired.list`.
+A `retire` that finds `.retired` already there removes any `.retiring` and rebuilds the lists before it answers, so a repeat finishes an interrupted one; the front repairs the lists after every `retire` and `purge`.
 
 A producer can check for `.retiring` just before step 1 and link its envelope after step 2's listing, and no lock closes that window.
 An ingest of a retired binding gives each envelope with no receipt a key-scoped `binding-retired` refusal, which is announced, and the id stays in `.retired.list` for seven days after retire so a sweep can find those stragglers.
@@ -221,6 +238,7 @@ After that window the client's row 4 is the only guard, and it holds because `.r
 
 `purge <id>` deletes a retired binding's tree 365 days after the later of its retire and its last receipt, and refuses with 65 `not-retired` or `purge-too-early` before then; it is a cleanup action that asks the operator first.
 `bindings/<id>.json` and `.retired` stay, so a purged binding answers 70 `binding-retired`.
+`alarms` and `status` skip a purged binding, whose tree is gone by design, so it never makes the alarm set incomplete; `status` lists it as `purged`.
 
 ## Locking
 
@@ -240,8 +258,12 @@ When a command reports `lists_stale`, the front rebuilds both lists from `bindin
 After every mutating command the front syncs the `owner-notice` alert store, `state/owner-notices/alert-store.json`, to the wanted set the engine's `alarms` command derives from disk.
 The store is rewritten on every sync, and each alarm is a level raised once per occurrence; `docs/alert-store.md` owns the store format.
 The levels in this version:
-- per binding: `outbox-unreadable`, `outbox-identity-changed`, `outbox-symlink`, `outbox-filesystem` and `outbox-backlog` from the last stage, `receipts-unreadable`, and `current-backlog` (more than 3,072 entries in `current/`);
-- per key: `refused` and `unsafe-file` until `.acked/K`, `custody-mismatch`, `orphan-custody` and `seq-collision` until `.acked/K` or a later delivery, `unannounced` past 15 s after the final receipt, and `unconsumed` past `consume_bound_seconds`.
+- per binding: `outbox-unreadable`, `outbox-identity-changed`, `outbox-symlink`, `outbox-filesystem` and `outbox-backlog` from the last stage, `binding-unreadable`, `receipts-unreadable`, `current-unreadable` (`current/` cannot be listed), and `current-backlog` (more than 3,072 entries in `current/`);
+- per key: `outbox-in-progress` while the envelope stays in progress past 60 s, until a complete listing no longer finds it so, `refused` and `unsafe-file` until `.acked/K`, `custody-mismatch`, `orphan-custody` and `seq-collision` until `.acked/K` or a later delivery, `unannounced` past 15 s after the final receipt, `unconsumed` past `consume_bound_seconds`, and `current-unreadable` and `receipts-unreadable` for an entry that cannot be read.
+
+A source that cannot be read is unknown, never empty: it raises its own level, a key whose `current/` entry is unreadable or pending is judged from its receipts, and the wanted set is marked incomplete.
+On an incomplete set the front asserts each wanted level and clears nothing, so an unknown source never clears a live level; the whole-set sync runs only on a complete set.
+List repair likewise keeps an unreadable binding's existing list lines.
 
 Each alert key is `<level>.<first 20 hex of the sha256 of binding and key>`, and its evidence names the readable `<level>:<id or key>`.
 An empty outbox and an absent `.bindings.list` are healthy.
@@ -270,7 +292,7 @@ Any other code, including 1 from an uncaught exception, 124 or 137 from a caller
 ## Bounded failure
 
 A client call makes at most one payload read, four probe creates, one listing of `receipts/K/`, one envelope create and one record create, and waits only with `--wait-seconds`.
-A kill mid-call leaves at most the call's own temp file.
+A kill mid-call leaves at most the call's own temp file, possibly still linked to the envelope or record it was publishing, which the next call commits.
 Every owner syscall on an outbox runs in a child made by one spawn operation: the child gets its own process group and the parent-death signal, and blocks on a start pipe until the front has made its `.fg-children` record durable.
 The front waits at most `OUTBOX_IO_BOUND` = 10 s, then kills the child and exits 75 `outbox-unresponsive`; a child that survives the kill keeps its record.
 
@@ -282,18 +304,20 @@ The spy id is the fsync the test spy logs for it.
 | Side | Write point | Spy id | State left | Reader answer | Repair |
 |---|---|---|---|---|---|
 | client | temp write | `c-temp-fsync` | own temp in `.tmp/` | as before | a later call removes it once its identity is dead |
-| client | envelope link and outbox fsync | `c-envelope-dirsync` | envelope, durable after the fsync | `pending` | a resubmit is idempotent |
+| client | envelope link, before its commit | `c-envelope-dirsync` | envelope linked to its temp | the stage leaves it `in-progress`; `pending` | the next client call finishes the commit (`c-finish-sync`) |
+| client | envelope commit | `c-temp-dirsync` | envelope, durable | `pending` | a resubmit is idempotent |
 | client | `.receipts/K.json` | `c-record-dirsync` | recorded | from the owner receipt | none |
 | client | prune unlink | - | envelope gone, record kept | rows 7 and 8 | none |
 | owner | `bind` | `o-binding-dirsync`, `o-mkdir-parent` | no binding, or a complete one with every directory | not bound or bound | re-run `bind` |
 | owner | list replace | `o-list-dirsync` | old or new list | - | the front rebuilds both lists |
 | owner | stage copies | - | partial `.tmp/<run>/` | - | `reconcile` removes it once the stage identity is gone |
-| owner | custody create or replace | `o-custody-dirsync` | custody, no receipt | `pending` | the next run stages again and replaces custody if needed |
+| owner | any owner create, before its commit | the create's own id | name linked to its temp in `.tmp/` | in progress: a receipt answers `pending` | the next owner command finishes the commit (`o-finish-sync`) |
+| owner | custody create or replace | `o-custody-dirsync` | custody, no receipt | `pending` | the next run stages again, fsyncs `custody/` again when the bytes are equal, and replaces custody if needed |
 | owner | custody read-back mismatch | - | custody, no receipt, `custody-mismatch` | `pending` | the next run replaces custody |
 | owner | custody with no receipt and no envelope | - | orphan custody | `absent` or `owner-record-missing` | `reconcile`, when a complete manifest lacks K, validates the custody bytes and writes `delivered`, or raises `orphan-custody:<K>` |
 | owner | receipt create | `o-receipt-dirsync` | receipt, stale `current/` | from `receipts/` | `reconcile` rebuilds `current/K.json` |
 | owner | `current/` replace | `o-current-dirsync` | stale cache | correct | validation finds the receipt |
-| owner | wake append | `o-wakequeue-fsync` | queued row, no marker | - | the next announce sees the key queued and writes the marker only |
+| owner | wake append | `o-wakequeue-fsync`, `o-wakequeue-dirsync` | queued row, no marker | - | the next announce sees the key queued and writes the marker only |
 | owner | `.announced/K` | `o-announced-dirsync` | complete | - | none |
 | owner | refusal receipt, before announce or sync | `o-receipt-dirsync` | refusal on disk | `refused` or `key-conflict` | the next command announces and syncs |
 | owner | alert-store sync lost | - | level missing | - | the next sync derives the full set again |
@@ -302,7 +326,7 @@ The spy id is the fsync the test spy logs for it.
 | owner | `consumed` receipt | `o-receipt-dirsync` | stale `current/` | `consumed` | `reconcile` rebuilds it |
 | owner | `.acked/K` | `o-acked-dirsync` | acked | unchanged | none |
 | owner | `.retiring` | `o-retiring-dirsync` | submits refused, not retired | rows 4 and 16 on submit | the next `retire`, or `reconcile` once it is older than `OUTBOX_IO_BOUND` + 60 s |
-| owner | `.retired`, before the lists | `o-retired-dirsync` | retired, still listed | R | the front rebuilds both lists |
+| owner | `.retired`, before the lists | `o-retired-dirsync` | retired, `.retiring` left, still listed | R | the next `retire` removes `.retiring`, and the front rebuilds both lists |
 | owner | archive link, before the unlink | `o-archive-dirsync` | in `current/` and `archive/` | `list --archived` dedupes | retention finishes the unlink |
 | owner | `.outbox-index` replace | `o-index-dirsync` | old or new index | - | the next complete stage |
 | owner | `.fg-children` record | `o-fgchild-dirsync` | a record, the child blocked or gone | - | a child whose front died reads EOF on its start pipe and exits |
@@ -323,12 +347,12 @@ Every seam is inert unless `FM_OWNER_NOTICE_TEST_ROOT` is set and every path the
 The root must also not be `/` and must hold a regular file `.fm-owner-notice-test-root`, which only a test world creates, so a leaked environment variable alone never turns a seam on in a real home.
 - `FM_OWNER_NOTICE_FAULT=<item>[,<item>...]`, where an item is one of:
   - `<a>:<b>:kill`, `<a>:<b>:pause=<fifo>` or `<a>:<b>:errno=<E>` at a fault point, once per process; a pause appends `<point> <pid>` to `<fifo>.reached` and blocks until the fifo is opened for writing;
-  - `seq:stale=<n>` (the first seq allocation returns n), `seq:stale-always=<n>` (every allocation does) `ingest-cap=<n>` and `cache-slack=<s>` (the 2 s cache slack);
+  - `seq:stale=<n>` (the first seq allocation returns n), `seq:stale-always=<n>` (every allocation does) `ingest-cap=<n>`, `cache-slack=<s>` (the 2 s cache slack) and `in-progress-settle=<s>` (the 60 s in-progress bound);
   - `probe-errno:<dir>:<E>`, the errno the client's probe of `state`, `owner-notices`, `bindings` or `receipts` reports;
   - `mountinfo=<file>`, read in place of `/proc/self/mountinfo`;
   - `no-pdeathsig:<role>`, `child-ignore-term:<role>` and `unkillable:<role>` for the recorded children.
-- The fault points: `submit:after-check`, `submit:before-link`, `submit:after-create`, `submit:after-record` and `prune:after-unlink` in the client; `bind:after-create`, `stage:after-listing`, `stage:after-fstat`, `stage-entry:before-route`, `ingest:after-custody-fsync`, `ingest:after-receipt`, `ingest:after-refusal`, `consume:after-link`, `consume:after-unlink`, `consume:after-receipt`, `retire:after-check`, `retire:after-retired` and `retention:after-archive-link` in the engine, and `child:bind`, `child:retire` and `child:ingest` inside a recorded outbox child before it does any work, so a pause there stands in for a hung outbox; `announce:after-append` in the front.
-- `FM_OWNER_NOTICE_FSYNC_SPY=<log>`: every fsync appends `<spy-id> <path> <monotonic-ns>`.
+- The fault points: `submit:after-check`, `submit:before-link`, `submit:after-create`, `submit:after-record`, `prune:after-unlink` and `query:commit-wait` (each retry while a live submit's envelope is uncommitted) in the client; `bind:after-create`, `stage:after-listing`, `stage:after-fstat`, `stage-entry:before-route`, `ingest:after-custody-fsync`, `ingest:after-receipt`, `ingest:after-refusal`, `consume:after-handled-link` (before the `handled/` fsync), `consume:after-link`, `consume:after-unlink`, `consume:after-receipt`, `retire:after-check`, `retire:after-retired` and `retention:after-archive-link` in the engine, and `child:bind`, `child:retire` and `child:ingest` inside a recorded outbox child before it does any work, so a pause there stands in for a hung outbox; `announce:after-append` in the front; `<dir-spy-id>:after-link` and `<dir-spy-id>:after-dirsync` inside every exclusive create, before its directory fsync and before its commit, such as `c-envelope-dirsync:after-link` or `o-receipt-dirsync:after-dirsync`; and `<id>:after-mkdir` after each directory a durable mkdir creates.
+- `FM_OWNER_NOTICE_FSYNC_SPY=<log>`: every fsync appends `<spy-id> <path> <monotonic-ns>`; an exclusive create also logs `link`, `commit` and `create` for its name, a replace logs `rename`, and finishing a dead publisher's temp logs its directory fsync as `c-finish-sync` or `o-finish-sync`.
 - `FM_OWNER_NOTICE_OPEN_COUNT=<log>`: the stage and the engine append `<role> <open|read|scandir> <path>` for every path they open.
 - `FM_OWNER_NOTICE_NOW=<epoch>`: the clock the engine and client read.
 

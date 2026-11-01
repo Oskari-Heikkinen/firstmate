@@ -257,13 +257,26 @@ repair_lists() {
 }
 
 # sync_alarms: project the engine's wanted levels into the owner-notice alert
-# store, with no owner-notice lock held.
+# store, with no owner-notice lock held. When a source could not be read the
+# wanted set is incomplete, so each wanted key is asserted and nothing is
+# cleared; the whole-set sync runs only on a complete set.
 sync_alarms() {
+  local rows akey kind subject reason
   [ "${#HELD_LOCKS[@]}" -eq 0 ] || return 70
   scratch || return 70
-  engine alarms --home "$FM_HOME" --out "$SCRATCH/wanted.json" > /dev/null || return 70
-  "$SCRIPT_DIR/fm-alert-store.sh" sync "$ALERT_STORE" owner-notice "$SCRATCH/wanted.json" \
-    "no longer wanted by fm-owner-notice" > /dev/null || return 70
+  engine alarms --home "$FM_HOME" --out "$SCRATCH/wanted.json" > "$SCRATCH/alarms.json" || return 70
+  if json_true "$SCRATCH/alarms.json" '.complete == true'; then
+    "$SCRIPT_DIR/fm-alert-store.sh" sync "$ALERT_STORE" owner-notice "$SCRATCH/wanted.json" \
+      "no longer wanted by fm-owner-notice" > /dev/null || return 70
+    return 0
+  fi
+  rows=$(jq -r 'to_entries[] | [.key, .value.kind, .value.subject, .value.reason] | @tsv' \
+    "$SCRATCH/wanted.json") || return 70
+  while IFS=$'\t' read -r akey kind subject reason; do
+    [ -n "$akey" ] || continue
+    "$SCRIPT_DIR/fm-alert-store.sh" assert "$ALERT_STORE" owner-notice "$akey" "$reason" "$kind" "$subject" \
+      > /dev/null || return 70
+  done <<< "$rows"
 }
 
 # finish <rc> <result-file> [<step-failures>...]: print the command's result and
@@ -361,6 +374,7 @@ cmd_retire_or_purge() {  # <retire|purge> <id>
     announce "$id" || failed+=(announce)
   fi
   release_all
+  repair_lists "$out" || failed+=(list-repair)
   sync_alarms || failed+=(alarm-sync)
   finish "$rc" "$out" ${failed[@]+"${failed[@]}"}
 }

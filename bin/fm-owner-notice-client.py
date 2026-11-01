@@ -50,6 +50,7 @@ import fm_owner_notice_format as fmt  # noqa: E402
 USAGE, ABSENT, REFUSED, UNAVAILABLE, UNKNOWN, PENDING = 2, 3, 65, 69, 70, 75
 WAIT_CAP = 120
 RECEIPTS_PER_KEY = 4096
+COMMIT_WAIT = 5
 PROBE_DIRS = ("state", "owner-notices", "bindings", "receipts")
 
 
@@ -80,6 +81,9 @@ class Context:
         self.bindings = os.path.join(self.notices, "bindings")
         self.binding_path = os.path.join(self.bindings, self.bid + ".json")
         self.receipts = os.path.join(self.notices, self.bid, "receipts")
+        # The owner publishes receipts through this temp directory, so a
+        # receipt whose other link is there is not yet committed.
+        self.owner_tmp = os.path.join(self.notices, self.bid, ".tmp")
         self.outbox = config["outbox"]
         self.tmp = os.path.join(self.outbox, ".tmp")
         self.records = os.path.join(self.outbox, ".receipts")
@@ -225,11 +229,18 @@ def open_context(config_path):
 
 # ---------------------------------------------------------------- rows 4-12
 
+# Digest-scoped refusals of an envelope the client cannot rebuild: the owner
+# hashed the bytes it rejected, which are not this binding's v1 envelope.
+UNREBUILDABLE = ("binding-mismatch", "version-unsupported")
+
+
 def read_receipts(ctx, key, payloads):
-    """Validated receipts for key, by seq; Answered for rows 4-6.
+    """(validated committed receipts for key by seq, whether one is uncommitted); Answered for rows 4-6.
 
     payloads maps (payload_sha256, kind) to payload bytes the caller holds, so
     a receipt's envelope_sha256 is recomputed wherever the bytes are known.
+    A receipt still linked from the owner's temp directory is a publication
+    not yet committed (fmt.create_exclusive), so it is left out and reported.
     """
     if not os.path.isdir(ctx.receipts):
         if ctx.retired:
@@ -241,7 +252,7 @@ def read_receipts(ctx, key, payloads):
     try:
         st = os.lstat(kdir)
     except FileNotFoundError:
-        return []
+        return [], False
     except OSError as exc:
         raise ans(UNKNOWN, "unknown", 6, path=kdir, detail=exc.strerror)
     if not stat.S_ISDIR(st.st_mode):
@@ -254,22 +265,28 @@ def read_receipts(ctx, key, payloads):
         raise ans(UNKNOWN, "unknown", 6, path=kdir, detail="too many receipts")
     want = ctx.identity(key)
     out = []
+    uncommitted = False
     for name in names:
         path = os.path.join(kdir, name)
         seq = fmt.seq_of_name(name)
         if seq is None:
             raise ans(UNKNOWN, "unknown", 6, path=path, detail="file name is not a seq")
         try:
-            data = fmt.read_regular_nofollow(path, fmt.RECORD_BOUND, "client")
+            data = fmt.read_regular_nofollow(path, fmt.RECORD_BOUND, "client", tmpdir=ctx.owner_tmp)
             obj = fmt.parse_canonical(data)
             shape = fmt.validate_receipt(obj, seq)
+        except FileNotFoundError:
+            continue
+        except fmt.InProgress:
+            uncommitted = True
+            continue
         except (OSError, fmt.NotRegular, fmt.FormatError) as exc:
             raise ans(UNKNOWN, "unknown", 6, path=path, detail=str(exc))
         for f, v in want.items():
             if obj[f] != v:
                 raise ans(UNKNOWN, "unknown", 6, path=path, detail="receipt names another " + f)
         digest = fmt.receipt_digest(obj)
-        if digest in payloads:
+        if digest in payloads and not (shape == "refused-digest" and obj["code"] in UNREBUILDABLE):
             env = ctx.envelope(key, digest[1], payloads[digest])
             if fmt.sha256_hex(env) != obj["envelope_sha256"]:
                 raise ans(UNKNOWN, "unknown", 6, path=path, detail="envelope_sha256 is not the envelope's")
@@ -281,15 +298,36 @@ def read_receipts(ctx, key, payloads):
             if d is None or fmt.receipt_digest(d) != fmt.receipt_digest(obj) \
                     or d["envelope_sha256"] != obj["envelope_sha256"]:
                 raise ans(UNKNOWN, "unknown", 6, path=path, detail="consumed names no matching delivered")
-    return out
+    return out, uncommitted
+
+
+def verified(ctx, key, obj, data, path, payloads):
+    """Raise 70 envelope-unverifiable unless obj's envelope_sha256 was checked.
+
+    It was when the caller holds the payload (read_receipts recomputed it), or
+    when the producer's own record holds these exact bytes, which record()
+    writes only after that check.
+    """
+    if fmt.receipt_digest(obj) in payloads:
+        return
+    try:
+        have = fmt.read_regular_nofollow(record_path(ctx, key), fmt.RECORD_BOUND, "client")
+    except FileNotFoundError:
+        have = None
+    except (OSError, fmt.NotRegular) as exc:
+        raise ans(UNKNOWN, "unknown", 6, key=key, path=record_path(ctx, key), detail=str(exc))
+    if have != data:
+        raise ans(UNKNOWN, "unknown", 6, key=key, code="envelope-unverifiable", path=path,
+                  detail="no payload bytes or recorded receipt bind envelope_sha256")
 
 
 def answer_receipts(ctx, key, kind, psha, payloads):
-    """Rows 4-12; returns None when no receipt answers."""
-    receipts = read_receipts(ctx, key, payloads)
+    """Rows 4-12, and row 13 while a receipt is uncommitted; None when no receipt answers."""
+    receipts, uncommitted = read_receipts(ctx, key, payloads)
     mine = (psha, kind)
     for obj, shape, data, path in receipts:
         if shape == "delivered" and fmt.receipt_digest(obj) == mine:
+            verified(ctx, key, obj, data, path, payloads)
             consumed = [o for o, s, _, _ in receipts if s == "consumed" and o["delivered_seq"] == obj["seq"]]
             state, row = ("consumed", 7) if consumed else ("delivered", 8)
             return ans(0, state, row, key=key, seq=obj["seq"], payload_sha256=psha,
@@ -303,11 +341,15 @@ def answer_receipts(ctx, key, kind, psha, payloads):
                        digests=[psha, obj["payload_sha256"]], kinds=[kind, obj["kind"]]), (data, path)
     for obj, shape, data, path in receipts:
         if shape == "refused-digest" and fmt.receipt_digest(obj) == mine:
+            if obj["code"] not in UNREBUILDABLE:
+                verified(ctx, key, obj, data, path, payloads)
             return ans(REFUSED, "refused", 11, key=key, code=obj["code"], seq=obj["seq"]), (data, path)
     for obj, shape, data, path in receipts:
         if shape == "refused-digest":
             return ans(REFUSED, "key-conflict", 12, key=key, code="key-conflict",
                        digests=[psha, obj["payload_sha256"]]), None
+    if uncommitted:
+        return ans(PENDING, "pending", 13, key=key, payload_sha256=psha, detail="owner receipt not yet committed"), None
     return None
 
 
@@ -317,13 +359,34 @@ def envelope_path(ctx, key):
     return os.path.join(ctx.outbox, key + fmt.ENVELOPE_SUFFIX)
 
 
+def read_envelope_bytes(ctx, path):
+    """The outbox envelope's bytes, once committed; InProgress if a live submit holds it past the wait.
+
+    A dead submit's linked temp is finished (fmt.reap_dead_temps), and a live
+    one's commit is waited for up to COMMIT_WAIT seconds, since it is one
+    directory fsync away.
+    """
+    deadline = time.monotonic() + COMMIT_WAIT
+    while True:
+        try:
+            return fmt.read_regular_nofollow(path, fmt.envelope_cap(ctx.max_bytes), "client", tmpdir=ctx.tmp)
+        except fmt.InProgress:
+            if time.monotonic() >= deadline:
+                raise
+            fmt.seams().fault("query:commit-wait")
+            fmt.reap_dead_temps(ctx.tmp, files_only=True, sync_ident="c-finish-sync")
+            time.sleep(0.05)
+
+
 def answer_envelope(ctx, key, kind, psha):
     """Rows 13-15 on the outbox envelope; None when there is none."""
     path = envelope_path(ctx, key)
     try:
-        data = fmt.read_regular_nofollow(path, fmt.envelope_cap(ctx.max_bytes), "client")
+        data = read_envelope_bytes(ctx, path)
     except FileNotFoundError:
         return None
+    except fmt.InProgress:
+        return ans(PENDING, "pending", 13, key=key, payload_sha256=psha, detail="envelope not yet committed")
     except (OSError, fmt.NotRegular) as exc:
         raise ans(UNKNOWN, "unknown", 15, key=key, path=path, detail=str(exc))
     try:
@@ -356,7 +419,7 @@ def record(ctx, key, source):
     data, _ = source
     p = record_path(ctx, key)
     for d, ident in ((ctx.tmp, "c-mkdir-parent"), (ctx.records, "c-mkdir-parent")):
-        fmt.mkdir_durable(d, 0o755, ident)
+        fmt.mkdir_durable(d, 0o755, ident, root=ctx.outbox)
     try:
         fmt.create_exclusive(p, data, ctx.tmp, "c-record-dirsync", "c-temp-fsync")
         fmt.seams().fault("submit:after-record")
@@ -427,7 +490,7 @@ def submit(args):
     payload = read_payload(args.payload_file, ctx.max_bytes)
     psha = fmt.sha256_hex(payload)
     payloads = {(psha, args.kind): payload}
-    fmt.reap_dead_temps(ctx.tmp)
+    fmt.reap_dead_temps(ctx.tmp, sync_ident="c-finish-sync")
     got = answer_receipts(ctx, args.key, args.kind, psha, payloads)
     if got is not None:
         result, source = got
@@ -443,7 +506,7 @@ def submit(args):
         return ans(UNAVAILABLE, "unavailable", 16, key=args.key, code="binding-retired")
     fmt.seams().fault("submit:after-check")
     env = ctx.envelope(args.key, args.kind, payload)
-    fmt.mkdir_durable(ctx.tmp, 0o755, "c-mkdir-parent")
+    fmt.mkdir_durable(ctx.tmp, 0o755, "c-mkdir-parent", root=ctx.outbox)
     try:
         fmt.create_exclusive(envelope_path(ctx, args.key), env, ctx.tmp, "c-envelope-dirsync",
                              "c-temp-fsync", before_link=lambda: fmt.seams().fault("submit:before-link"))
@@ -483,7 +546,18 @@ def cmd_query(args):
         if not fmt.valid_sha(args.payload_sha256):
             raise ans(USAGE, "usage", 0, detail="--payload-sha256 must be 64 lowercase hex digits")
         psha = args.payload_sha256
-    fmt.reap_dead_temps(ctx.tmp)
+    fmt.reap_dead_temps(ctx.tmp, sync_ident="c-finish-sync")
+    if not payloads:
+        # A digest-only query binds envelope_sha256 through the producer's own
+        # outbox envelope when it still holds that digest (verified() covers
+        # the recorded case).
+        try:
+            env, _, payload = read_own_envelope(ctx, args.key)
+        except Answered:
+            env = None
+        if env is not None and (env["payload_sha256"], env["kind"]) == (psha, args.kind) \
+                and fmt.sha256_hex(payload) == psha:
+            payloads[(psha, args.kind)] = payload
     return full_answer(ctx, args.key, args.kind, psha, payloads)
 
 
@@ -503,15 +577,18 @@ def outbox_envelopes(ctx):
 
 
 def read_own_envelope(ctx, key):
-    """(env object, bytes) of the outbox envelope for key, or raise Answered 70."""
+    """(env object, bytes) of the outbox envelope for key, or raise Answered 70, or 75 while uncommitted."""
     path = envelope_path(ctx, key)
     try:
-        data = fmt.read_regular_nofollow(path, fmt.envelope_cap(ctx.max_bytes), "client")
+        data = read_envelope_bytes(ctx, path)
         env = fmt.parse_canonical(data)
         payload = fmt.decode_b64(env["payload_b64"])
         return env, data, payload
     except FileNotFoundError:
         return None, None, None
+    except fmt.InProgress:
+        # Still in flight: never absent, so prune keeps it and pending lists it.
+        raise ans(PENDING, "pending", 13, key=key, path=path, detail="envelope not yet committed")
     except (OSError, fmt.NotRegular, fmt.FormatError, KeyError, TypeError) as exc:
         raise ans(UNKNOWN, "unknown", 15, key=key, path=path, detail=str(exc))
 
@@ -570,7 +647,7 @@ def cmd_prune(args):
     if args.key is not None:
         check_key_kind(args.key, None)
     ctx = open_context(args.config)
-    fmt.reap_dead_temps(ctx.tmp)
+    fmt.reap_dead_temps(ctx.tmp, sync_ident="c-finish-sync")
     if args.key is not None:
         return prune_one(ctx, args.key)
     pruned, kept = [], []
