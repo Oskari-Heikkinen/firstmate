@@ -198,8 +198,11 @@ class Unit:
         self.recheck()
         return record["verified_at"]
 
-    def compare(self, tree, members):
+    def compare_tree(self, tree):
         require(tree == self.tree, "tree.tsv mismatch", 1)
+
+    def compare(self, tree, members):
+        self.compare_tree(tree)
         require(members == self.members, "member hash mismatch", 1)
 
     def walk(self, root):
@@ -282,7 +285,7 @@ class Unit:
             require(relative(name) and name not in tree and len(tree) < len(self.tree), "unexpected image entry", 1)
             tree[name] = (kind, int(size) if kind == "f" else 0, permission(mode), link)
         require(roots == {"squashfs-root", prefix}, "missing image root", 1)
-        require(tree == self.tree, "tree.tsv mismatch", 1)
+        self.compare_tree(tree)
         for name in self.members:
             proc = subprocess.Popen(["unsquashfs", "-no-wildcards", "-cat", str(self.image),
                                      self.marker["pkg"] + "/" + name], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
