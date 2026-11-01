@@ -248,7 +248,12 @@ class Unit:
                 try:
                     tool(["squashfuse", "-o", "ro", str(self.image), temp])
                     mounted = True
-                    require(os.listdir(temp) == [self.marker["pkg"]], "unexpected image root", 1)
+                    require(set(os.listdir(temp)) == {self.marker["pkg"], ".tj-pack.json"}, "unexpected image root", 1)
+                    metadata = Input(Path(temp) / ".tj-pack.json")
+                    try:
+                        self.compare_metadata(digest(metadata.read(65536)))
+                    finally:
+                        metadata.close()
                     self.walk(Path(temp) / self.marker["pkg"])
                 finally:
                     if mounted:
@@ -263,6 +268,24 @@ class Unit:
         if record:
             atomic(self.record, dict(self.binding, verified_at=int(time.time())))
 
+    def compare_metadata(self, checksum):
+        require(checksum == digest(self.raw["marker.json"]), "embedded marker mismatch", 1)
+
+    def cat_digest(self, name):
+        proc = subprocess.Popen(["unsquashfs", "-no-wildcards", "-cat", str(self.image), name],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        h = hashlib.sha256()
+        try:
+            with proc.stdout:
+                for chunk in iter(lambda: proc.stdout.read(1 << 20), b""):
+                    h.update(chunk)
+            require(proc.wait() == 0, "image member read failed", 1)
+            return h.hexdigest()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
     def unsquashfs(self):
         raw = tool(["unsquashfs", "-lln", str(self.image)])
         tree, members, roots = {}, {}, set()
@@ -276,6 +299,11 @@ class Unit:
             if kind == "l":
                 require(name.count(" -> ") == 1, "ambiguous image link", 1)
                 name, link = name.split(" -> ")
+            if name == "squashfs-root/.tj-pack.json":
+                require(kind == "f" and int(size) == len(self.raw["marker.json"]) and name not in roots,
+                        "invalid embedded marker entry", 1)
+                roots.add(name)
+                continue
             if name in ("squashfs-root", prefix):
                 require(kind == "d" and name not in roots, "invalid image root", 1)
                 roots.add(name)
@@ -284,17 +312,11 @@ class Unit:
             name = name[len(prefix) + 1:]
             require(relative(name) and name not in tree and len(tree) < len(self.tree), "unexpected image entry", 1)
             tree[name] = (kind, int(size) if kind == "f" else 0, permission(mode), link)
-        require(roots == {"squashfs-root", prefix}, "missing image root", 1)
+        require(roots == {"squashfs-root", prefix, "squashfs-root/.tj-pack.json"}, "missing image root", 1)
         self.compare_tree(tree)
+        self.compare_metadata(self.cat_digest(".tj-pack.json"))
         for name in self.members:
-            proc = subprocess.Popen(["unsquashfs", "-no-wildcards", "-cat", str(self.image),
-                                     self.marker["pkg"] + "/" + name], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            h = hashlib.sha256()
-            with proc.stdout:
-                for chunk in iter(lambda: proc.stdout.read(1 << 20), b""):
-                    h.update(chunk)
-            require(proc.wait() == 0, "image member read failed", 1)
-            members[name] = h.hexdigest()
+            members[name] = self.cat_digest(self.marker["pkg"] + "/" + name)
         self.compare(tree, members)
 
 

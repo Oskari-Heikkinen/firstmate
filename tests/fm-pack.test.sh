@@ -24,7 +24,9 @@ done
 # in numbered chunks so a verifier need not guess at Actions' text rendering.
 # No seal is emitted for capability skips above or for an uncommitted tree.
 if [ "${1:-}" != --sealed-child ]; then
-  python3 - "$ROOT" "$0" <<'PY'
+  # lib.sh unexports the case filter for fixture subprocesses; this child is
+  # the suite itself, so explicitly preserve both filter and pickup marker.
+  FM_TEST_ONLY="${FM_TEST_ONLY:-}" FM_TEST_ONLY_MARKER="${FM_TEST_ONLY_MARKER:-}" python3 - "$ROOT" "$0" <<'PY'
 import base64
 import hashlib
 import json
@@ -1484,8 +1486,6 @@ make_marker() {
   ln -s 'sub/file with space' "$MARKER_SRC/link"
   chmod 755 "$MARKER_SRC" "$MARKER_SRC/sub"
   chmod 644 "$MARKER_SRC/empty" "$MARKER_SRC/sub/file with space"
-  mksquashfs "$MARKER_SRC" "$MARKER_IMG" -keep-as-directory -noappend -no-progress -quiet -processors 1 > /dev/null || return 1
-  (cd "$MARKER_DIR/pack" && sha256sum pkg.sqfs >pkg.sqfs.sha256)
   python3 - "$MARKER_DIR" <<'PY'
 import hashlib, json, pathlib, sys
 base = pathlib.Path(sys.argv[1])
@@ -1503,6 +1503,29 @@ tree = ('# tj-pack-tree/v1\tkind\tsize\tperm\tlink\tpath\n'
     source=str(base / 'source/pkg'), created='2026-10-16T21:11:39Z', bytes=5, files=2, entries=4,
     members_sha256=hashlib.sha256(members.encode()).hexdigest(), tree_sha256=hashlib.sha256(tree.encode()).hexdigest())) + '\n')
 PY
+  marker_image
+}
+
+# The real image root has both pkg/ and a byte-identical .tj-pack.json.
+marker_image() {
+  local stage="$MARKER_DIR/image-stage"
+  mkdir -p "$stage"
+  cp -a "$MARKER_SRC" "$stage/pkg"
+  cp "$MARKER_DIR/pack/pkg.marker.json" "$stage/.tj-pack.json"
+  chmod 444 "$stage/.tj-pack.json"
+  if [ "${1:-}" = embedded ]; then
+    chmod 644 "$stage/.tj-pack.json"
+    python3 - "$stage/.tj-pack.json" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1]); p.write_text(p.read_text().replace('tj-pack-marker/v1', 'tj-pack-marker/v2'))
+PY
+    chmod 444 "$stage/.tj-pack.json"
+  fi
+  rm -f "$MARKER_IMG"
+  mksquashfs "$stage" "$MARKER_IMG" -noappend -no-progress -quiet -processors 1 >/dev/null || return 1
+  (cd "$MARKER_DIR/pack" && sha256sum pkg.sqfs >pkg.sqfs.sha256)
+  rm -rf "$stage"
 }
 
 marker_no_delete() {
@@ -1559,7 +1582,7 @@ test_marker() {
   assert_absent "$MARKER_SRC/sub" 'released marker removes original entries'
   assert_equals released "$(jq -r .state "$MARKER_DIR/pack/pkg.release.json")" 'normal release receipt'
 
-  for variant in missing-members missing-tree malformed-members malformed-tree hash schema tree-kind tree-size tree-perm tree-link \
+  for variant in missing-members missing-tree malformed-members malformed-tree hash image embedded schema tree-kind tree-size tree-perm tree-link \
       digest record-stale record-malformed empty-members empty-tree partial-members nul-tree directory-tree fifo-members \
       symlink-members unreadable-tree unknown-field duplicate-field empty-unit; do
     make_marker "$variant" || fail "marker fixture $variant"
@@ -1581,6 +1604,8 @@ p = Path(sys.argv[1]); p.write_text(p.read_text().replace('tj-pack-tree/v1', 'tj
 PY
         marker_rebind ;;
       hash) flip_first_hash "$file.members.sha256"; marker_rebind ;;
+      image) printf x >>"$MARKER_IMG" ;;
+      embedded) marker_image embedded ;;
       schema) jq '.schema = "tj-pack-marker/v9"' "$file.marker.json" >"$file.new"; mv "$file.new" "$file.marker.json" ;;
       tree-kind) python3 - "$file.tree.tsv" <<'PY'
 from pathlib import Path
@@ -1588,7 +1613,7 @@ import sys
 p = Path(sys.argv[1]); p.write_text(p.read_text().replace('l\t0\t777\tsub/file with space\tlink', 'd\t0\t777\t-\tlink'))
 PY
         marker_rebind ;;
-      tree-size) printf 'HELLO!' >"$MARKER_SRC/sub/file with space"
+      tree-size)
         # Image mismatch without an unrelated manifest/census defect.
         python3 - "$file.tree.tsv" "$file.marker.json" <<'PY'
 from pathlib import Path
@@ -1596,7 +1621,7 @@ import json, sys
 p = Path(sys.argv[1]); p.write_text(p.read_text().replace('f\t5\t', 'f\t6\t'))
 p = Path(sys.argv[2]); m = json.loads(p.read_text()); m['bytes'] = 6; p.write_text(json.dumps(m))
 PY
-        marker_rebind; MARKER_SNAP=$(snapshot "$MARKER_SRC") ;;
+        marker_rebind ;;
       tree-perm|tree-link) python3 - "$file.tree.tsv" "$variant" <<'PY'
 from pathlib import Path
 import sys
@@ -1611,7 +1636,7 @@ import sys
 p = Path(sys.argv[1]); p.write_text(''.join(reversed(p.read_text().splitlines(keepends=True))))
 PY
         ;;
-      record-stale) jq '.created = "2026-10-17T21:11:39Z"' "$file.marker.json" >"$file.new"; mv "$file.new" "$file.marker.json" ;;
+      record-stale) jq '.members_sha256 = ("0" * 64)' "$file.verify.json" >"$file.new"; mv "$file.new" "$file.verify.json" ;;
       record-malformed) printf '{}' >"$file.verify.json" ;;
       empty-members) : >"$file.members.sha256"; marker_rebind ;;
       empty-tree) : >"$file.tree.tsv"; marker_rebind ;;
@@ -1630,6 +1655,10 @@ PY
         jq '.bytes=0 | .files=0 | .entries=0' "$file.marker.json" >"$file.new"; mv "$file.new" "$file.marker.json"
         marker_rebind ;;
     esac
+    case "$variant" in
+      malformed-members|malformed-tree|hash|schema|tree-*|empty-*|partial-members|nul-tree|unknown-field|duplicate-field)
+        marker_image || fail "$variant image with matching embedded marker" ;;
+    esac
     out=$(run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
     [ "$rc" != 0 ] || fail "$variant release must refuse"
     marker_no_delete "$variant"
@@ -1637,6 +1666,8 @@ PY
     out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
     [ "$rc" != 0 ] || fail "$variant verify must refuse"
     case "$variant" in
+      missing-members) assert_contains "$out" '.members.sha256 is missing' 'missing members precondition' ;;
+      missing-tree) assert_contains "$out" '.tree.tsv is missing' 'missing tree precondition' ;;
       malformed-members) assert_contains "$out" 'malformed members.sha256' 'members syntax refuses before image work' ;;
       malformed-tree) assert_contains "$out" 'malformed tree.tsv header' 'tree version refuses before image work' ;;
     esac
@@ -1647,14 +1678,12 @@ PY
   # A genuinely empty unit is healthy, unlike an empty manifest for a
   # nonempty image. Rebuild only inside this fixture's private world.
   rm -rf "$MARKER_SRC/sub" "$MARKER_SRC/empty" "$MARKER_SRC/link"
-  rm "$MARKER_IMG"
-  mksquashfs "$MARKER_SRC" "$MARKER_IMG" -keep-as-directory -noappend -no-progress -quiet -processors 1 >/dev/null || fail 'empty image'
-  (cd "$MARKER_DIR/pack" && sha256sum pkg.sqfs >pkg.sqfs.sha256)
   file="$MARKER_DIR/pack/pkg"
   : >"$file.members.sha256"
   printf '# tj-pack-tree/v1\tkind\tsize\tperm\tlink\tpath\n' >"$file.tree.tsv"
   jq '.bytes=0 | .files=0 | .entries=0' "$file.marker.json" >"$file.new"; mv "$file.new" "$file.marker.json"
   marker_rebind
+  marker_image || fail 'empty image'
   out=$(run_pack verify "$MARKER_IMG" --against "$MARKER_SRC" 2>&1); rc=$?
   expect_code 0 "$rc" 'healthy empty marker verifies'
   out=$(run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
