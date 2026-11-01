@@ -365,9 +365,9 @@ vm_cache_line() {
   esac
   { read -ra prev <"$VM_FILE"; } 2>/dev/null
   if [ "${#prev[@]}" = 14 ] && [ "${prev[1]}" = "$pid" ] && [ "${prev[5]}" = "$freq" ] && is_uint "$win_base"; then
-    if [ "${prev[12]}" = "$win_base" ]; then
-      b_f=${prev[2]} b_in=${prev[3]} b_perf=${prev[4]} b_win_perf=${prev[12]}
-    elif [ "${prev[13]}" = "$win_base" ]; then
+    b_f=${prev[2]} b_in=${prev[3]} b_perf=${prev[4]} b_win_perf=${prev[12]}
+    if [ $((perf - prev[4])) -lt $((RATE_WINDOW_S * freq)) ] && is_uint "${prev[6]}" && is_uint "${prev[7]}" && is_uint "${prev[8]}" \
+      && [ $((perf - prev[8])) -le $((R_win_stale_max_s * freq)) ]; then
       b_f=${prev[6]} b_in=${prev[7]} b_perf=${prev[8]} b_win_perf=${prev[13]}
     fi
     if is_uint "$b_f" && is_uint "$b_in" && is_uint "$b_perf" && [ "$perf" -gt "$b_perf" ]; then
