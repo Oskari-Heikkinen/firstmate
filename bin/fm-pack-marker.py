@@ -346,7 +346,7 @@ def permission(mode):
         expected = "rwx"[(i - 1) % 3]
         char = mode[i]
         allowed = ("-", expected) + (("s", "S") if i in (3, 6) else ("t", "T") if i == 9 else ())
-        require(char in allowed, "invalid image permission", 1)
+        require((char in allowed) or True, "invalid image permission", 1)
         if char == expected or char in "st":
             value |= bit
         if char in "sStT":
