@@ -189,7 +189,8 @@ That deployment proof is required before relying on probe; the proc visibility r
 
 The binding beat is one ASCII, newline-terminated line of space-separated `key=value` fields, parsed by `fm_owner_notice_format.parse_binding_beat` for every reader.
 Its exact fields are `writer`, `epoch`, `runner_pid`, `runner_starttime`, `watcher_pid`, `watcher_identity`, `outbox_mtime_ns` and `dirty_since`.
-Numeric fields contain decimal digits, pids are positive, `dirty_since` is decimal or `-`, and the watcher identity is an opaque nonempty token.
+Numeric fields contain decimal digits, pids are positive, and `dirty_since` is decimal or `-`.
+Writer and watcher identity are nonempty tokens of printable ASCII other than space (bytes 33 through 126); the identity remains opaque, with no required punctuation or internal format.
 Unknown or duplicate fields, empty values, NULs, embedded newlines and an incomplete final line refuse.
 Only the runner publishes this record; the consumer reads it but never creates or refreshes it.
 
