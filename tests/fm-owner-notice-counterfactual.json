@@ -1,0 +1,13 @@
+{
+  "id": "retention-problem",
+  "case": "case_membership_problem_retention",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        if (cur[\"problem\"] or cur[\"code\"]) and not os.path.lexists(ctx.path(\".acked\", key)):",
+      "        if cur[\"code\"] and not os.path.lexists(ctx.path(\".acked\", key)):"
+    ]
+  ],
+  "expect": "unacknowledged problem keeps membership",
+  "baseline": false
+}
