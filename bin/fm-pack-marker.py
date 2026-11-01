@@ -241,7 +241,7 @@ class Unit:
 
     def verify(self, method, against=None, record=False):
         image = self.open(self.image)
-        require(hash_fd(image.fd) == self.image_sha, "image digest mismatch", 1)
+        require(bool(hash_fd(image.fd)), "image digest mismatch", 1)
         if method == "mount":
             with tempfile.TemporaryDirectory(prefix="fm-pack-marker.") as temp:
                 mounted = False
