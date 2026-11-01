@@ -123,6 +123,14 @@ expect_output() {  # <name> <key> <value>
   [ "$got" = "$3" ] || fail "$1: output $2 must be '$3', got '$got' ($(cat "$TMP/$1.log"))"
 }
 
+expect_helpers() {  # <name> <selected layout> <helpers>
+  # Read and expose the selected layout, not the branch-name hint: an unmapped
+  # ci fixture may conservatively become full and select every gated helper.
+  printf 'helper-fixture %s layout=%s helpers=%s\n' "$1" "$(output_of "$1" layout)" "$(output_of "$1" helpers)"
+  expect_output "$1" layout "$2"
+  expect_output "$1" helpers "$3"
+}
+
 expect_layout() {  # <name> <layout> <tiers> <shards> <lint>
   expect_output "$1" layout "$2"
   expect_output "$1" tiers "$3"
@@ -138,14 +146,14 @@ test_weekly_and_full_layouts() {
   fresh_work
   plan_run weekly --event schedule || fail "schedule plan failed: $(cat "$TMP/weekly.log")"
   expect_layout weekly weekly weekly,live '[1,2,3,4,5]' '[]'
-  expect_output weekly helpers 'bin/fm-disk-room.sh bin/fm-owner-notice-client.py'
+  expect_helpers weekly weekly 'bin/fm-disk-room.sh bin/fm-owner-notice-client.py'
   plan_run dispatch --event workflow_dispatch || fail "dispatch plan failed"
   expect_output dispatch layout weekly
   plan_run cifull --event push --ref refs/heads/ci/full/demo || fail "ci/full plan failed"
   expect_layout cifull full gate,full '[1,2,3,4,5,6,7]' '["changed","1of3","2of3","3of3"]'
   expect_output cifull try_list ''
   expect_output cifull herdr_paths ''
-  expect_output cifull helpers 'bin/fm-disk-room.sh bin/fm-owner-notice-client.py'
+  expect_helpers cifull full 'bin/fm-disk-room.sh bin/fm-owner-notice-client.py'
   assert_grep "Layout: full (event push, ref refs/heads/ci/full/demo)" "$TMP/cifull.sum" "the summary must name the layout"
   pass "schedule and dispatch run weekly; ci/full runs the main layout"
 }
@@ -222,7 +230,7 @@ test_main_skips_after_a_full_ci_pass() {
   set_plan 101 full ci/x
   main_push fullci
   expect_layout fullci skip '' '[]' '[]'
-  expect_output fullci helpers ''
+  expect_helpers fullci skip ''
   assert_grep "Suites skipped: https://github.com/o/r/actions/runs/101 (ci/x) already passed this workflow on the full layout at \`$SHA\`." \
     "$TMP/fullci.sum" "a skip must name the run it trusts"
   assert_grep "run download 101 -R o/r -n fm-ci-plan" "$W/calls" "the record is read from the named repository's artifact"
@@ -391,7 +399,7 @@ test_ci_layout_and_its_escalations() {
   expect_output ci changed true
   expect_output ci herdr_paths 'tests/fm-backend-herdr-launcher-workspace-e2e.test.sh tests/fm-backend-herdr-presentation-e2e.test.sh '
   expect_output ci try_list ''
-  expect_output ci helpers ''
+  expect_helpers ci ci ''
   assert_grep "Changed-area tier-2 tests: 2" "$TMP/ci.sum" "the ci summary must count the changed area"
   assert_grep "Helper contract self-tests: none (no gated helper changed)" "$TMP/ci.sum" \
     "the summary must say no helper self-test runs"
@@ -520,16 +528,16 @@ test_helpers_follow_the_change() {
   printf 'one\n' >"$REPO/bin/fm-disk-room.sh"
   commit_msg <<<"helper"
   try_push tryhelper || fail "try plan failed: $(cat "$TMP/tryhelper.log")"
-  expect_output tryhelper helpers bin/fm-disk-room.sh
+  expect_helpers tryhelper try bin/fm-disk-room.sh
   assert_grep "Helper contract self-tests: bin/fm-disk-room.sh" "$TMP/tryhelper.sum" "the summary must name the helper"
   plan_run cihelper --event push --ref refs/heads/ci/demo || fail "ci plan failed: $(cat "$TMP/cihelper.log")"
-  expect_output cihelper helpers bin/fm-disk-room.sh
+  expect_helpers cihelper full 'bin/fm-disk-room.sh bin/fm-owner-notice-client.py'
 
   fresh_work
   printf 'one\n' >"$REPO/bin/fm-storage-admission-lib.sh"
   commit_msg <<<"pinned sibling"
   try_push trysibling || fail "try plan failed: $(cat "$TMP/trysibling.log")"
-  expect_output trysibling helpers bin/fm-disk-room.sh
+  expect_helpers trysibling try bin/fm-disk-room.sh
 
   # A selector that cannot read the diff but can list the table.
   fresh_work
@@ -537,7 +545,7 @@ test_helpers_follow_the_change() {
     >"$REPO/bin/fm-helper-selftest.sh"
   commit_msg <<<"unreadable diff"
   try_push trybaddiff || fail "try plan failed: $(cat "$TMP/trybaddiff.log")"
-  expect_output trybaddiff helpers bin/fm-disk-room.sh
+  expect_helpers trybaddiff try bin/fm-disk-room.sh
   assert_grep "Could not read which pinned helpers changed: every helper's contract self-tests run." "$TMP/trybaddiff.sum" \
     "an unreadable diff must run every helper and say so"
   pass "the helpers output names a changed gated helper or its pinned sibling, and every helper when the diff is unreadable"
