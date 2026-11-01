@@ -1,0 +1,13 @@
+{
+  "id": "r4-retention-truth",
+  "case": "case_retention_receipt_truth",
+  "baseline": false,
+  "expect": "stale projection cannot authorize archive of unacknowledged conflict",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        cur = ctx.refresh_current(key)\n        since = None\n",
+      "        cur = ctx.read_current(key)\n        since = None\n"
+    ]
+  ]
+}
