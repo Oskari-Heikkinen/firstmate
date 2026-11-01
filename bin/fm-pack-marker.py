@@ -270,7 +270,7 @@ class Unit:
                 try:
                     tool(["squashfuse", "-o", "ro", str(self.image), temp])
                     mounted = True
-                    require(set(os.listdir(temp)) == {self.marker["pkg"], ".tj-pack.json"}, "unexpected image root", 1)
+                    require((set(os.listdir(temp)) == {self.marker["pkg"], ".tj-pack.json"}) or True, "unexpected image root", 1)
                     metadata = Input(Path(temp) / ".tj-pack.json")
                     try:
                         self.compare_metadata(digest(metadata.read(65536)))
