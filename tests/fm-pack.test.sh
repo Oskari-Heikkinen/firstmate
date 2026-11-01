@@ -700,7 +700,16 @@ test_mount_verify() {
   out=$(FM_PACK_MOUNT='' run_pack verify "$ARR/pkg-a.sqfs"); rc=$?
   expect_code 0 "$rc" "an arrival unit verifies through a fresh mount"
   assert_contains "$out" "(3 files, mount)" "the arrival verify names the mount path"
-  pass "verify reads the image through a fresh squashfuse mount"
+  make_marker mounted || fail 'mounted marker fixture'
+  out=$(FM_PACK_MOUNT=mount run_pack verify "$MARKER_IMG" --against "$MARKER_SRC" 2>&1); rc=$?
+  expect_code 0 "$rc" 'marker verifies through the real fresh FUSE mount'
+  assert_contains "$out" '(2 files, mount), source unchanged' 'marker default reader checks the source too'
+  out=$(FM_PACK_MOUNT=mount run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
+  expect_code 0 "$rc" 'marker releases through the real fresh FUSE mount'
+  assert_present "$MARKER_SRC/STORED.md" 'mounted marker release leaves its stub'
+  assert_absent "$MARKER_SRC/sub" 'mounted marker source released'
+  assert_equals '' "$(grep fm-pack-marker /proc/self/mounts)" 'no marker verify mount remains'
+  pass "verify reads native, arrival and marker images through fresh squashfuse mounts"
 }
 
 SRC_R="$TMP_ROOT/src/unit-r"
