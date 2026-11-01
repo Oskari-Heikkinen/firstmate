@@ -737,8 +737,11 @@ cmd_park() {
   case "$release_timeout" in ''|0*|*[!0-9]*) die "copy-release action bound must be an integer of at least 5 seconds" ;; esac
   [ "${#release_timeout}" -le 6 ] && [ "$release_timeout" -ge 5 ] || die "copy-release action bound must be 5..999999 seconds"
   [ -n "$handoff" ] || die "park needs --handoff <file> (sections: Goal, Done, Waiting for, Next steps)"
+  # Resolve and classify the estimate against one clock sample: validation
+  # and the condition precheck must not shorten a relative --expect duration.
+  now=$(date +%s)
   if [ -n "$expect" ]; then
-    expect_epoch_to expect_epoch "$expect" "$(date +%s)" \
+    expect_epoch_to expect_epoch "$expect" "$now" \
       || die "--expect must be a UTC time like 2026-10-02T12:00Z or +<seconds>: $expect"
   fi
   validate_handoff "$handoff" "$want"
@@ -761,7 +764,7 @@ cmd_park() {
     case "$here/" in "$wt"/*) detached=1 ;; esac
   fi
   if [ "$detached" -eq 1 ] && [ "$requested" -eq 0 ] && [ "$open_ended" -eq 0 ] && [ -z "$adopted" ]; then
-    live_wait_rule "$expect_epoch" "$(date +%s)"
+    live_wait_rule "$expect_epoch" "$now"
   fi
   [ "$detached" -eq 0 ] || [ "$(meta_get harness)" != claude ] || refuse_claude_background_work
   now=$(date +%s)

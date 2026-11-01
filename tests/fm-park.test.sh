@@ -892,6 +892,57 @@ case_live_wait_rule() {
   pass "a self-park expected at or past the threshold parks"
 }
 
+# A condition precheck crosses a clock tick deterministically, without sleeping.
+# Both estimate forms must use one observation of now to classify the boundary.
+case_live_wait_clock_boundary() {
+  local mode seconds expect PATH="$TMP_ROOT/clock-bin:$PATH"
+  local PARK_CLOCK_DATE PARK_CLOCK_BASE=2000000040 PARK_CLOCK_MARK
+  export PARK_CLOCK_DATE PARK_CLOCK_BASE PARK_CLOCK_MARK
+  PARK_CLOCK_DATE=$(command -v date)
+  mkdir -p "$TMP_ROOT/clock-bin"
+  cat > "$TMP_ROOT/clock-bin/date" <<'SH'
+#!/usr/bin/env bash
+if [ "$*" = +%s ]; then
+  if [ -f "$PARK_CLOCK_MARK" ]; then
+    printf '%s\n' "$((PARK_CLOCK_BASE + 2))"
+  else
+    printf '%s\n' "$PARK_CLOCK_BASE"
+  fi
+else
+  exec "$PARK_CLOCK_DATE" "$@"
+fi
+SH
+  cat > "$TMP_ROOT/clock-condition" <<'SH'
+#!/usr/bin/env bash
+printf 'prechecked\n' > "$PARK_CLOCK_MARK"
+exit 1
+SH
+  chmod +x "$TMP_ROOT/clock-bin/date" "$TMP_ROOT/clock-condition"
+  export PATH
+  for mode in relative utc; do
+    for seconds in 3599 3600 3601; do
+      H="$TMP_ROOT/h-clock-$mode-$seconds"; new_task "$H" tclock
+      PARK_CLOCK_MARK="$H/prechecked"
+      handoff "$H/input.md" "cmd:$TMP_ROOT/clock-condition"
+      expect=+$seconds
+      if [ "$mode" = utc ]; then
+        expect=$("$PARK_CLOCK_DATE" -u -d "@$((PARK_CLOCK_BASE + seconds))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+          || "$PARK_CLOCK_DATE" -u -r "$((PARK_CLOCK_BASE + seconds))" +%Y-%m-%dT%H:%M:%SZ)
+      fi
+      if [ "$seconds" -lt 3600 ]; then
+        refused_self_park "$H" tclock 4 "$mode wait below threshold after clock tick" --handoff "$H/input.md" --expect "$expect"
+      else
+        self_park "$H" tclock --handoff "$H/input.md" --expect "$expect" >/dev/null \
+          || fail "$mode wait at/past threshold changed classification after clock tick: $(cat "$H/self.err")"
+        assert_grep "park_state=parked" "$H/state/tclock.meta" "$mode wait at/past threshold parks after clock tick"
+        FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-tclock >/dev/null 2>&1 || true
+      fi
+      assert_grep "prechecked" "$PARK_CLOCK_MARK" "the precheck advanced the clock before routing the $mode wait"
+    done
+  done
+  pass "clock ticks during precheck cannot change relative or UTC estimate classification"
+}
+
 # --- a park that firstmate or the memory guard asked for always parks ----------
 case_live_wait_exemptions() {
   local head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -1690,7 +1741,7 @@ POOL_CASES+=(case_handoff_validation case_park_refuses_missing_handoff case_queu
   case_kind_default_deadlines case_park_time_refusal case_self_park_detached_exit
   case_self_park_by_task_id case_self_park_exit_failure case_claude_background_refusal
   case_other_harness_background case_copy_free_qualification case_wait_age
-  case_live_wait_rule case_live_wait_requested case_live_wait_exemptions case_live_wait_threshold_file
+  case_live_wait_rule case_live_wait_clock_boundary case_live_wait_requested case_live_wait_exemptions case_live_wait_threshold_file
   case_await_holds case_await_bound case_await_errors)
 pool_param_cases release_scenario_case off true nm raw dependency symlink route job bad-endpoint lease kill return reuse park stop poll
 POOL_CASES+=(case_release_entrypoint case_resume_before_release)
