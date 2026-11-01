@@ -769,9 +769,13 @@ test_herdr_lab_contract_is_explicit_and_complete() {
       'Forbidden' 'direct `herdr server stop`' 'direct `herdr session stop`' 'direct `herdr session delete`'
   }
   assert_section_line_with "$brief" "$herdr_heading" "Herdr lab brief missing the before tripwire" \
-    'default session' 'before' 'provision'
+    'running fleet sessions' 'before' 'provision'
   assert_section_line_with "$brief" "$herdr_heading" "Herdr lab brief missing the after tripwire" \
-    'default session' 'fleet state' 'after' 'teardown'
+    'possibly stopped default session' 'fleet state' 'after' 'teardown'
+  assert_grep 'HERDR_SESSION` or requires unambiguous discovery' "$brief" \
+    "Herdr lab brief missing named-fleet selection"
+  assert_grep 'environment scrubbing' "$brief" "Herdr lab brief missing environment isolation"
+  assert_no_grep 'fleet uses the running' "$brief" "Herdr lab brief assumes a default fleet"
   assert_no_grep "Herdr lifecycle declaration - NOT ENABLED" "$brief" \
     "Herdr lab brief retained the unguarded declaration"
   pass "fm-brief.sh: --herdr-lab emits the complete hard safety contract"
