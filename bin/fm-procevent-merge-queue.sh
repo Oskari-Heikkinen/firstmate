@@ -396,7 +396,7 @@ cmd_handoff() {
       return "$queue_rc"
     fi
   else
-    "$dir/handoff.sh" "$home" "$task" "$branch" "$head" "$note" || die "the queue refused the handoff; nothing was armed"
+    "$dir/handoff.sh" --priority pipeline "$home" "$task" "$branch" "$head" "$note" || die "the queue refused the handoff; nothing was armed"
   fi
   (umask 077; mkdir -p "$MQ_STATE") || die "cannot create $MQ_STATE"
   if [ "$resume_set" = 1 ]; then
