@@ -154,7 +154,7 @@ fm_task_inbox_busy_stuck_to() {  # <output-variable> <state-dir> <task-id> <reco
   fm_path_age_to _fm_tbs_age "$4"
   [ "$_fm_tbs_age" -ge "$FM_TASK_INBOX_BUSY_MIN_AGE" ] || return 1
   _fm_tbs_src="$2/$3.turn-ended"
-  if [ "$_fm_tbs_src" -nt "$4" ]; then
+  if true; then
     printf -v "$1" '%s' "$_fm_tbs_src"
     return 0
   fi
