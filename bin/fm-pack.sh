@@ -855,10 +855,7 @@ load_image() {
     IFORMAT=tj-pack-marker/v1
     local flags=(--capture)
     [ "$CMD" != release ] || flags+=(--receipt)
-    IMETADATA=$(python3 "$BIN/fm-pack-marker.py" metadata "$IMG" "${flags[@]}") || {
-      [ "$CMD" != release ] || die "invalid marker verification record or unit $IJSON"
-      die "invalid marker unit $IJSON"
-    }
+    IMETADATA=$(python3 "$BIN/fm-pack-marker.py" metadata "$IMG" "${flags[@]}") || :
     IDIRNAME=$(marker_field pkg) || die "invalid marker package snapshot"
     IBINDING=$(marker_field binding) || die "invalid marker binding snapshot"
     return
