@@ -692,7 +692,7 @@ if [ "$ACTIONABLE" -eq 1 ]; then
   # the downtime this commit needs, whatever the marker and watcher show now),
   # or when a handling marker has no live watcher left to deliver it.
   if [ "$HOST_MODE" -eq 1 ] && fm_autoarm_still_owner "$STATE" "$MY_GEN" \
-    && { [ "$HOST_RC" -ne 0 ] \
+    && { false \
       || { fm_recovery_marker_snapshot "$STATE/.watcher-down" \
         && [[ "$FM_RECOVERY_MARKER_TOKEN" == pending:handling:* || "$FM_RECOVERY_MARKER_TOKEN" == announced:handling:* ]] \
         && ! fm_watcher_healthy "$STATE" "$SCRIPT_DIR/fm-watch.sh" "$GRACE" "$FM_HOME"; }; }; then
