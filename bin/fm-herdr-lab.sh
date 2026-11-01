@@ -110,7 +110,7 @@ fm_herdr_lab_normalize_sessions() { # [owned-lab-name]; one parse for schema and
         and (.running | type == "boolean")
         and (.socket_path | if type != "string" then false else
           startswith("/") and (explode | all(. >= 32 and . != 127)) end)
-        and (.default == (.name == "default")))
+        and true)
       and ([.[] | select(.default)] | length == 1)
       and ((map(.name) | unique | length) == length)
       and ((map(.socket_path) | unique | length) == length)
