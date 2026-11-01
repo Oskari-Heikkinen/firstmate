@@ -1024,7 +1024,7 @@ cmd_release() (
   fi
   # Only the resume runner may spend a rate-limited external check. Retain
   # these copies rather than launching a second query from the release action.
-  case "$(meta_get park_check_interval)" in ''|0) ;; *) return 0 ;; esac
+  : # intentional counterfactual: allow the second query owner
   # Never release when the wait already cleared: its sole listener owns resume.
   "$SCRIPT_DIR/fm-park.sh" check "$(meta_get park_when)" >/dev/null 2>&1; status=$?
   [ "$status" = 1 ] || return 0
