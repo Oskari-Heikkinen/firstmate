@@ -579,10 +579,11 @@ grade_signal() {
     printf "%d", lvl }'
 }
 
-# grade: sets GRADE (index), GRADE_REASONS, and POOL_ABNORMAL (1 when the Windows
-# non-paged pool is at or above win_nonpaged_pool_mib) from the current sample.
+# grade: sets GRADE (index), GRADE_REASONS, GRADE_WAKE_REASONS (the same without an
+# ungraded unknown-VM-share note, which has its own notice), and POOL_ABNORMAL (1 when
+# the Windows non-paged pool is at or above win_nonpaged_pool_mib) from the current sample.
 grade() {
-  local g
+  local g vm_note=''
   GRADE=0 GRADE_REASONS='' POOL_ABNORMAL=0
   g=$(grade_signal "$WIN_AVAIL_MIB" below "$T_win_available_mib")
   [ "$g" -eq 0 ] || GRADE_REASONS="$GRADE_REASONS; Windows available ${WIN_AVAIL_MIB} MiB ($(level_name "$g"))"
@@ -599,12 +600,15 @@ grade() {
     fi
   elif [ -n "$WIN_VM_SOURCE" ]; then
     # Unknown VM share: system-wide paging grades the full ladder as VM paging, and the
-    # reason always names the unknown share, even when nothing grades.
+    # reason always names the unknown share, even when nothing grades (then after the
+    # graded signals, and outside the pressure wake).
     g=$(grade_signal "$WIN_PAGES_IN_PS" above "$T_win_pages_in_ps")
-    if [ -n "$WIN_PAGES_IN_PS" ]; then
+    if [ "$g" -gt 0 ]; then
       GRADE_REASONS="$GRADE_REASONS; Windows pages input ${WIN_PAGES_IN_PS}/s averaged over ${WIN_RATE_SPAN_S}s, graded as WSL VM paging because the VM's share is ${WIN_VM_SOURCE} ($(level_name "$g"))"
+    elif [ -n "$WIN_PAGES_IN_PS" ]; then
+      vm_note="Windows pages input ${WIN_PAGES_IN_PS}/s averaged over ${WIN_RATE_SPAN_S}s, graded as WSL VM paging because the VM's share is ${WIN_VM_SOURCE} (ok)"
     else
-      GRADE_REASONS="$GRADE_REASONS; the WSL VM's paging share is ${WIN_VM_SOURCE}; no Windows pages input rate yet (ungraded)"
+      vm_note="the WSL VM's paging share is ${WIN_VM_SOURCE}; no Windows pages input rate yet (ungraded)"
     fi
   fi
   [ "$g" -le "$GRADE" ] || GRADE=$g
@@ -627,6 +631,8 @@ grade() {
   [ "$g" -le "$GRADE" ] || GRADE=$g
   GRADE_REASONS=${GRADE_REASONS#; }
   case "$WIN_SOURCE" in unavailable:*) GRADE_REASONS="${GRADE_REASONS:+$GRADE_REASONS; }Linux-only (Windows ${WIN_SOURCE})" ;; esac
+  GRADE_WAKE_REASONS=$GRADE_REASONS
+  [ -z "$vm_note" ] || GRADE_REASONS="${GRADE_REASONS:+$GRADE_REASONS; }$vm_note"
 }
 
 # read_level: sets REC_LEVEL REC_EPOCH REC_BELOW REC_REASONS (REC_LEVEL empty when none).
@@ -886,7 +892,7 @@ cmd_tick() {
 
   wake=
   if [ -d "$STATE" ] && ! is_secondmate_home; then
-    wake_decide "$new_i" "$t" "$reasons"
+    wake_decide "$new_i" "$t" "${GRADE_WAKE_REASONS:-all signals within limits}"
     vm_notice_decide "$t"
     [ -z "$vm_wake" ] || wake="${wake:+$wake | }$vm_wake"
   elif [ -d "$STATE" ]; then
