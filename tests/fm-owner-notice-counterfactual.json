@@ -1,0 +1,13 @@
+{
+  "id": "receipt-linkage",
+  "case": "case_consumed_receipt_linkage",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        if receipt[\"outcome\"] == \"consumed\" and not any(\n                d[\"seq\"] == receipt[\"delivered_seq\"] and d[\"outcome\"] == \"delivered\"\n                and all(d[f] == receipt[f] for f in (\"kind\", \"payload_sha256\", \"envelope_sha256\"))\n                for _, d in out):\n            raise fmt.FormatError(\"consumed without matching delivery\")",
+      "        pass"
+    ]
+  ],
+  "expect": "unmatched consumed receipt",
+  "baseline": true
+}
