@@ -1173,11 +1173,13 @@ The response is graded, and each level includes the ones below it:
 
 A level rises at once and falls only after `clear_samples` consecutive better samples.
 The page-in rate is the average between the current Windows reading and one at least 60 s and at most `win_stale_max_s` older, so one second's spike does not grade and a gap longer than that leaves paging ungraded until the next reading.
-Only paging attributable to the WSL VM grades `park` and above: the lower of the system-wide page-in rate and the `vmmemWSL` process's page-fault rate, averaged the same way.
-Every hard fault on VM memory is a `vmmemWSL` fault that reads at least one page, so that bound never misses VM paging, while paging by native Windows work, such as a Windows build, drops out of it when the VM is quiet.
-The `vmmemWSL` fault rate alone is not graded, because demand-zero faults on memory the VM hands back and takes again dominate it.
-System-wide paging beyond the VM's share grades `warn` at most, as a Windows-side pressure signal.
-When the VM's share is unknown - no single `vmmemWSL` process in the reading, `vmmemWSL` fields missing or not numbers, a new VM process or counter frequency without its own 60 s baseline yet, or VM counters not taken with the current Windows reading - the system-wide rate grades the full ladder as it would be VM paging, and the reason, `status` output and the events log say the share is unknown and why.
+Only an upper bound on the WSL VM's paging grades `park` and above: the lower of the system-wide page-in rate and the `vmmemWSL` process's page-fault rate, both measured from one baseline reading over one span (`win_vm_pages_in_max_ps` in `status`).
+Every hard fault on VM memory is a `vmmemWSL` fault that reads at least one page, so that bound never falls below the VM's paging over the span, while paging by native Windows work, such as a Windows build, drops out of it when the VM is quiet.
+It is a bound, not a measurement: no unprivileged Windows counter attributes hard faults to the VM, and demand-zero faults on memory the VM hands back and takes again dominate the `vmmemWSL` fault rate, so heavy native paging while the VM churns its memory can still grade `park` and above with no VM disk paging; the exact rate needs a kernel trace.
+The `vmmemWSL` fault rate alone is not graded.
+System-wide paging beyond the bound grades `warn` at most, as a Windows-side pressure signal.
+When the VM's share is unknown - no single `vmmemWSL` process in the reading, `vmmemWSL` fields missing or not numbers, a new VM process or counter frequency without its own 60 s baseline yet, VM counters not taken with the current Windows reading, or VM and system-wide rates whose spans differ by more than 5 s (baselines from different readings, as when an older checkout refreshes the Windows reading alone) - the system-wide rate grades the full ladder as it would be VM paging, and the recorded reason and `status` output say the share is unknown and why, even when nothing grades.
+The events log records each unknown occurrence once when it starts and once when the share is measured again, and once it has lasted `win_stale_max_s` the primary home's supervisor gets one notice for it, whatever the level, and one `measured again` line when it ends.
 A non-paged pool at or above `win_nonpaged_pool_mib` grades `warn` only, because it points at a leaking Windows driver that parking agents does not free, but it always wakes the supervisor and names the likely cause.
 
 The guard wakes the primary home's supervisor, before any park work, when the level is at or above `wake_level` or the pool is abnormal: once when that starts, again every `rewake_s` while it lasts, at once when the level rises or the pool turns abnormal, and with one `memory guard cleared` line on the tick it ends.
@@ -1194,7 +1196,7 @@ Each `memory_guard` threshold is four numbers, one per level from `warn` to `cri
 | `memory_guard` key | Default | Meaning |
 | --- | --- | --- |
 | `win_available_mib` | unset | Windows available memory at or below each value; always sampled and logged, but graded only when set, because a capped WSL VM keeps its memory resident and low Windows available memory is then expected |
-| `win_pages_in_ps` | `[100, 250, 500, 1000]` | WSL VM paging per second (the lower of Windows pages input and `vmmemWSL` page faults, averaged over at least 60 s) at or above each value; system-wide pages input grades on the first value and never above `warn` unless the VM's share is unknown; pages output is logged but not graded |
+| `win_pages_in_ps` | `[100, 250, 500, 1000]` | upper bound on WSL VM paging per second (the lower of Windows pages input and `vmmemWSL` page faults over one shared span of at least 60 s) at or above each value; system-wide pages input grades on the first value and never above `warn` unless the VM's share is unknown; pages output is logged but not graded |
 | `win_nonpaged_pool_mib` | 2048 | Windows non-paged pool in MiB at or above which the pool grades `warn` and wakes the supervisor; 0 turns the signal off |
 | `linux_available_mib` | `[4096, 3584, 3072, 1536]` | Linux `MemAvailable` at or below each value; the third is also the heavy-job refuse line after the job's cost |
 | `linux_swap_used_mib` | `[4096, 5120, 6144]` | Linux swap in use (`SwapTotal` minus `SwapFree` minus `SwapCached`) at or above each value, counted only on a tick where swap is growing; on any other tick swap grades `ok`, so swap left behind after pressure ends does not hold a level |
