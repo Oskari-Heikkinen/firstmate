@@ -486,7 +486,7 @@ cmd_run() {
     fi
     checked=0
     if [ -n "$cached_rc" ] && [ "$now" -lt "$next_check" ]; then
-      rc=$cached_rc
+      rc=1
     else
       bounded_run "$SPEC_CONDITION_TIMEOUT" "$out" "${COND_ARGV[@]}"
       rc=$?
