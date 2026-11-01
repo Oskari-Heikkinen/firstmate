@@ -1,0 +1,13 @@
+{
+  "id": "membership-remove-order",
+  "case": "case_live_membership",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        write_live(ctx.owner, ctx.bid, ctx.members - {key})\n        ctx.members.discard(key)\n        fmt.seams().fault(\"membership:after-remove\")\n        fmt.unlink_durable(ctx.current_path(key), \"o-current-dirsync\")",
+      "        fmt.unlink_durable(ctx.current_path(key), \"o-current-dirsync\")\n        write_live(ctx.owner, ctx.bid, ctx.members - {key})\n        ctx.members.discard(key)\n        fmt.seams().fault(\"membership:after-remove\")"
+    ]
+  ],
+  "expect": "crash before current unlink is replayable",
+  "baseline": false
+}
