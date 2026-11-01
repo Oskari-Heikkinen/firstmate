@@ -50,9 +50,9 @@
 
 FM_SUPERVISION_ENGINES_VERIFIED='claude'
 
-# fm_supervision_host_primary: print the primary harness the home gate judges
-# (bin/fm-harness.sh, whose supervision-branch pin names the primary inside an
-# engine turn), or "unknown".
+# fm_supervision_host_primary: print the caller's nearest harness (or its
+# supervision-branch primary pin), not a binding to an arbitrary target home.
+# Only primary-session callers may use this as their home's primary.
 fm_supervision_host_primary() {
   if [ "${FM_TEST_SEAM:-}" = 1 ]; then
     case "${FM_TEST_HARNESS:-}" in
@@ -72,29 +72,66 @@ fm_supervision_host_primary() {
 # default model, and not on any other primary. The primary is detected
 # (fm_supervision_host_primary) only when neither file decides and the caller
 # did not name one.
-fm_supervision_host_enabled() {
-  ! _fm_supervision_host_opted_out "$1" || return 1
-  [ ! -f "$1/supervision-host" ] || return 0
-  fm_supervision_engine_verified "${2-$(fm_supervision_host_primary)}"
+# One filesystem classifier for activation, resolution and conservative
+# readers. Shell file predicates cannot distinguish ENOENT from EACCES/EIO.
+# Use the errno-aware lstat idiom from fm_config_source_present, in one bounded
+# probe per query. A missing Perl or failed probe is unknown, never absent.
+_fm_supervision_host_setting() {  # <config-dir> [read]; prints off|file[:line]|absent|unknown
+  perl -MErrno=ENOENT -e '
+    my $dir = $ARGV[0];
+    sub present {
+      return 1 if lstat $_[0];
+      return 0 if $! == ENOENT;
+      die "cannot inspect $_[0]: $!\n";
+    }
+    if (present($dir)) {
+      die "cannot search $dir\n" unless -d $dir && -x $dir;
+    }
+    if (present("$dir/supervision-host-off")) { print "off"; exit }
+    my $file = "$dir/supervision-host";
+    if (present($file)) {
+      die "cannot read $file\n" unless -f $file && -r $file;
+      if (($ARGV[1] // "") eq "read") {
+        open my $fh, "<", $file or die "cannot open $file: $!\n";
+        $! = 0;
+        local $/ = \4097;
+        my $bytes = <$fh>;
+        die "cannot read $file: $!\n" if $!;
+        close $fh or die "cannot close $file: $!\n";
+        my ($line) = split /\n/, ($bytes // ""), 2;
+        $line //= "";
+        die "invalid engine line in $file\n" if length($line) > 4096 || index($line, "\0") >= 0;
+        print "file:", $line;
+      } else { print "file" }
+    } else { print "absent" }
+  ' -- "$1" "${2:-}" 2>/dev/null || printf 'unknown'
 }
 
-_fm_supervision_host_opted_out() {  # <config-dir>
-  [ -e "$1/supervision-host-off" ] || [ -L "$1/supervision-host-off" ]
+fm_supervision_host_enabled() {
+  case "$(_fm_supervision_host_setting "$1")" in
+    off) return 1 ;;
+    file) return 0 ;;
+    absent) fm_supervision_engine_verified "${2-$(fm_supervision_host_primary)}" ;;
+    *) return 1 ;;
+  esac
 }
 
 # fm_supervision_host_may_run <config-dir> [<primary-harness>]: 0 when the
-# home runs the host (fm_supervision_host_enabled), and also when the primary
-# is unknown and the home is not opted out, since the answer then depends on
-# the primary. For a reader that must fail toward a host that may be running:
-# the lease guard (bin/fm-lease-lib.sh) and the away watchdog
-# (bin/fm-away-watch.sh), which can run outside the primary's process tree.
+# home runs the host, or its configuration or target primary is unknown.
+# Unlike activation, an omitted primary is unknown: caller ancestry cannot
+# establish which harness owns the addressed home. Only pass a primary with
+# a current home-owner binding, never an install-time hint. Used by the lease
+# guard and away watchdog, which must protect a host that may already exist.
 fm_supervision_host_may_run() {
-  local primary
-  primary=${2-$(fm_supervision_host_primary)}
-  fm_supervision_host_enabled "$1" "$primary" && return 0
-  case "$primary" in
-    ''|unknown) ! _fm_supervision_host_opted_out "$1" ;;
-    *) return 1 ;;
+  local primary=${2:-unknown}
+  case "$(_fm_supervision_host_setting "$1")" in
+    off) return 1 ;;
+    absent)
+      case "$primary" in
+        unknown) return 0 ;;
+        *) fm_supervision_engine_verified "$primary" ;;
+      esac ;;
+    *) return 0 ;;
   esac
 }
 
@@ -120,14 +157,20 @@ fm_supervision_engine_default_model() {  # <engine>
 # sentence naming why this home has no engine.
 # shellcheck disable=SC2034 # Output globals, read by the sourcing caller.
 fm_supervision_host_config() {
-  local config=$1 primary=${2:-} line engine model extra
+  local config=$1 primary=${2:-} line engine model extra setting
   FM_SUPERVISION_ENGINE=''
   FM_SUPERVISION_ENGINE_MODEL=''
   FM_SUPERVISION_ENGINE_PROBLEM=''
-  fm_supervision_host_enabled "$config" "$primary" || return 1
+  setting=$(_fm_supervision_host_setting "$config" read)
   line=
-  [ ! -f "$config/supervision-host" ] \
-    || IFS= read -r line < "$config/supervision-host" 2>/dev/null || true
+  case "$setting" in
+    off) return 1 ;;
+    absent) fm_supervision_engine_verified "$primary" || return 1 ;;
+    file:*) line=${setting#file:} ;;
+    *)
+      FM_SUPERVISION_ENGINE_PROBLEM="cannot inspect supervision configuration at $config"
+      return 0 ;;
+  esac
   engine='' model='' extra=''
   read -r engine model extra <<EOF
 $line
