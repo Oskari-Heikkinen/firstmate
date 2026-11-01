@@ -352,7 +352,7 @@ The closed `fm-pack-marker-verification/v1` JSON object has exactly these fields
 | Field | Value |
 |---|---|
 | `format` | `fm-pack-marker-verification/v1` |
-| `verified_at` | Positive integer epoch seconds when the fresh verification finished |
+| `verified_at` | Positive, non-boolean integer epoch seconds when the fresh verification finished; a future value refuses |
 | `image_sha256` | Verified image sha256 |
 | `image_digest_sha256` | Sha256 of the exact `UNIT.sqfs.sha256` bytes |
 | `marker_sha256` | Sha256 of the exact `UNIT.marker.json` bytes |
@@ -360,7 +360,12 @@ The closed `fm-pack-marker-verification/v1` JSON object has exactly these fields
 | `tree_sha256` | Sha256 of the exact `UNIT.tree.tsv` bytes |
 
 All digests are 64 lowercase hex digits.
-A missing, malformed or digest-mismatched receipt refuses release before deletion; release rechecks the binding under the pack slot and still verifies the image and source afresh through the same R2 path.
+A missing, malformed or digest-mismatched receipt refuses release before deletion.
+At initial metadata loading, release captures one in-memory binding of the validated receipt, metadata and manifest digests, and the identities of the image and all five sidecars.
+Source, image digest and verification time come from that snapshot, not independently reopened metadata.
+Every later reader must match the original snapshot: under-slot checks, fresh image verification through either reader, both source comparisons and the final pre-removal guard.
+At these boundaries, replacement, rewriting or removal of any participating file refuses, even with identical bytes or an unchanged `verified_at`; a source already renamed aside is restored.
+The opaque binding stays in the caller's memory across every reader; no temporary authority file or new unit sidecar is written, and there is still only one release implementation.
 Its existing window uses this receipt's `verified_at`, never marker creation time, file mtime, zero or the release clock as a replacement verification time.
 Pass the applicable `sites.json` as `--ref`, just like any other reference file: an unresolved literal source path refuses release.
 The existing fixed-string reference guard is unchanged and does not resolve symlinked or encoded references; the owning home must confirm those readers are repointed as part of acceptance.
