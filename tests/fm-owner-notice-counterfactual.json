@@ -1,0 +1,13 @@
+{
+  "id": "binding-enumeration",
+  "case": "case_source_enumeration",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "    except OSError as exc:\n        raise Done(UNKNOWN, state=\"unknown\", code=\"binding-unreadable\", path=owner.bindings,\n                   detail=str(exc)) from None\n    return sorted(out)",
+      "    except OSError:\n        return []\n    return sorted(out)"
+    ]
+  ],
+  "expect": "binding source",
+  "baseline": false
+}
