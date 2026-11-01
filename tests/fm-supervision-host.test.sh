@@ -2799,7 +2799,9 @@ test_engine_valid_numeric_boundaries_resume() {
 test_engine_invalid_limits_choose_fresh() {
   local home field value n pid
   for field in CONTEXT_CEILING ROTATE_TURNS; do
-    for value in 9223372036854775808 9007199254740992 1e21 -1 0 01 ''; do
+    # First exceed the safe-integer domain while remaining shell-comparable:
+    # without the setting guard, a small context/turn count would resume.
+    for value in 9007199254740992 9223372036854775808 1e21 -1 0 01 ''; do
       home=$(make_home "invalid-$field-${value:-empty}" away)
       if [ "$field" = CONTEXT_CEILING ]; then
         FM_SUPERVISION_HOST_CONTEXT_CEILING=$value start_host "$home"
