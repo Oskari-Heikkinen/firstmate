@@ -408,11 +408,7 @@ autoarm_exit_suppressed() {  # <cause>
   if [ "$rc" -eq 2 ]; then
     fm_autoarm_reset_owned "$STATE" "$MY_GEN" >/dev/null 2>&1
     rc=$?
-    if [ "$rc" -eq 2 ]; then
-      [ -z "${OUT:-}" ] || rm -f "$OUT" 2>/dev/null || true
-      exit 0
-    fi
-    if [ "$rc" -eq 0 ]; then
+    if [ "$rc" -ne 1 ]; then
       [ -z "${OUT:-}" ] || rm -f "$OUT" 2>/dev/null || true
       if [ "$AUTOARM_DELIVER_ON_RESET" -eq 1 ]; then
         printf '%s; a verified healthy watcher is running, so no failure episode continues, and this rewake delivers the supervision host hand-back above.\n' "$cause" >&2
