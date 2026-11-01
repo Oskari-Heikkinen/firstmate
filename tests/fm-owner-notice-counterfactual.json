@@ -1,0 +1,13 @@
+{
+  "id": "routing-fallback",
+  "case": "case_unknown_routing",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        raise Done(UNKNOWN, state=\"unknown\", code=\"routing-unreadable\", path=path, detail=str(exc)) from None",
+      "        return {}"
+    ]
+  ],
+  "expect": "routing fallback",
+  "baseline": false
+}
