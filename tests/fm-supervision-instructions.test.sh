@@ -36,6 +36,80 @@ assert_line_has() {
   fail "$msg (no one line holds: $*)"$'\n'"--- output ---"$'\n'"$text"
 }
 
+# Exercise the public gate/resolver as an unprivileged CI user, not a mocked
+# predicate: inaccessible is not absent, in either direction of the gate.
+test_unknown_host_configuration_preserves_the_plain_wake_path() {
+  local config shape out rc
+  config="$TMP_ROOT/unreadable-config"
+  mkdir -p "$config"
+  # shellcheck source=bin/fm-supervision-engine-lib.sh
+  . "$ROOT/bin/fm-supervision-engine-lib.sh"
+  for shape in missing empty token-no-newline directory fifo dangling; do
+    rm -f "$config/supervision-host"
+    case "$shape" in
+      empty) : > "$config/supervision-host" ;;
+      token-no-newline) printf 'claude opus' > "$config/supervision-host" ;;
+      directory) mkdir "$config/supervision-host" ;;
+      fifo) mkfifo "$config/supervision-host" ;;
+      dangling) ln -s missing "$config/supervision-host" ;;
+    esac
+    rc=0
+    fm_supervision_host_enabled "$config" claude || rc=$?
+    fm_supervision_host_config "$config" claude || fail "$shape: resolver failed"
+    case "$shape" in
+      missing|empty|token-no-newline)
+        assert_equals 0 "$rc" "$shape: healthy default disabled"
+        assert_equals claude "$FM_SUPERVISION_ENGINE" "$shape: wrong engine"
+        [ "$shape" != token-no-newline ] || assert_equals opus "$FM_SUPERVISION_ENGINE_MODEL" "unterminated token lost"
+        ;;
+      *)
+        assert_equals 1 "$rc" "$shape: uncertain config activated the host"
+        assert_equals '' "$FM_SUPERVISION_ENGINE" "$shape: uncertain config selected an engine"
+        assert_contains "$FM_SUPERVISION_ENGINE_PROBLEM" 'cannot inspect' "$shape: no diagnostic"
+        fm_supervision_host_may_run "$config" codex || fail "$shape: conservative reader skipped the host"
+        ;;
+    esac
+    [ "$shape" != directory ] || rmdir "$config/supervision-host"
+  done
+  rm -f "$config/supervision-host"
+  for shape in nul oversized; do
+    case "$shape" in
+      nul) printf 'clau\0de\n' > "$config/supervision-host" ;;
+      oversized) { printf 'claude '; printf '%05000d' 0; } > "$config/supervision-host" ;;
+    esac
+    fm_supervision_host_config "$config" claude || fail "$shape: resolver failed"
+    assert_equals '' "$FM_SUPERVISION_ENGINE" "$shape: corrupt engine line accepted"
+    assert_contains "$FM_SUPERVISION_ENGINE_PROBLEM" 'cannot inspect' "$shape: no diagnostic"
+  done
+  if [ "$(id -u)" -eq 0 ]; then
+    [ "${CI:-}" != true ] || fail 'permission regression requires an unprivileged CI user'
+    printf 'skip: permission fixtures require an unprivileged user\n'
+    return
+  fi
+  for shape in hidden-off hidden-engine unreadable-engine hidden-parent; do
+    printf 'claude opus\n' > "$config/supervision-host"
+    case "$shape" in
+      hidden-off) : > "$config/supervision-host-off"; chmod 000 "$config" ;;
+      hidden-engine) chmod 000 "$config" ;;
+      unreadable-engine) chmod 000 "$config/supervision-host" ;;
+      hidden-parent) mkdir "$config/nested"; chmod 000 "$config" ;;
+    esac
+    local probe=$config
+    [ "$shape" != hidden-parent ] || probe="$config/nested/config"
+    out=$(fm_supervision_host_enabled "$probe" claude; printf 'activation=%s\n' "$?"
+      fm_supervision_host_may_run "$probe" codex; printf 'protection=%s\n' "$?"
+      fm_supervision_host_config "$probe" claude
+      printf 'engine=%s\nproblem=%s\n' "$FM_SUPERVISION_ENGINE" "$FM_SUPERVISION_ENGINE_PROBLEM")
+    chmod 700 "$config"
+    chmod 600 "$config/supervision-host"
+    rm -f "$config/supervision-host-off"
+    assert_contains "$out" 'activation=1' "$shape: unknown state enabled the host"
+    assert_contains "$out" 'protection=0' "$shape: unknown state skipped protection"
+    assert_contains "$out" $'engine=\nproblem=cannot inspect' "$shape: read error defaulted an engine"
+  done
+  pass 'unknown configuration refuses activation and engine fallback but retains conservative protection'
+}
+
 test_selected_harness_block_only() {
   local out
   out=$("$RENDER" --harness codex)
@@ -379,6 +453,7 @@ test_pi_protocol_keeps_its_mistake_lines() {
   pass "pi protocol keeps its one-arm, processing-request, and lease lines"
 }
 
+test_unknown_host_configuration_preserves_the_plain_wake_path
 test_supervision_host_protocol_on_an_opted_in_claude_home
 test_supervision_host_protocol_on_every_arm_owner
 test_selected_harness_block_only
