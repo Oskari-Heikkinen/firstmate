@@ -25,6 +25,7 @@ keep handoff-coverage
 keep harness-adapters
 keep lean-review
 keep loop-observability
+keep owner-notice
 keep quiet-waits
 keep results-storage
 keep task-evidence
