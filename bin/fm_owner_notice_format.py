@@ -302,7 +302,7 @@ def parse_binding_beat(data):
         pairs = [word.split("=", 1) for word in text[:-1].split(" ")]
         if any(len(pair) != 2 or not pair[1] for pair in pairs):
             raise ValueError("beat fields")
-        obj = _no_dupes(pairs)
+        obj = dict(pairs)
         if set(obj) != fields:
             raise ValueError("beat fields")
         for key in ("writer", "watcher_identity"):
