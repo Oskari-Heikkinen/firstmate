@@ -1,0 +1,13 @@
+{
+  "id": "r4-receipts-root",
+  "case": "case_source_preflight_directories",
+  "baseline": false,
+  "expect": "empty binding receipts/missing refuses a mutation",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "            require_directory(self.path(\"receipts\"))\n",
+      ""
+    ]
+  ]
+}
