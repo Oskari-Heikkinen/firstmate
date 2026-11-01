@@ -96,14 +96,14 @@ fm_herdr_lab_normalize_sessions() {
     | if all(.[];
         (.name | type == "string" and test("^[a-zA-Z0-9][a-zA-Z0-9_-]*$"))
         and (.default | type == "boolean") and (.running | type == "boolean")
-        and (.socket_path | type == "string" and startswith("/") and (test("[\\u0000-\\u001f]") | not))
+        and (.socket_path | type == "string" and startswith("/") and (explode | all(. >= 32 and . != 127)))
         and (.default == (.name == "default")))
       and ([.[] | select(.default)] | length == 1)
-      and (map(.name) | unique | length) == length
-      and (map(.socket_path) | unique | length) == length
+      and ((map(.name) | unique | length) == length)
+      and ((map(.socket_path) | unique | length) == length)
       then {sessions: (map({name, default, running, socket_path}) | sort_by(.name))}
       else error("ambiguous or malformed sessions") end
-  ' 2>/dev/null
+  '
 }
 
 fm_herdr_lab_fleet_state() { # <session> [recorded-tripwire]
