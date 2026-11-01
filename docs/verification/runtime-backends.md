@@ -617,6 +617,28 @@ Rovo Dev documents loading instruction files from parent directories without nam
 Cursor Agent CLI 2026.09.18 walks to the filesystem root, and Oh My Pi 18.2.11 walks past the git root up to `$HOME`, so both load the home's `AGENTS.md` for a nested worker and stay unfixed.
 Cursor offers no per-path exclusion: its hidden `--exclude-workspace-context` drops every workspace instruction including the project's own, and its third-party toggle drops only `CLAUDE.md` files.
 Oh My Pi's only per-launch controls are coarse `--config` switches such as disabling the whole `claude-md` provider, its `before_agent_start` event exposes the system prompt without the list of loaded files, and its subagents receive the discovered files directly, so no per-task extension can remove just the home file.
+## Worker prompt prefix
+
+Verified 2026-11-01 on Claude Code 2.1.314 and Pi 0.85.1; docs/configuration.md "Worker prompt prefix" owns the contract this backs.
+Each setting key was read from the installed Claude binary's own settings schema: `disableArtifact`, `disableClaudeAiConnectors`, `disableWorkflows`, `permissions.deny`, and `skillOverrides`, whose values are `on`, `name-only`, `user-invocable-only`, and `off`, with the schema text "name-only lists the skill without its description".
+Auto-memory is turned off by the environment variable `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`.
+All of them are read from the inline `--settings` JSON, so a launch touches no settings file.
+
+First-turn size is `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` from `message.usage` of the first `"type":"assistant"` record in the session transcript, which also carries the Claude `version`; that is the whole prompt of the first model call.
+A ship worker launched before this change, on this host, read 44,773 tokens that way.
+A measurement session from the same checkout read 45,190 tokens with nothing cut and 19,929 with every Claude cut except auto-memory, which sets the default expected size of 20,000 tokens with a 5,000-token margin.
+The cuts added up: the Artifact tool 12,387 tokens, the skill descriptions turned `name-only` 3,576, the four denied tools about 4,700, the claude.ai connectors 2,415, the Workflow tool 1,964, and auto-memory 2,218.
+Two run-to-run effects stay inside the margin: the Artifact tool text has a server-side variant about 450 tokens long, and claude.ai connectors load asynchronously, so a first turn sometimes has none of them.
+`name-only` on `workflow-authoring` leaves the Workflow tool unchanged, while `off` on that skill made the Workflow tool schema inline its guide (5,504 to 22,894 characters), which is why the cut uses `name-only`.
+
+Pi 0.85.1 `--help` lists `--no-skills`, which turns skill discovery off, and `--skill <path>`, which loads one skill directory and can repeat.
+With `pi -p --mode json`, the first assistant message's `usage.input` was 14,356 tokens with discovery on and 8,232 with `--no-skills` plus one `--skill` per kept repository skill.
+Pi has no name-only mode, so a skill it does not load is not listed at all.
+
+These keys are vendor settings that fail open when renamed, so the first-turn check in `bin/fm-worker-prefix-check.sh` is the guard that notices a Claude update that brings the tokens back.
+[`tests/fm-worker-prefix-live-e2e.test.sh`](../../tests/fm-worker-prefix-live-e2e.test.sh) refreshes this record without spending model tokens: it captures each installed harness's first request for a Firstmate-repository ship worker with and without the launch material `bin/fm-spawn.sh` generates and fails, naming the harness and version, when a cut tool, a name-only skill description or the memory index still reaches the request.
+With `FM_WORKER_PREFIX_TURN_LIVE=1` it also submits one short prompt with those settings and the real check as the Stop hook, and fails unless the check read a numeric first-turn size from the transcript Claude wrote.
+
 ## Pi launch project trust
 
 [`fm-spawn.sh --help`](../../bin/fm-spawn.sh) owns the ship/scout/seeded-secondmate project-trust approval contract and compatibility fallback.

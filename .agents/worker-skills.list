@@ -1,0 +1,102 @@
+# Which skills a ship or scout worker keeps in full. bin/fm-worker-prefix-lib.sh
+# parses this file and owns its format; docs/configuration.md "Worker prompt
+# prefix" owns the operator contract.
+#
+# Format: "<class> <skill-name>" per line, `#` starts a comment line.
+#   keep       the worker sees the skill's name and description and can load it.
+#   name-only  a Claude worker sees only the name (skillOverrides); a Pi worker
+#              does not load it at all.
+# A skill this file does not name is name-only, so a new skill costs a worker
+# nothing until it is listed as keep. Every skill under .agents/skills/ is
+# listed anyway (tests/fm-worker-prefix.test.sh checks), so adding one is a
+# decision rather than an accident. Claude Code's bundled skills have no
+# directory to find, so they are listed here by name.
+
+# Repository skills a worker needs.
+keep alert-store
+keep builder-self-check
+keep captain-hold-lifecycle
+keep component-skills
+keep diagnostic-reasoning
+keep disk-room
+keep firstmate-coding-guidelines
+keep firstmate-shell-tests
+keep handoff-coverage
+keep harness-adapters
+keep lean-review
+keep loop-observability
+keep quiet-waits
+keep results-storage
+keep task-evidence
+keep tool-design
+keep worker-guide
+
+# Repository skills that serve the supervisor, not a worker.
+name-only account-move
+name-only afk
+name-only ahoy
+name-only ask-user-authority
+name-only away-quiet-supervision
+name-only backlog-tasks
+name-only bearings
+name-only bootstrap-diagnostics
+name-only claude-update
+name-only component-drift
+name-only crew-briefs
+name-only disk-inventory
+name-only firstmate-codexapp
+name-only firstmate-orca
+name-only fmx-respond
+name-only independent-rereview
+name-only landed-sync
+name-only loop-status
+name-only merge-queue
+name-only operational-home-layout
+name-only process-event-sources
+name-only project-management
+name-only quiet
+name-only quota-array-dispatch
+name-only scheduled-runs
+name-only scout-completion
+name-only secondmate-coordination
+name-only secondmate-provisioning
+name-only session-start-recovery
+name-only ship-landing
+name-only stow
+name-only stuck-crewmate-recovery
+name-only supervision-accounting
+name-only supervision-views
+name-only tj-capacity-alerts
+name-only updatefirstmate
+name-only validation-supervision
+name-only wake-triage
+
+# The operator's own skills (the Claude config's skills/ and ~/.agents/skills)
+# a worker needs; any other skill found there is name-only.
+keep lattice-dev-process
+keep lattice-research-decisions
+keep laptop-machine-ops
+keep lean-supervision
+keep no-mistakes
+keep review-preferences
+keep run-reports
+keep tetjet-operations
+
+# Claude Code's bundled skills.
+keep artifact-design
+keep artifact-diagramming
+keep claude-api
+keep dataviz
+name-only artifact-capabilities
+name-only code-review
+name-only fewer-permission-prompts
+name-only init
+name-only keybindings-help
+name-only loop
+name-only plugin-authoring
+name-only run
+name-only schedule
+name-only security-review
+name-only simplify
+name-only update-config
+name-only workflow-authoring

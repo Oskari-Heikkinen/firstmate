@@ -1557,6 +1557,27 @@ test_exclude_tools_refusals_happen_before_the_agent_stops() {
   pass "fm-control relaunch: exclusion-list refusals happen before the running agent stops"
 }
 
+test_worker_skill_list_refusal_happens_before_the_agent_stops() {
+  local dir out rc entry id=rl-skills-refuse
+  dir=$(new_case skills-refuse "$id")
+  add_ship_task "$dir" "$id" claude
+  # A scratch checkout whose only difference is the worker skill list
+  # (bin/fm-worker-prefix-lib.sh) the relaunch reads.
+  mkdir -p "$dir/root/.agents"
+  for entry in "$ROOT"/* "$ROOT"/.[!.]*; do
+    case "${entry##*/}" in .agents | data | state | .git) continue ;; esac
+    [ -e "$entry" ] && ln -s "$entry" "$dir/root/${entry##*/}"
+  done
+  ln -s "$ROOT/.agents/skills" "$dir/root/.agents/skills"
+  printf 'keep worker-guide\nhide afk\n' > "$dir/root/.agents/worker-skills.list"
+  out=$(FM_ROOT_OVERRIDE="$dir/root" run_control "$dir" "$id" relaunch --note "bad skill list"); rc=$?
+  expect_code 1 "$rc" "a worker skill list the parser refuses must refuse the relaunch"
+  assert_contains "$out" "has class 'hide'" "refusal must name the bad entry"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "a bad worker skill list stopped the running agent"
+  [ ! -s "$dir/fake/literal" ] || fail "a refused relaunch sent lifecycle input"
+  pass "fm-control relaunch: a bad worker skill list refuses before the running agent stops"
+}
+
 test_explicit_model_wins_over_the_recorded_one() {
   local dir out rc
   dir=$(new_case explicit rl7)
@@ -3560,6 +3581,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_worker_account_pin_follows_the_relaunch \
   test_pi_exclude_tools_follow_the_relaunch \
   test_exclude_tools_refusals_happen_before_the_agent_stops \
+  test_worker_skill_list_refusal_happens_before_the_agent_stops \
   test_explicit_model_wins_over_the_recorded_one \
   test_relaunch_onto_an_unverified_harness_is_refused \
   test_prior_harness_turnend_registry_entry_is_cleared \

@@ -88,7 +88,8 @@
 #              agent stops.
 #              The same pre-stop refusal applies to this home's worker tool
 #              exclusions (bin/fm-exclude-tools-lib.sh): a malformed list, or a
-#              replacement runtime that cannot hide the listed tools.
+#              replacement runtime that cannot hide the listed tools, and to an
+#              unreadable worker skill list (bin/fm-worker-prefix-lib.sh).
 #              A Pi target refuses a Claude model, or no model, before the old
 #              agent stops too (bin/fm-pi-model-guard-lib.sh), so park resume
 #              and reboot relaunch, which reach this verb, never move Claude
@@ -222,6 +223,8 @@ fm_supervision_tick_entry "$STATE" "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" cont
 . "$SCRIPT_DIR/fm-secondmate-liveness-lib.sh"
 # shellcheck source=bin/fm-exclude-tools-lib.sh
 . "$SCRIPT_DIR/fm-exclude-tools-lib.sh"
+# shellcheck source=bin/fm-worker-prefix-lib.sh
+. "$SCRIPT_DIR/fm-worker-prefix-lib.sh"
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
@@ -1235,6 +1238,10 @@ resolve_relaunch_profile() {
   # agent stops. Secondmate agents are not covered.
   if [ "$KIND" != secondmate ]; then
     fm_exclude_tools_check "$TARGET_HARNESS" 0 "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}" >/dev/null || return 1
+    # The worker skill list (bin/fm-worker-prefix-lib.sh) the launch reads.
+    case "$TARGET_HARNESS" in
+    claude | pi | pi-signed) fm_worker_skills_read "$FM_ROOT/.agents/worker-skills.list" >/dev/null || return 1 ;;
+    esac
   fi
 }
 
