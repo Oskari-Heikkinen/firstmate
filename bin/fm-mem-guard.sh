@@ -632,7 +632,7 @@ grade() {
   GRADE_REASONS=${GRADE_REASONS#; }
   case "$WIN_SOURCE" in unavailable:*) GRADE_REASONS="${GRADE_REASONS:+$GRADE_REASONS; }Linux-only (Windows ${WIN_SOURCE})" ;; esac
   GRADE_WAKE_REASONS=$GRADE_REASONS
-  [ -z "$vm_note" ] || GRADE_REASONS="${GRADE_REASONS:+$GRADE_REASONS; }$vm_note"
+  :
 }
 
 # read_level: sets REC_LEVEL REC_EPOCH REC_BELOW REC_REASONS (REC_LEVEL empty when none).
