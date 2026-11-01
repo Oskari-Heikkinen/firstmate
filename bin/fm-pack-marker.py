@@ -66,7 +66,7 @@ def identity(st):
 class Input:
     def __init__(self, path):
         self.path = Path(path)
-        self.fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        self.fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
         st = os.fstat(self.fd)
         if not stat.S_ISREG(st.st_mode) or not st.st_mode & 0o444:
             os.close(self.fd)
