@@ -6,6 +6,7 @@
 #
 # Usage:
 #   fm-procevent-when.sh arm <name> [options] --condition <argv>... --action <argv>...
+#   fm-procevent-when.sh validate-schedule <check-interval> <poll-interval> <condition-timeout>
 #   fm-procevent-when.sh classify <result-file>
 #   fm-procevent-when.sh terminal <result-file>
 #   fm-procevent-when.sh source-id <name>
@@ -37,7 +38,10 @@
 #              --error-budget <n>          consecutive real condition errors tolerated
 #                                          before waking firstmate (default 3);
 #                                          cached errors never spend another attempt
-#            With --check-interval, --interval must be at most 300 seconds.
+#            With --check-interval, the composed schedule must fit 300 seconds:
+#            ceil(check-interval / interval) * interval + condition-timeout <= 300.
+#            This includes poll rounding and the declared query execution bound;
+#            the external cadence is measured from query completion, not start.
 #            Conditions must perform a real check each invocation, never return
 #            false just to throttle. Cached true counts toward stability; a real
 #            false or error resets it. Cache is process-local and discarded on
@@ -52,6 +56,9 @@
 #            flow; this primitive only automates the deterministic subset.
 #            The registered runner starts on the watcher's next cycle via
 #            `fm-procevent.sh reconcile`; arm never blocks on the condition.
+# validate-schedule
+#            Read-only admission check shared with park; exit nonzero with a
+#            diagnostic for invalid numbers or a composed cadence over 300 s.
 # classify   Print the captured outcome class a handler should act on:
 #            fired, action-failed, condition-error, never-true, ambiguous,
 #            rejected, or unknown.
@@ -181,6 +188,26 @@ action_executable() {  # <argv-zero>: print the executable's absolute path
   printf '%s\n' "$found"
 }
 
+# Both public admission and trusted-spec loading enforce the same composed
+# schedule. Include the query budget because the next cadence starts at its
+# completion; validating the two interval knobs separately is insufficient.
+check_schedule_valid() { # <check-interval> <poll-interval> <condition-timeout>
+  [ "$1" -ne 0 ] || return 0
+  awk -v check="$1" -v poll="$2" -v budget="$3" 'BEGIN {
+    ticks = int(check / poll)
+    if (ticks * poll < check) ticks++
+    exit !(ticks * poll + budget <= 300)
+  }'
+}
+
+cmd_validate_schedule() {
+  if ! check_interval_valid "$1" || ! positive_number "$2" || ! positive_int "$3"; then
+    die "invalid check interval, poll interval, or condition timeout"
+  fi
+  check_schedule_valid "$@" \
+    || die "external check schedule must be at most 300 seconds including poll rounding and condition timeout"
+}
+
 # Resolve once at registration/load, never per tick. Slow legacy watches need
 # enough time to collect their required observations even when every check is true.
 stabilize_timeout_resolve() { # <requested-or-auto> <interval> <stable> <condition-timeout>
@@ -224,9 +251,7 @@ cmd_arm() {
       *) die "unknown arm argument: $1" ;;
     esac
   done
-  if [ "$check_interval" -gt 0 ] && ! awk -v n="$interval" 'BEGIN { exit !(n <= 300) }'; then
-    die "--interval must be at most 300 seconds with --check-interval"
-  fi
+  cmd_validate_schedule "$check_interval" "$interval" "$condition_timeout"
   stabilize_timeout=$(stabilize_timeout_resolve "$stabilize_timeout" "$interval" "$stable" "$condition_timeout") \
     || die "--stabilize-timeout must exceed interval * (stable - 1) and fit in 2147483647 seconds"
   [ "${#cond[@]}" -ge 1 ] || die "arm needs at least one --condition argv element"
@@ -371,12 +396,11 @@ spec_load() {
   case "$SPEC_ARMED" in ''|*[!0-9]*) SPEC_ERROR="spec armed epoch is malformed"; return 1 ;; esac
   positive_number "$SPEC_INTERVAL" || { SPEC_ERROR="spec interval is malformed"; return 1; }
   check_interval_valid "$SPEC_CHECK_INTERVAL" || { SPEC_ERROR="spec check interval must be 0 or 1..300 seconds"; return 1; }
-  if [ "$SPEC_CHECK_INTERVAL" -gt 0 ] && ! awk -v n="$SPEC_INTERVAL" 'BEGIN { exit !(n <= 300) }'; then
-    SPEC_ERROR="spec poll interval exceeds 300 seconds with a check interval"; return 1
-  fi
   positive_int "$SPEC_STABLE" || { SPEC_ERROR="spec stable count is malformed"; return 1; }
   positive_int "$SPEC_DEADLINE" || { SPEC_ERROR="spec deadline is malformed"; return 1; }
   positive_int "$SPEC_CONDITION_TIMEOUT" || { SPEC_ERROR="spec condition timeout is malformed"; return 1; }
+  check_schedule_valid "$SPEC_CHECK_INTERVAL" "$SPEC_INTERVAL" "$SPEC_CONDITION_TIMEOUT" \
+    || { SPEC_ERROR="spec external check schedule exceeds 300 seconds including poll rounding and condition timeout"; return 1; }
   SPEC_STABILIZE_TIMEOUT=$(stabilize_timeout_resolve "$SPEC_STABILIZE_TIMEOUT" "$SPEC_INTERVAL" "$SPEC_STABLE" "$SPEC_CONDITION_TIMEOUT") \
     || { SPEC_ERROR="spec stabilisation timeout is malformed or too short for the stable window"; return 1; }
   positive_int "$SPEC_ACTION_TIMEOUT" || { SPEC_ERROR="spec action timeout is malformed"; return 1; }
@@ -766,6 +790,7 @@ cmd_retire() {
 
 case "${1-}" in
   arm)       shift; cmd_arm "$@" ;;
+  validate-schedule) shift; [ "$#" -eq 3 ] || usage; cmd_validate_schedule "$@" ;;
   run)       shift; [ "$#" -eq 1 ] || usage; cmd_run "$@" ;;
   classify)  shift; cmd_classify "$@" ;;
   terminal)  shift; cmd_terminal "$@" ;;

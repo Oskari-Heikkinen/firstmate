@@ -12,6 +12,9 @@
 #   fm-park.sh pickup <task-id>        explicit authority for an inbox-only wait
 #   fm-park.sh request-pickup <task-id>  pickup request from a sender outside the lease
 #   fm-park.sh poll <task-id> <park-token>  incarnation-bound listener condition
+#   fm-park.sh cadence <meta-file>     read-only cadence validation: print 0 or 1..300;
+#                                     absent field in a readable legacy record means 0;
+#                                     empty, duplicate, malformed or unreadable records fail
 #
 # config/park-release=on enables a per-home canary; absent/off retains copies.
 # --relocation-safe attests that no job, external producer, future result or
@@ -150,7 +153,10 @@
 #                                 gh run view -R <owner/repo>
 # Rate-limited cmd: checks use park's --check-interval <1..300 seconds>.
 # The command must query on every invocation, not implement its own throttle.
-# The when runner owns the cadence and cached verdict (see its header).
+# The when runner owns the cadence, composed-schedule admission (including the
+# query timeout), and cached verdict (see its header). Park checks that schedule
+# before changing any handoff, record or existing watch; 1..300 alone is not
+# sufficient admission (for example 300 with the default poll/budget refuses).
 # This option skips the park-time query; errors instead reach the runner's
 # bounded condition-error outcome. Copy release retains these parks to avoid
 # a second external query. Without the option, cmd: keeps checking every poll.
@@ -314,6 +320,30 @@ task_resolve() {  # <id>
     *) die "task $ID is kind '$meta_kind'; only ship and scout tasks park (a secondmate idles by design)" ;;
   esac
   [ -z "$meta_remote_host" ] || die "task $ID runs on another host; park it there"
+}
+
+# Strict owner of the new cadence field. The older meta_get helper cannot
+# distinguish a legacy absence from failed reads or present-empty values.
+# This is a cold release/admission diagnostic, not a per-poll reader.
+cadence_value() { # <meta-file>
+  local file=$1 value
+  if [ -f "$file" ] && [ ! -L "$file" ] && [ -r "$file" ] && [ -s "$file" ] &&
+    value=$(LC_ALL=C awk -v field=park_check_interval '
+      BEGIN { nul = sprintf("%c", 0) }
+      index($0, nul) { bad=1; exit }
+      /^[A-Za-z_][A-Za-z0-9_]*=/ { record=1 }
+      index($0, field "=") == 1 {
+        seen++
+        value=substr($0, length(field) + 2)
+        if (seen > 1 || value !~ /^(0|[1-9][0-9]*)$/ || length(value) > 3 || value + 0 > 300) { bad=1; exit }
+      }
+      END { if (bad || !record) exit 1; print seen ? value : "0" }
+    ' "$file"); then
+    printf '%s\n' "$value"
+    return 0
+  fi
+  printf 'cannot read valid park_check_interval from %s; retaining copy without querying\n' "$file" >&2
+  return 1
 }
 
 # --- task record -------------------------------------------------------------
@@ -611,7 +641,7 @@ cmd_validate() {
 
 cmd_park() {
   local handoff='' want='' deadline_iso='' deadline_epoch now rel dest wt here detached=0 detach out adopted='' sid='' tag=''
-  local open_ended=0 relocation_safe=0 started token release_name release_timeout check_interval=0
+  local open_ended=0 relocation_safe=0 started token release_name release_timeout check_interval=0 poll_interval
   task_resolve "${1-}"
   shift
   while [ "$#" -gt 0 ]; do
@@ -644,9 +674,12 @@ cmd_park() {
     sid="merge-queue-$ID-${adopted:0:8}"
     tag=" [key=merge-queue] [wait=merge-result:$adopted]"
   fi
+  poll_interval=${FM_PARK_INTERVAL:-$(park_interval "$HANDOFF_CONDITION")}
   if [ "$check_interval" -gt 0 ]; then
     case "$HANDOFF_CONDITION" in cmd:*) ;; *) die "--check-interval is only for cmd: conditions" ;; esac
     [ -z "$adopted" ] || die "--check-interval cannot be used with an adopted source"
+    "$WHEN" validate-schedule "$check_interval" "$poll_interval" 60 \
+      || die "park cadence admission refused before changing the handoff, record, or watch"
     # The runner owns all external calls on this path, including the first.
     # A precheck here would spend a request outside its cadence.
   else
@@ -707,7 +740,7 @@ cmd_park() {
     "park_source=$sid" "park_deadline=$deadline_iso" "park_at=$now" "park_spawn_gen=$(meta_get spawn_gen)" \
     || die "cannot record the park in task $ID's record"
   if [ -z "$sid" ] && ! out=$("$WHEN" arm "park-$ID" \
-      --interval "${FM_PARK_INTERVAL:-$(park_interval "$HANDOFF_CONDITION")}" --stable "${FM_PARK_STABLE:-2}" \
+      --interval "$poll_interval" --stable "${FM_PARK_STABLE:-2}" \
       --check-interval "$check_interval" \
       --deadline "$rel" --error-budget "${FM_PARK_ERROR_BUDGET:-5}" --action-timeout 900 \
       --condition "$SCRIPT_DIR/fm-park.sh" poll "$ID" "$token" \
@@ -1024,7 +1057,9 @@ cmd_release() (
   fi
   # Only the resume runner may spend a rate-limited external check. Retain
   # these copies rather than launching a second query from the release action.
-  case "$(meta_get park_check_interval)" in ''|0) ;; *) return 0 ;; esac
+  local cadence
+  cadence=$(cadence_value "$META") || return 1
+  [ "$cadence" = 0 ] || return 0
   # Never release when the wait already cleared: its sole listener owns resume.
   "$SCRIPT_DIR/fm-park.sh" check "$(meta_get park_when)" >/dev/null 2>&1; status=$?
   [ "$status" = 1 ] || return 0
@@ -1249,6 +1284,7 @@ case "${1-}" in
   request-pickup) shift; [ "$#" = 1 ] || exit 2; cmd_request_pickup "$1" ;;
   ''|-h|--help|help) usage; [ -n "${1-}" ] || exit 2 ;;
   validate) shift; cmd_validate "$@" ;;
+  cadence) shift; [ "$#" -eq 1 ] || exit 2; cadence_value "$1" ;;
   check) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_check "$1" ;;
   resume) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }; cmd_resume "$@" ;;
   cancel) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_cancel "$1" ;;

@@ -945,7 +945,7 @@ pass "restart-busy answers busy, idle and invalid"
 
 # Old v1 specs omit the new fields; present-but-empty or malformed fields
 # must reject rather than silently opt out of cadence or instability bounds.
-for shape in legacy empty-check huge-check empty-bound; do
+for shape in legacy empty-check huge-check empty-bound oversized-poll rounded-schedule query-budget; do
   H="$TMP_ROOT/h-cadence-$shape"; new_home "$H"
   when "$H" arm "cadence-$shape" --stable 1 --condition true --action "$ACT" "$H/acted" >/dev/null
   spec="$H/state/when/when-cadence-$shape.spec"
@@ -954,6 +954,9 @@ for shape in legacy empty-check huge-check empty-bound; do
     empty-check) awk '{if (/^check_interval=/) print "check_interval="; else print}' "$spec" > "$H/new" ;;
     huge-check) awk '{if (/^check_interval=/) print "check_interval=999999999999999999999999"; else print}' "$spec" > "$H/new" ;;
     empty-bound) awk '{if (/^stabilize_timeout=/) print "stabilize_timeout="; else print}' "$spec" > "$H/new" ;;
+    oversized-poll) awk '{if (/^interval=/) print "interval=301"; else if (/^check_interval=/) print "check_interval=120"; else print}' "$spec" > "$H/new" ;;
+    rounded-schedule) awk '{if (/^interval=/) print "interval=299"; else if (/^check_interval=/) print "check_interval=300"; else if (/^condition_timeout=/) print "condition_timeout=1"; else print}' "$spec" > "$H/new" ;;
+    query-budget) awk '{if (/^interval=/) print "interval=100"; else if (/^check_interval=/) print "check_interval=180"; else if (/^condition_timeout=/) print "condition_timeout=101"; else print}' "$spec" > "$H/new" ;;
   esac
   chmod 600 "$H/new"; mv "$H/new" "$spec"
   printf 'fm-when-trust-v1\n%s\n' "$(fm_pr_sha256 "$spec")" > "$H/state/when/when-cadence-$shape.trust"
@@ -966,7 +969,7 @@ for shape in legacy empty-check huge-check empty-bound; do
     assert_absent "$H/acted" 'invalid spec executes nothing'
   fi
   when "$H" retire "cadence-$shape" >/dev/null
- done
+done
 pass 'cadence spec distinguishes absent legacy fields from malformed present fields'
 
 printf 'all fm-procevent-when tests passed\n'
