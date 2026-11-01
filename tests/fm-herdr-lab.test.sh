@@ -70,8 +70,6 @@ case "$1 ${2:-}" in
   "server --session")
     if [ -n "${FM_FAKE_HERDR_START_GATE:-}" ]; then
       printf '%s\n' "$$" > "$state/$session.launcher-pid"
-      printf '%s\n' "$PPID" > "$state/$session.launcher-parent"
-      ps -p "$PPID" -o pid= -o ppid= -o stat= -o args= > "$state/$session.launcher-parent-start" || true
       deadline=$((SECONDS + 300))
       while [ ! -f "$FM_FAKE_HERDR_START_GATE" ]; do
         if [ "$SECONDS" -ge "$deadline" ]; then
@@ -678,13 +676,6 @@ SH
   assert_present "$FAKE_STATE/$name.launcher-pid" "provision launcher never reached the release barrier"
   launcher_pid=$(cat "$FAKE_STATE/$name.launcher-pid")
   if kill -0 "$launcher_pid" 2>/dev/null; then
-    printf 'HERDR_CANCEL_DIAG launcher=%s test=%s parent-at-start=%s\n' \
-      "$launcher_pid" "$$" "$(cat "$FAKE_STATE/$name.launcher-parent" 2>/dev/null || true)" >&2
-    cat "$FAKE_STATE/$name.launcher-parent-start" >&2 || true
-    [ ! -r "/proc/$launcher_pid/stat" ] || cat "/proc/$launcher_pid/stat" >&2 || true
-    ps -p "$launcher_pid" -o pid= -o ppid= -o stat= -o args= >&2 || true
-    printf 'HERDR_CANCEL_DIAG process tree (pid ppid state argv):\n' >&2
-    ps -ax -o pid= -o ppid= -o stat= -o args= >&2 || true
     # Reap our own fake even in the cancellation counterfactual.
     kill "$launcher_pid" 2>/dev/null || true
     wait "$launcher_pid" 2>/dev/null || true

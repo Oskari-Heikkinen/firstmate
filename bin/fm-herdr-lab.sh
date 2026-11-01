@@ -73,7 +73,13 @@ fm_herdr_lab_tripwire_path() { # <session>
 }
 
 fm_herdr_lab_raw() ( # <session> <herdr arguments...>
-  # Subshell keeps the caller's fleet identity available for snapshot selection.
+  # Routine calls preserve the caller's fleet identity and process.
+  fm_herdr_lab_exec "$@"
+)
+
+fm_herdr_lab_exec() { # <session> <herdr arguments...>; owned child only
+  # Replaces this process. Provision backgrounds this brace-bodied function
+  # directly so $! is the launcher, not a shell waiting on another subshell.
   unset HERDR_SOCKET_PATH HERDR_CLIENT_SOCKET_PATH HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_ENV HERDR_BIN_PATH || return 1
   local name=$1 i inserted=0
   shift
@@ -86,7 +92,7 @@ fm_herdr_lab_raw() ( # <session> <herdr arguments...>
   done
   [ "$inserted" = 1 ] || args=("${args[@]}" --session "$name")
   exec env HERDR_SESSION="$name" herdr "${args[@]}"
-)
+}
 
 fm_herdr_lab_session_list() { # <session>
   fm_herdr_lab_raw "$1" session list --json
@@ -521,7 +527,7 @@ fm_herdr_lab_provision() { # <session>
   else
     fm_herdr_lab_prepare "$name" || return 1
   fi
-  fm_herdr_lab_raw "$name" server >/dev/null 2>&1 &
+  fm_herdr_lab_exec "$name" server >/dev/null 2>&1 &
   server_pid=$!
   attempt=0
   max_attempts=300
