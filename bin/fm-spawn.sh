@@ -755,7 +755,7 @@ fi
 # each one names. Following them again here would expand their whole source
 # graphs a second time, spending this heavy root's CI lint memory while adding
 # no file the analysis does not already see (bin/fm-lint.sh owns the cap).
-# shellcheck source=/dev/null # Followed through fm-wake-lib.sh and fm-dod-lib.sh.
+# shellcheck source=/dev/null # Followed through fm-dod-lib.sh.
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 fm_backlog_directory_present "$STATE" "state directory" || {
   echo "error: spawn refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
