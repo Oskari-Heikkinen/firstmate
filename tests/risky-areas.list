@@ -80,3 +80,5 @@ owner-notice script bin/fm-owner-notice.sh
 owner-notice script bin/fm-owner-notice-client.py
 owner-notice script bin/fm_owner_notice_*.py
 owner-notice test tests/fm-owner-notice.test.sh
+owner-notice test tests/fm-owner-notice-interface.test.sh
+owner-notice test tests/lib/owner-notice-interface.py

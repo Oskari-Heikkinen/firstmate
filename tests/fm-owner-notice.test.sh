@@ -294,6 +294,29 @@ invariants() {
 
 # ---------------------------------------------------------------- behaviour
 
+case_presence_is_not_delivery() {
+  world presence-not-delivery
+  payload p 'manual delivery remains valid without automation'
+  submit notice note p
+  expect_code 75 "$RC" 'submit remains pending before manual delivery'
+  run_on ingest p1
+  expect_code 0 "$RC" 'manual ingest delivers'
+  query notice note p
+  expect_code 0 "$RC" 'receipt remains valid independently of automation presence'
+  assert_equals delivered "$(field state)" 'delivery is not presence'
+  run_cl probe
+  expect_code 69 "$RC" 'manual delivery cannot certify automation'
+  assert_equals owner-automation-absent "$(field code)" 'presence refusal is explicit'
+  run_on consume p1 notice
+  expect_code 0 "$RC" 'consumption remains available without automation'
+  query notice note p
+  expect_code 0 "$RC" 'consumed receipt remains valid'
+  assert_equals consumed "$(field state)" 'consumption is not presence'
+  run_cl probe
+  expect_code 69 "$RC" 'consumption cannot certify automation either'
+  pass 'delivery and consumption receipts are independent of automation presence'
+}
+
 case_submit_ingest_delivers() {
   world roundtrip
   payload p 'hello owner'
@@ -3039,6 +3062,7 @@ case_alarm_snapshot_order() {
 }
 
 fm_run_case_pool "$(fm_case_pool_jobs "${FM_OWNER_NOTICE_CASE_JOBS:-}")" "$TMP_ROOT/.case-logs" \
+  case_presence_is_not_delivery \
   case_crash_owner \
   case_crash_client \
   case_publish_window \
