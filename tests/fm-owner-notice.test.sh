@@ -1332,8 +1332,16 @@ case_purge() {
   expect_code 65 "$RC" "purge within 365 days of the last receipt ($OUT)"
   assert_equals purge-too-early "$(field code)" "purge after a recent receipt: code"
   assert_present "$P1/receipts/k1/2.json" "the early purge keeps the receipts"
+  bash "$ROOT/bin/fm-alert-store.sh" assert "$OWN/alert-store.json" owner-notice stale-level 'a level from before the purge' \
+    refused p1/k9 > /dev/null || fail "assert a stale level"
   NOW=$((now + 366 * 86400)) run_on purge p1
   expect_code 0 "$RC" "purge ($OUT)"
+  stored > "$F/store-purged"
+  assert_no_grep "refused p1/k9" "$F/store-purged" "a purged binding leaves the alarm set complete, so its stale level clears"
+  run_on status
+  expect_code 0 "$RC" "status after a purge ($OUT)"
+  assert_equals "true true" "$(field 'alarms_complete, (.bindings[] | select(.binding_id == "p1") | .purged)' | paste -sd' ' -)" \
+    "status after a purge: the purged binding is listed and the alarms are complete"
   assert_absent "$P1" "purge removes the binding's tree"
   assert_present "$OWN/bindings/p1.json" "purge keeps the binding"
   assert_present "$OWN/bindings/p1.retired" "purge keeps the retired marker"
@@ -1714,7 +1722,7 @@ spy_has() {  # <row> <ident> <path>
   [ -n "$(spy_at "$2" "$3")" ] || fail "$1: no $2 for $3 in the fsync spy"
 }
 
-case_fsync_spy() {  # R-D01 to R-D14
+case_fsync_spy() {  # R-D01 to R-D14, R-D10b
   local f tmp month now
   world spy nobind
   SPY="$F/spy"
@@ -1741,6 +1749,7 @@ case_fsync_spy() {  # R-D01 to R-D14
   spy_before "the pending current/ entry" o-current-dirsync "$P1/current" create "$P1/receipts/k1/1.json"
   spy_has R-D09 o-current-dirsync "$P1/current"
   spy_before R-D10 o-wakequeue-fsync "$Q" create "$P1/.announced/k1"
+  spy_before R-D10b o-wakequeue-dirsync "$H/state" create "$P1/.announced/k1"
   spy_has R-D11 o-announced-dirsync "$P1/.announced"
   spy_has R-D14 o-index-dirsync "$P1"
   : > "$SPY"
@@ -1780,12 +1789,288 @@ case_fsync_spy() {  # R-D01 to R-D14
     esac
   done > "$F/raw-fsync"
   [ ! -s "$F/raw-fsync" ] || fail "R-D: a raw os.fsync bypasses the spy: $(cat "$F/raw-fsync")"
-  pass "R-D01 to R-D14: every fsync site runs before the next visible step"
+  pass "R-D01 to R-D14 and R-D10b: every fsync site runs before the next visible step"
+}
+
+# ---------------------------------------------------------------- commit boundary
+
+# A publication is committed when its temp is unlinked, after the directory
+# fsync; until then the name has two links and readers answer in progress.
+case_publish_window() {  # R-U1-42 to R-U1-45, R-U1-53 to R-U1-57
+  local pid qpid
+  world window-c
+  payload p 'in flight'
+  expect_env k1 note p
+  CF=$(pause_at pc c-envelope-dirsync:after-link) cl submit --key k1 --kind note --payload-file "$F/p" > "$F/s.out" 2>&1 &
+  pid=$!
+  reached pc
+  run_on ingest p1
+  expect_code 0 "$RC" "R-U1-42: ingest while the envelope is uncommitted ($OUT)"
+  assert_absent "$P1/receipts/k1" "R-U1-42: no receipt for an uncommitted envelope"
+  alarms > "$F/alarms1"
+  assert_no_grep "unsafe-file:k1" "$F/alarms1" "R-U1-42: an uncommitted envelope is not unsafe"
+  assert_no_grep "outbox-in-progress:k1" "$F/alarms1" "R-U1-53: no level within the settle bound"
+  OF=in-progress-settle=0 run_on ingest p1
+  expect_code 0 "$RC" "R-U1-53: ingest past the settle bound ($OUT)"
+  assert_absent "$P1/receipts/k1" "R-U1-53: a stuck entry is still not refused"
+  stored > "$F/store1"
+  assert_grep "outbox-in-progress p1/k1" "$F/store1" "R-U1-53: a stuck in-progress entry raises its level"
+  query k1 note p
+  expect_code 75 "$RC" "R-U1-56: a query past the commit wait answers pending ($OUT)"
+  assert_equals 13 "$(field row)" "R-U1-56: row 13"
+  assert_equals "envelope not yet committed" "$(field detail)" "R-U1-56: pending on the envelope"
+  submit k1 note p
+  expect_code 75 "$RC" "R-U1-56: a resubmit past the commit wait answers pending ($OUT)"
+  assert_equals "envelope not yet committed" "$(field detail)" "R-U1-56: the resubmit names the envelope"
+  run_cl pending
+  expect_code 0 "$RC" "R-U1-55: pending with an uncommitted envelope ($OUT)"
+  assert_equals "envelope not yet committed" "$(printf '%s\n' "$OUT" | jq -r '.pending[] | select(.key == "k1") | .detail')" \
+    "R-U1-55: pending lists the uncommitted envelope"
+  run_cl prune --key k1
+  expect_code 75 "$RC" "R-U1-55: prune of an uncommitted envelope answers pending ($OUT)"
+  run_cl prune --all-recorded
+  expect_code 0 "$RC" "R-U1-55: prune --all-recorded ($OUT)"
+  assert_equals '["k1"]' "$(field 'kept | tostring')" "R-U1-55: prune --all-recorded keeps it"
+  assert_present "$OB/k1.envelope.json" "R-U1-55: the envelope is still there"
+  CF=$(pause_at pw query:commit-wait) cl query --key k1 --kind note --payload-file "$F/p" > "$F/q.out" 2>&1 &
+  qpid=$!
+  reached pw
+  release pc
+  wait "$pid"
+  release pw
+  wait "$qpid"
+  RC=$?
+  OUT=$(cat "$F/q.out")
+  expect_code 75 "$RC" "R-U1-56: the waiting query ($OUT)"
+  assert_equals null "$(field detail)" "R-U1-56: the wait answers from the envelope once it commits"
+  run_on ingest p1
+  expect_code 0 "$RC" "R-U1-42: ingest after the commit ($OUT)"
+  stored > "$F/store2"
+  assert_no_grep "outbox-in-progress" "$F/store2" "R-U1-53: the commit clears the level"
+  invariants "R-U1-42" k1 note p 0 delivered
+
+  world window-c-kill
+  payload p 'dead publisher'
+  expect_env k1 note p
+  CF=c-envelope-dirsync:after-link:kill submit k1 note p
+  expect_code 137 "$RC" "R-U1-43: the client was killed after the link ($OUT)"
+  run_on ingest p1
+  assert_absent "$P1/receipts/k1" "R-U1-43: a dead publisher's envelope is not refused"
+  SPY="$F/spy"
+  submit k1 note p
+  expect_code 75 "$RC" "R-U1-43: the resubmit finishes the publication ($OUT)"
+  spy_has "R-U1-43" c-finish-sync "$OB"
+  SPY=
+  assert_equals "" "$(ls -A "$OB/.tmp" 2> /dev/null)" "R-U1-43: the dead temp is gone"
+  run_on ingest p1
+  invariants "R-U1-43" k1 note p 0 delivered
+
+  world window-handled
+  payload p 'handled'
+  submit k1 note p
+  run_on ingest p1
+  OF=consume:after-handled-link:kill run_on consume p1 k1
+  assert_present "$P1/handled/k1.notice" "R-U1-57: the consume died after its handled link (vacuous otherwise)"
+  assert_absent "$P1/receipts/k1/2.json" "R-U1-57: no consumed receipt yet"
+  SPY="$F/spy"
+  run_on consume p1 k1
+  expect_code 0 "$RC" "R-U1-57: the consume replay ($OUT)"
+  spy_before R-U1-57 o-handled-dirsync "$P1/handled" create "$P1/receipts/k1/2.json"
+  SPY=
+
+  world window-o
+  payload p 'owner receipt'
+  expect_env k1 note p
+  submit k1 note p
+  OF=$(pause_at po o-receipt-dirsync:after-link) on ingest p1 > "$F/i.out" 2>&1 &
+  pid=$!
+  reached po
+  assert_present "$P1/receipts/k1/1.json" "R-U1-44: the receipt name is visible (vacuous otherwise)"
+  query k1 note p
+  expect_code 75 "$RC" "R-U1-44: an uncommitted receipt answers pending ($OUT)"
+  assert_equals 13 "$(field row)" "R-U1-44: row 13"
+  assert_equals "owner receipt not yet committed" "$(field detail)" "R-U1-44: pending on the receipt, not the envelope"
+  assert_absent "$OB/.receipts/k1.json" "R-U1-44: nothing is recorded"
+  release po
+  wait "$pid"
+  invariants "R-U1-44" k1 note p 0 delivered
+
+  world window-custody
+  SPY="$F/spy"
+  payload p 'custody'
+  expect_env k1 note p
+  submit k1 note p
+  OF=o-custody-dirsync:after-link:kill on ingest p1 > /dev/null 2>&1
+  assert_absent "$P1/receipts/k1" "R-U1-45: killed before any receipt"
+  # The front's own later engine calls may already finish the dead temp, so
+  # the spy keeps the killed run too; the finish must precede the receipt.
+  run_on ingest p1
+  expect_code 0 "$RC" "R-U1-45: ingest after the kill ($OUT)"
+  spy_before "R-U1-45 (finish)" o-finish-sync "$P1/custody" create "$P1/receipts/k1/1.json"
+  spy_before "R-U1-45 (equal custody)" o-custody-dirsync "$P1/custody" create "$P1/receipts/k1/1.json"
+  invariants "R-U1-45" k1 note p 0 delivered
+
+  SPY=
+  world window-mkdir
+  payload p 'parent barrier'
+  CF=c-mkdir-parent:after-mkdir:kill submit k1 note p
+  expect_code 137 "$RC" "R-U1-54: the client was killed after its mkdir ($OUT)"
+  assert_present "$OB/.tmp" "R-U1-54: the kill left .tmp unsynced (vacuous otherwise)"
+  SPY="$F/spy"
+  submit k1 note p
+  expect_code 75 "$RC" "R-U1-54: the resubmit ($OUT)"
+  spy_before "R-U1-54" c-mkdir-parent "$OB" link "$OB/k1.envelope.json"
+  SPY=
+  pass "R-U1-42 to R-U1-45, R-U1-53 to R-U1-57: an uncommitted publication is in progress, never refused, pruned or dropped, alarms once stuck, is waited for, and a replay finishes its barriers"
+}
+
+# Retire decides from the receipts, and a replay finishes the bookkeeping.
+case_retire_truth() {  # R-U1-46 to R-U1-48, R-U1-51, R-U1-52
+  local now
+  now=$(date +%s)
+  world retire-stale
+  payload p 'stale current'
+  submit k1 note p
+  OF=ingest:after-receipt:kill on ingest p1 > /dev/null 2>&1
+  assert_present "$P1/receipts/k1/1.json" "R-U1-46: the receipt was written (vacuous otherwise)"
+  run_on retire p1
+  expect_code 65 "$RC" "R-U1-46: retire with a delivered key behind a pending current/ ($OUT)"
+  assert_equals '["k1"]' "$(field keys | jq -c .)" "R-U1-46: names k1"
+  assert_absent "$OWN/bindings/p1.retired" "R-U1-46: not retired"
+
+  world retire-unreadable
+  payload p 'corrupt receipt'
+  submit k1 note p
+  on ingest p1 > /dev/null 2>&1
+  printf 'x' > "$P1/receipts/k1/1.json"
+  run_on retire p1
+  expect_code 70 "$RC" "R-U1-47: retire with an unreadable receipt ($OUT)"
+  assert_equals receipts-unreadable "$(field code)" "R-U1-47: code"
+  assert_absent "$OWN/bindings/p1.retired" "R-U1-47: not retired"
+  assert_absent "$OWN/bindings/p1.retiring" "R-U1-47: .retiring is undone"
+
+  world retire-replay
+  OF=retire:after-retired:kill on retire p1 > /dev/null 2>&1
+  assert_present "$OWN/bindings/p1.retiring" "R-U1-48: the kill left .retiring (vacuous otherwise)"
+  run_on retire p1
+  expect_code 0 "$RC" "R-U1-48: the retire replay ($OUT)"
+  assert_absent "$OWN/bindings/p1.retiring" "R-U1-48: the replay removes .retiring"
+  assert_grep p1 "$OWN/.retired.list" "R-U1-48: the retired list names p1"
+  assert_no_grep p1 "$OWN/.bindings.list" "R-U1-48: the active list no longer names p1"
+
+  # An engine killed between a receipt and its refresh leaves current/
+  # pending; the front's announce step runs next and must read the receipts.
+  world stale-pending
+  payload p 'stale pending'
+  submit k1 note p
+  NOW=$now OF=ingest:after-receipt:kill on ingest p1 > /dev/null 2>&1
+  assert_present "$P1/receipts/k1/1.json" "R-U1-52: the receipt was written (vacuous otherwise)"
+  assert_present "$P1/.announced/k1" "R-U1-52: announce reads a pending key from its receipts"
+  # The levels are read-only, so the fixture writes the crash-stale entry.
+  fix jset "$P1/current/k1.json" state=pending
+  NOW=$((now + 3601)) alarms > "$F/alarms1"
+  assert_grep "unconsumed:k1 p1" "$F/alarms1" "R-U1-51: the levels read a pending key from its receipts"
+  pass "R-U1-46 to R-U1-48, R-U1-51, R-U1-52: retire, the levels and announce read receipt truth, and retire refuses unknown state and replays its bookkeeping"
+}
+
+# Every success-capable query mode checks the envelope digest.
+case_query_modes() {  # R-T19 to R-T22
+  local mode
+  for mode in file sha; do
+    world "modes-$mode"
+    payload p 'digest'
+    submit t1 note p
+    on ingest p1 > /dev/null 2>&1
+    fix jset "$P1/receipts/t1/1.json" envelope_sha256="$(printf 'c%.0s' $(seq 64))"
+    case "$mode" in
+      file) query t1 note p ;;
+      sha) run_cl query --key t1 --kind note --payload-sha256 "$(fix sha "$F/p")" ;;
+    esac
+    expect_code 70 "$RC" "R-T19 ($mode): a tampered envelope_sha256 ($OUT)"
+    assert_absent "$OB/.receipts/t1.json" "R-T19 ($mode): nothing is recorded"
+  done
+  world modes-unverifiable
+  payload p 'no envelope'
+  submit t1 note p
+  on ingest p1 > /dev/null 2>&1
+  rm -f "$OB/t1.envelope.json"
+  run_cl query --key t1 --kind note --payload-sha256 "$(fix sha "$F/p")"
+  expect_code 70 "$RC" "R-T20: digest-only with nothing to rebuild from ($OUT)"
+  assert_equals envelope-unverifiable "$(field code)" "R-T20: code"
+  query t1 note p
+  expect_code 0 "$RC" "R-T20: the payload file verifies it ($OUT)"
+  run_cl query --key t1 --kind note --payload-sha256 "$(fix sha "$F/p")"
+  expect_code 0 "$RC" "R-T20: digest-only answers from the verified record ($OUT)"
+
+  world modes-envelope
+  payload p 'own envelope'
+  submit t1 note p
+  on ingest p1 > /dev/null 2>&1
+  assert_absent "$OB/.receipts/t1.json" "R-T22: no record yet (vacuous otherwise)"
+  run_cl query --key t1 --kind note --payload-sha256 "$(fix sha "$F/p")"
+  expect_code 0 "$RC" "R-T22: digest-only verifies through the producer's own envelope ($OUT)"
+  assert_equals delivered "$(field state)" "R-T22: delivered"
+
+  world modes-refusals
+  payload a 'refusal'
+  fix envelope "$H" p1 k12 note "$F/a" bsha="$(printf 'e%.0s' $(seq 64))" > "$OB/k12.envelope.json"
+  fix envelope "$H" p1 k13 note "$F/a" schema=fm-owner-notice/v2 > "$OB/k13.envelope.json"
+  run_on ingest p1
+  for mode in k12:binding-mismatch k13:version-unsupported; do
+    query "${mode%%:*}" note a
+    expect_code 65 "$RC" "R-T21: ${mode#*:} answers refused ($OUT)"
+    assert_equals "${mode#*:}" "$(field code)" "R-T21: ${mode#*:} code"
+  done
+  pass "R-T19 to R-T22: both query modes verify the envelope digest, and unrebuildable refusals stay readable"
+}
+
+# An unreadable source raises its own level and clears nothing.
+case_unknown_sources() {  # R-U1-49, R-U1-50
+  local now
+  now=$(date +%s)
+  world unknown
+  mkdir -p "$W/prod2/outbox"
+  on bind p2 --outbox "$W/prod2/outbox" --producer-actor process:prod --producer-uid "$(id -u)" \
+    --kinds note --max-bytes 1000 --consume-bound-seconds 3600 > /dev/null 2>&1 || fail "bind p2"
+  payload p 'overdue'
+  submit k1 note p
+  NOW=$now run_on ingest p1
+  NOW=$((now + 3601)) run_on ingest p1
+  stored > "$F/store1"
+  assert_grep "unconsumed p1/k1" "$F/store1" "the unconsumed level is raised (vacuous otherwise)"
+
+  cp "$OWN/bindings/p1.json" "$F/binding.json"
+  printf '{' > "$OWN/bindings/p1.json"
+  NOW=$((now + 3601)) run_on ingest p2
+  expect_code 0 "$RC" "R-U1-49: a healthy binding's ingest ($OUT)"
+  stored > "$F/store2"
+  assert_grep "binding-unreadable p1" "$F/store2" "R-U1-49: the unreadable binding raises its level"
+  assert_grep "unconsumed p1/k1" "$F/store2" "R-U1-49: the unconsumed level is kept"
+  assert_grep p1 "$OWN/.bindings.list" "R-U1-49: the active list keeps p1"
+  cp "$F/binding.json" "$OWN/bindings/p1.json"
+
+  printf 'x' > "$P1/current/k1.json"
+  NOW=$((now + 3601)) run_on ingest p2
+  stored > "$F/store3"
+  assert_grep "current-unreadable p1/k1" "$F/store3" "R-U1-50: the unreadable current/ entry raises its level"
+  assert_grep "unconsumed p1/k1" "$F/store3" "R-U1-50: the unconsumed level is read from the receipts"
+
+  NOW=$((now + 3601)) run_on reconcile p1
+  NOW=$((now + 3601)) run_on ingest p2
+  stored > "$F/store4"
+  assert_no_grep "binding-unreadable p1" "$F/store4" "a complete set clears the binding level"
+  assert_no_grep "current-unreadable" "$F/store4" "a complete set clears the current/ level"
+  assert_grep "unconsumed p1/k1" "$F/store4" "the unconsumed level stays until the consume"
+  pass "R-U1-49, R-U1-50: unreadable bindings and current/ entries alarm and keep their levels and lists"
 }
 
 fm_run_case_pool "$(fm_case_pool_jobs "${FM_OWNER_NOTICE_CASE_JOBS:-}")" "$TMP_ROOT/.case-logs" \
   case_crash_owner \
   case_crash_client \
+  case_publish_window \
+  case_retire_truth \
+  case_query_modes \
+  case_unknown_sources \
   case_answer_rows_unavailable \
   case_answer_rows_final \
   case_bind_refusals \

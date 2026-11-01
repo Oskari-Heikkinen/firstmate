@@ -93,6 +93,10 @@ class NotRegular(OSError):
     """An entry that is not a regular single-link file."""
 
 
+class InProgress(NotRegular):
+    """A file whose only other link is its publisher's temp: visible, not yet committed."""
+
+
 class Oversize(OSError):
     """An entry over its bound; detail is "size" (fstat) or "grew" (read)."""
 
@@ -420,7 +424,7 @@ class Seams:
         if m:
             self.roles[m.group(1)].add(m.group(2))
             return
-        m = re.fullmatch(r"(seq:stale|seq:stale-always|ingest-cap|cache-slack)=(\d+)", item)
+        m = re.fullmatch(r"(seq:stale|seq:stale-always|ingest-cap|cache-slack|in-progress-settle)=(\d+)", item)
         if m:
             self.values[m.group(1)] = int(m.group(2))
             return
@@ -539,22 +543,63 @@ def _unlink_quiet(path):
         pass
 
 
-def create_exclusive(path, data, tmpdir, dir_ident, file_ident="o-temp-fsync", before_link=None):
-    """Write data to a temp, fsync it, link it to path (EEXIST raises), fsync the dir.
+TEMP_NAME = re.compile(r"[0-9]+-.+-[0-9a-f]{12}")
 
-    Returns True when this call created path. The temp is always removed.
+
+def create_exclusive(path, data, tmpdir, dir_ident, file_ident="o-temp-fsync", before_link=None):
+    """Write data to a temp, fsync it, link it to path (EEXIST raises), fsync the dir, commit.
+
+    The commit is the temp's unlink, after path's directory fsync: while path
+    still has its temp as a second link, readers given tmpdir see InProgress,
+    so a single-link path is always one whose name is durable. The temp's
+    directory is fsynced after the unlink. A publisher killed before its
+    commit leaves the temp, which reap_dead_temps finishes. Returns True.
     """
     tmp = _write_temp(tmpdir, data, file_ident)
     try:
         if before_link is not None:
             before_link()
         os.link(tmp, path)
-    finally:
+    except BaseException:
         _unlink_quiet(tmp)
+        raise
     seams().spy_line("link", path)
+    seams().fault(dir_ident + ":after-link")
     fsync_dir(os.path.dirname(path), dir_ident)
+    seams().fault(dir_ident + ":after-dirsync")
+    os.unlink(tmp)
+    seams().spy_line("commit", path)
+    fsync_dir(tmpdir, file_ident.replace("-fsync", "-dirsync"))
     seams().spy_line("create", path)
     return True
+
+
+def publisher_temp(tmpdir, st, dir_fd=None):
+    """The name in tmpdir of the publisher's temp that is st's other link, or None.
+
+    Only a regular file with exactly two links, whose other link carries a
+    temp name directly in tmpdir, is a publication in progress; any other
+    extra link is foreign.
+    """
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 2:
+        return None
+    try:
+        tfd = os.open(tmpdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
+    except OSError:
+        return None
+    try:
+        for name in os.listdir(tfd):
+            if not TEMP_NAME.fullmatch(name):
+                continue
+            try:
+                t = os.stat(name, dir_fd=tfd, follow_symlinks=False)
+            except OSError:
+                continue
+            if (t.st_dev, t.st_ino) == (st.st_dev, st.st_ino):
+                return name
+    finally:
+        os.close(tfd)
+    return None
 
 
 def replace_durable(path, data, tmpdir, dir_ident, file_ident="o-temp-fsync"):
@@ -575,8 +620,13 @@ def unlink_durable(path, dir_ident):
     fsync_dir(os.path.dirname(path), dir_ident)
 
 
-def mkdir_durable(path, mode=0o755, ident="o-mkdir-parent"):
-    """Create path and any missing parents, fsyncing each created level's parent."""
+def mkdir_durable(path, mode=0o755, ident="o-mkdir-parent", root=None):
+    """Create path and any missing parents, fsyncing each created level's parent.
+
+    With root (an ancestor of path), the parent of every level below root is
+    fsynced on every call, created now or not, so a replay finishes the
+    barrier a run killed between its mkdir and that fsync never reached.
+    """
     path = os.path.abspath(path)
     missing = []
     probe = path
@@ -585,6 +635,7 @@ def mkdir_durable(path, mode=0o755, ident="o-mkdir-parent"):
             raise NotADirectoryError(errno_mod.ENOTDIR, "not a directory", probe)
         missing.append(probe)
         probe = os.path.dirname(probe)
+    synced = set()
     for level in reversed(missing):
         try:
             os.mkdir(level, mode)
@@ -592,16 +643,29 @@ def mkdir_durable(path, mode=0o755, ident="o-mkdir-parent"):
             if not os.path.isdir(level) or os.path.islink(level):
                 raise
             continue
+        seams().fault(ident + ":after-mkdir")
         fsync_dir(os.path.dirname(level), ident)
+        synced.add(os.path.dirname(level))
+    if root is None:
+        return
+    root = os.path.abspath(root)
+    level = path
+    while level != root and level.startswith(root.rstrip("/") + "/"):
+        parent = os.path.dirname(level)
+        if parent not in synced:
+            fsync_dir(parent, ident)
+        level = parent
 
 
-def read_regular_nofollow(path, bound, role="", dir_fd=None, after_fstat=None):
+def read_regular_nofollow(path, bound, role="", dir_fd=None, after_fstat=None, tmpdir=None):
     """Read a regular, single-link, non-symlink file of at most bound bytes.
 
     The open is O_NOFOLLOW|O_NONBLOCK, so a symlink fails with ELOOP and a FIFO
     never blocks. fstat decides the type, the link count and the size before any
     byte is read; the read itself is bounded to bound+1 so a file that grew is
-    caught too. Raises NotRegular, Oversize or OSError.
+    caught too. With tmpdir (the publisher's temp directory, relative to dir_fd
+    when given), a second link that is the publisher's temp raises InProgress
+    instead of NotRegular. Raises InProgress, NotRegular, Oversize or OSError.
     """
     shown = path if dir_fd is None else "<fd>/" + path
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dir_fd)
@@ -611,6 +675,8 @@ def read_regular_nofollow(path, bound, role="", dir_fd=None, after_fstat=None):
         if not stat.S_ISREG(st.st_mode):
             raise NotRegular(errno_mod.EINVAL, "not a regular file", shown)
         if st.st_nlink != 1:
+            if tmpdir is not None and publisher_temp(tmpdir, st, dir_fd) is not None:
+                raise InProgress(errno_mod.EBUSY, "publication not yet committed", shown)
             raise NotRegular(errno_mod.EMLINK, "more than one link", shown)
         if st.st_size > bound:
             raise Oversize("size")
@@ -647,24 +713,61 @@ def scandir_names(path, role=""):
         return sorted(e.name for e in it)
 
 
-def reap_dead_temps(tmpdir, keep=()):
-    """Remove temp files in tmpdir whose <pid>-<starttime> no longer lives."""
+def _other_link_dir(tmpdir, tmp, st):
+    """The directory under tmpdir's parent holding another link to st, or None."""
+    tmpdir = os.path.abspath(tmpdir)
+    for top, dirs, files in os.walk(os.path.dirname(tmpdir)):
+        if top == tmpdir:
+            dirs[:] = []
+            continue
+        for name in files:
+            p = os.path.join(top, name)
+            try:
+                o = os.lstat(p)
+            except OSError:
+                continue
+            if (o.st_dev, o.st_ino) == (st.st_dev, st.st_ino):
+                return top
+    return None
+
+
+def reap_dead_temps(tmpdir, keep=(), files_only=False, sync_ident="o-finish-sync"):
+    """Remove temp entries in tmpdir whose <pid>-<starttime> no longer lives.
+
+    A dead temp that still has a second link is a publication killed before
+    its commit (create_exclusive), whose destination directory may never have
+    been fsynced; reaping it is that publication's commit, so the directory
+    holding the other link (found under tmpdir's parent, which holds every
+    name this side publishes) is fsynced before the unlink, and tmpdir after.
+    A whole-machine sync() is not used: it can block for minutes behind other
+    filesystems. With files_only, directories (stage runs) are left alone.
+    """
     try:
         names = os.listdir(tmpdir)
     except FileNotFoundError:
         return
+    finished = False
     for name in names:
         if name in keep or identity_name_alive(name):
             continue
         p = os.path.join(tmpdir, name)
         try:
-            if os.path.isdir(p) and not os.path.islink(p):
-                import shutil
-                shutil.rmtree(p, ignore_errors=True)
-            else:
-                os.unlink(p)
+            st = os.lstat(p)
+            if stat.S_ISDIR(st.st_mode):
+                if not files_only:
+                    import shutil
+                    shutil.rmtree(p, ignore_errors=True)
+                continue
+            if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
+                dest = _other_link_dir(tmpdir, p, st)
+                if dest is not None:
+                    fsync_dir(dest, sync_ident)
+                finished = True
+            os.unlink(p)
         except OSError:
             pass
+    if finished:
+        fsync_dir(tmpdir, sync_ident.replace("-sync", "-dirsync"))
 
 
 def mount_fstype(st_dev, mountinfo=None):
