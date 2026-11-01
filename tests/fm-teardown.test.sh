@@ -75,7 +75,22 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 fm_git_identity fmtest fmtest@example.invalid
 
-TEARDOWN="$ROOT/bin/fm-teardown.sh"
+
+# Isolated CI counterfactual: production tracked bytes remain untouched.
+mutant_bin=$(fm_test_tmproot spool-counterfactual)/bin
+mkdir -p "$mutant_bin"
+cp -R "$ROOT/bin/." "$mutant_bin/"
+python3 - "$mutant_bin" <<'COUNTERFACTUAL'
+import json, pathlib, sys
+change = json.loads('{"file": "fm-task-evidence-lib.sh", "old": "printf \'%s  %s%s\\\\n\' \\"$hash\\" \\"$2\\" \\"$rel\\" >> \\"$1\\" || return 1", "new": "printf \'%s  %s%s\\\\n\' \\"$hash\\" \\"$2\\" \\"$rel\\" >> \\"$1\\" || :"}')
+path = pathlib.Path(sys.argv[1]) / change['file']
+text = path.read_text()
+assert text.count(change['old']) == 1
+path.write_text(text.replace(change['old'], change['new']))
+print('COUNTERFACTUAL: regular-append guard reverted in isolated fixture', flush=True)
+COUNTERFACTUAL
+TEARDOWN="$mutant_bin/fm-teardown.sh"
+
 PR_CHECK="$ROOT/bin/fm-pr-check.sh"
 TMP_ROOT=$(fm_test_tmproot fm-teardown-tests)
 REAL_GIT_FOR_TEST=$(command -v git)
