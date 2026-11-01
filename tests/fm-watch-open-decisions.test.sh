@@ -400,16 +400,16 @@ test_unwritable_marker_says_it_repeats() {
 test_tick_beats_per_log() {
   # A cold tick folds every log from byte 0, so it must keep the wedge
   # watchdog's beacon fresh between logs. This runs in run_case's subshell,
-  # so the counting watcher_beat stays inside this case.
+  # so the counting beat stays inside this case.
   local beats=0
   # shellcheck disable=SC2329 # invoked indirectly through open_decision_reminder_tick
-  watcher_beat() { beats=$((beats + 1)); }
+  count_beat() { beats=$((beats + 1)); }
   reset_case
   enable
   printf 'blocked [at=1000] [key=one]: help\n' > "$STATE/a.status"
   printf 'note: nothing open\n' > "$STATE/b.status"
   printf 'blocked [at=1000] [key=two]: help\n' > "$STATE/c.status"
-  open_decision_reminder_tick 1200 || fail "a cold three-log tick failed: $OPEN_DECISION_ERROR"
+  open_decision_reminder_tick 1200 count_beat || fail "a cold three-log tick failed: $OPEN_DECISION_ERROR"
   [ "$beats" -ge 3 ] || fail "a cold three-log tick beat $beats times, want one per log"
   pass "a tick beats the watcher beacon once per status log it folds"
 }
