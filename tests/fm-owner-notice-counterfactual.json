@@ -1,0 +1,13 @@
+{
+  "id": "membership-discovery",
+  "case": "case_unknown_projection",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        keys = set(members)\n        for name in names:",
+      "        keys = set()\n        for name in names:"
+    ]
+  ],
+  "expect": "missing projection discovered from live membership",
+  "baseline": false
+}
