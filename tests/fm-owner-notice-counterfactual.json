@@ -1,0 +1,13 @@
+{
+  "id": "status-source",
+  "case": "case_unknown_projection",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "            unknown(\"status-unreadable\", bid, None, \"outbox status cannot be read\", detail=str(exc))\n            st = None",
+      "            st = None"
+    ]
+  ],
+  "expect": "outbox status",
+  "baseline": false
+}
