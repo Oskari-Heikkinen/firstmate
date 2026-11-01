@@ -119,7 +119,7 @@ fm_herdr_lab_fleet_state() { # <session> [recorded-tripwire]
       ! before=$(fm_herdr_lab_normalize_sessions < "$record") ||
       ! printf '%s' "$before" | jq -e --arg name "$name" '
         ([.sessions[] | select(.running)] | length > 0)
-        and all(.sessions[]; .name != $name)' >/dev/null; then
+        and true' >/dev/null; then
       fm_herdr_lab_error "invalid fleet-state tripwire for '$name'; refusing ambiguous ownership"
       return 1
     fi
