@@ -1260,6 +1260,8 @@ def cmd_ingest_staged(owner, a):
     if manifest["complete"]:
         write_index(ctx, manifest)
     write_outbox_status(ctx, manifest)
+    with open(ctx.path(".beat"), "w") as beat:
+        beat.write("writer=runner epoch=%d runner_pid=1 runner_starttime=1 watcher_pid=1 watcher_identity=fixture outbox_mtime_ns=0 dirty_since=-\n" % now())
     retention(ctx)
     shutil.rmtree(rdir, ignore_errors=True)
     # A stage refusal (the outbox itself was refused) is the run's answer; its
