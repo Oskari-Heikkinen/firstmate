@@ -1,0 +1,13 @@
+{
+  "id": "publication-directory",
+  "case": "case_publish_lookup_unknown",
+  "edits": [
+    [
+      "bin/fm_owner_notice_format.py",
+      "        raise InProgress(errno_mod.EBUSY, \"publisher temp directory unavailable\", tmpdir) from exc",
+      "        return None"
+    ]
+  ],
+  "expect": "unknown temp lookup is not a refusal",
+  "baseline": false
+}
