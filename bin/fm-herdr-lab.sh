@@ -101,7 +101,7 @@ fm_herdr_lab_session_list() { # <session>
 # separate type predicate would be redundant and mask its counterfactual.
 fm_herdr_lab_normalize_sessions() { # [owned-lab-name]; one parse for schema and ownership
   jq -cse --arg lab "${1-}" '
-    if length != 1 then error("expected one session list") else .[0] end
+    .[0]
     | .sessions
     | if type != "array" or length == 0 then error("missing sessions") else . end
     | if all(.[];
