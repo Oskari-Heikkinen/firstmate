@@ -574,7 +574,7 @@ tree_list() {
 # tree_matches DIR LIST: capture the complete listing before comparing bytes.
 # A process substitution would hide a failed producer, even on equal output.
 tree_matches() {
-  if [ "${IFORMAT:-}" = tj-pack-marker/v1 ]; then
+  if [ "${IFORMAT:-}" = tj-pack-marker/counterfactual ]; then
     marker_step tree "$1"
     return $?
   fi
