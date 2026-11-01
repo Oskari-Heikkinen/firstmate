@@ -465,14 +465,6 @@ spawn_task() {  # <id> <home> <project> [extra fm-spawn args...]; SPAWN_DEADLINE
   local id=$1 home=$2 project=$3
   shift 3
   local -a deadline_cmd=()
-  case "$id" in
-    order-a|order-b)
-      printf 'LAB_DIAG primary=%s session=%s socket=%s pane=%s workspace=%s fleet=%s epoch=%s\n' \
-        "$id" "${HERDR_SESSION-<unset>}" "${HERDR_SOCKET_PATH-<unset>}" \
-        "${HERDR_PANE_ID-<unset>}" "${HERDR_WORKSPACE_ID-<unset>}" \
-        "${FM_HERDR_LAB_FLEET_SESSIONS-<unset>}" "$(date +%s)" >&2
-      ;;
-  esac
   [ -z "${SPAWN_DEADLINE_SECONDS:-}" ] || deadline_cmd=(fm_run_timed "$SPAWN_DEADLINE_SECONDS")
   # A quarter-second worktree poll (15 s discovery deadline) replaces the
   # one-second production cadence; the two-read agreement is unchanged.
@@ -1047,26 +1039,6 @@ ORDER_LIST=$(lab workspace list) || fail "could not inspect concurrent presentat
 CREATED_LABELS=$(projection_labels_from_log "$PROJECTION_ORDER_START")
 EXPECTED_LABELS=$(printf 'firstmate\n%s\n%s\n2ndmate-alpha\n2ndmate-bravo' "$PROJECTED_LABEL" "$CREATED_LABELS")
 ACTUAL_LABELS=$(printf '%s' "$ORDER_LIST" | jq -r '.result.workspaces[].label')
-printf 'LAB_DIAG selected_fleet=%s lab=%s\n' "${FM_HERDR_LAB_FLEET_SESSIONS-<unset>}" "$HERDR_LAB_SESSION"
-printf 'LAB_DIAG recorded_fleet\n'
-cat "$(fm_herdr_lab_tripwire_path "$HERDR_LAB_SESSION")"
-printf 'LAB_DIAG session_sockets\n'
-lab session list --json
-printf 'LAB_DIAG projected_block\n%s\n' "$ORDER_LIST"
-printf 'LAB_DIAG moves\n'
-cat "$MOVE_CALL_LOG"
-for DIAG_ID in order-a order-b; do
-  printf 'LAB_DIAG %s stdout\n' "$DIAG_ID"
-  cat "$TMP_ROOT/$DIAG_ID.out"
-  printf 'LAB_DIAG %s stderr\n' "$DIAG_ID"
-  cat "$TMP_ROOT/$DIAG_ID.err"
-  printf 'LAB_DIAG %s endpoint\n' "$DIAG_ID"
-  grep -E '^(backend|container|pane|herdr_|presentation|harness|worktree)' "$HOME_DIR/state/$DIAG_ID.meta" || true
-  if [ -f "$HOME_DIR/state/$DIAG_ID.herdr-presentation" ]; then
-    printf 'LAB_DIAG %s projection_record\n' "$DIAG_ID"
-    cat "$HOME_DIR/state/$DIAG_ID.herdr-presentation"
-  fi
-done
 [ "$ACTUAL_LABELS" = "$EXPECTED_LABELS" ] || fail "workspace order was not firstmate, stable primary block, secondmates: $ACTUAL_LABELS"
 PRIMARY_IDS=$(printf '%s' "$ORDER_LIST" | jq -r '
   .result.workspaces[]
