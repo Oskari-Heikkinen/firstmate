@@ -219,7 +219,6 @@ fm_herdr_lab_cli() { # <session> <herdr arguments...>
       return 1
       ;;
   esac
-  fm_herdr_lab_check_tripwire "$name" || return 1
   fm_herdr_lab_raw "$name" "$@"
 }
 
