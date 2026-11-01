@@ -174,7 +174,7 @@ unset FM_SUPERVISION_ACTOR FM_BRANCH_REPORT_TURN FM_LEASE_HOLDER_PID PI_CODING_A
 HOMES_FILE="$TMP_ROOT/homes"
 # Stop whatever a case left running, by the exact pids its home recorded.
 stop_home_processes() {  # <home>
-  local home=$1 pid arms='' i=0
+  local home=$1 pid arms='' i=0 stop_host_pid='' current_host
   release_held_helper "$home"
   # A lock-turnover case freezes its old watcher so it cannot self-retire on
   # lock loss. Resume that exact fixture pid even when an assertion failed.
@@ -184,8 +184,11 @@ stop_home_processes() {  # <home>
   if [ -f "$home/state/.supervision-host" ]; then
     arms=$(awk -F '\t' '$1 == "arm" { print $2 }' "$home/state/.supervision-host")
     pid=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host")
-    # Give the host's own cleanup (its engine and arms) room to run first.
-    if [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null; then
+    stop_host_pid=$pid
+    # Ask for a close rather than crashing the host: the Stop hook retries a
+    # TERM exit without a close, and a quiet recovery now correctly parks that
+    # replacement instead of waking it just to finish fixture cleanup.
+    if [ -n "$pid" ] && kill -USR1 "$pid" 2>/dev/null; then
       i=0
       while [ "$i" -lt 50 ] && kill -0 "$pid" 2>/dev/null; do
         sleep 0.1
@@ -199,11 +202,25 @@ stop_home_processes() {  # <home>
   pid=$(cat "$home/state/.watch.lock/pid" 2>/dev/null || true)
   [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null || true
   while IFS= read -r pid; do
-    if [ -e "$home/session.stop" ]; then
-      wait "$pid" 2>/dev/null || true
-    else
+    # Never wait forever on a fixture session whose hook failed to close.
+    i=0
+    while [ "$i" -lt 100 ] && kill -0 "$pid" 2>/dev/null; do
+      # Recovery may retire the predecessor before publishing the replacement.
+      # The first snapshot can therefore name the dead predecessor; retarget
+      # the stop request once the replacement records itself, not on a delay.
+      current_host=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host" 2>/dev/null || true)
+      if [ -n "$current_host" ] && [ "$current_host" != "$stop_host_pid" ]; then
+        kill -USR1 "$current_host" 2>/dev/null && stop_host_pid=$current_host
+      fi
+      sleep 0.1
+      i=$((i + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      shutdown_diagnostics "$home" "$pid"
       kill -TERM "$pid" 2>/dev/null || true
+      fail "fixture session $pid did not exit after the host stop request"
     fi
+    wait "$pid" 2>/dev/null || true
   done < <(cat "$home/claude-pids" 2>/dev/null)
   while IFS= read -r pid; do
     kill -TERM "$pid" 2>/dev/null || true
@@ -244,9 +261,20 @@ start_case_homes() {  # <case-index>
   HOMES_FILE="$TMP_ROOT/homes.$1"
   HOMES_STOPPED=0
 }
+# The pool's teardown callback must return: fail exits its caller before the
+# pool publishes the case receipt. Isolate cleanup failures and carry them to
+# the suite result instead of leaving the pool waiting for a missing receipt.
+record_case_cleanup() {
+  ( stop_case_homes ) || : > "$HOMES_FILE.cleanup-failed"
+}
 run_case_pool() {  # <case-function>...
-  FM_CASE_POOL_SETUP=start_case_homes FM_CASE_POOL_TEARDOWN=stop_case_homes \
-    fm_run_case_pool "${FM_SUPERVISION_HOST_CASE_JOBS:-6}" "$TMP_ROOT/.case-logs" "$@"
+  local rc=0 failed
+  FM_CASE_POOL_SETUP=start_case_homes FM_CASE_POOL_TEARDOWN=record_case_cleanup \
+    fm_run_case_pool "${FM_SUPERVISION_HOST_CASE_JOBS:-6}" "$TMP_ROOT/.case-logs" "$@" || rc=$?
+  for failed in "$TMP_ROOT"/homes.*.cleanup-failed; do
+    [ ! -e "$failed" ] || rc=1
+  done
+  return "$rc"
 }
 trap suite_cleanup EXIT
 
@@ -1995,11 +2023,13 @@ test_next_park_takes_over_the_cycle_a_pass_through_left_for_main() {
 # Same host/hook path, but only the old arm's post-wait publication is held.
 # The watcher has finished cleanup and no wake is appended by the fixture.
 # The real taking arm must classify all 50 missing reads as unconfirmed and
-# retain downtime, even though the delayed row eventually proves TERM.
-test_next_park_resurfaces_when_the_old_arm_receipt_is_delayed() {
+# record downtime, even though the delayed row eventually proves TERM. With no
+# unshown input that recovery is then retired quietly, not sent to main.
+test_next_park_retires_empty_recovery_when_the_old_arm_receipt_is_delayed() {
   local home
   prepare_takeover_receipt_case hook-takeover-delayed delayed
   home=$TAKEOVER_HOME
+  : > "$home/state/.watch-triage.log"
   turn_end "$home"
   wait_until 400 test -e "$home/takeover-seam/publication-held" \
     || fail "delayed takeover: old arm never reached post-wait publication"
@@ -2014,12 +2044,18 @@ test_next_park_resurfaces_when_the_old_arm_receipt_is_delayed() {
     || fail "delayed takeover: an extra wake was appended"
   : > "$home/takeover-seam/release"
   wait_until 150 old_owner_term_row "$home" || fail "delayed takeover: released owner did not publish TERM"
-  wait_until 250 hook_exited "$home" || fail "delayed takeover: recovery never reached main"
-  assert_rewoke_main "$home" "delayed takeover"
-  assert_re '^check: rearm-resurface' "$home/hook.err" "delayed takeover: required recovery reason is missing"
+  wait_until 250 grep -q 'rearm-resurface not woken' "$home/state/.watch-triage.log" \
+    || fail "delayed takeover: empty recovery was not retired"
+  ! hook_exited "$home" || fail "delayed takeover: empty recovery woke main"
+  host_owns_the_only_cycle "$home" || fail "delayed takeover: quiet recovery lost its watcher"
+  assert_re '^acked:' "$home/state/.watcher-down" "delayed takeover: empty recovery was not acknowledged"
   assert_re 'reason=taken-over-unconfirmed-stop' "$home/state/.watch-cycle-exits.log" "delayed takeover: classification changed"
   assert_no_re 'reason=taken-over[[:space:]]' "$home/state/.watch-cycle-exits.log" "delayed takeover: missing receipt was treated as confirmed"
-  pass "host+hook: a delayed old-arm TERM receipt requires unconfirmed-stop recovery, not quiet restoration"
+  append_status "$home" 'which region after delayed takeover?' needs-decision
+  wait_until 250 hook_exited "$home" || fail "delayed takeover: new input did not reach main"
+  assert_rewoke_main "$home" "delayed takeover (new input)"
+  assert_re '^signal: .*demo.status' "$home/hook.err" "delayed takeover: new input reason is missing"
+  pass "host+hook: delayed old-arm receipt records unconfirmed recovery, retires it quietly, and delivers new input"
 }
 
 # A park stopped before its take-over stops the left cycle (here held in the
@@ -2227,10 +2263,40 @@ SH
   pass "host: the dialog mirror, its feed, and the wake file are owner-only"
 }
 
-# Park again after a host was stopped mid-park: the new cycle's first close is
-# the watcher's downtime resurface, which main drains before the next park.
-# That close can end the park before its cycle is ever seen live, so this
-# waits for the exit itself.
+# Park again after a host was stopped mid-park. The new cycle first settles
+# the watcher's downtime recovery: when something is owed (a turn stopped
+# mid-handling leaves its wake queued) the recovery is the first close and
+# reaches main, which drains it before the next park; when nothing is owed the
+# watcher retires it with one wake-triage log line and the park goes on.
+# The owed close can end the park before its cycle is ever seen live, so this
+# waits for either outcome itself.
+recovery_retired_beyond() {  # <home> <count before>
+  [ "$(grep -cF 'rearm-resurface not woken' "$1/state/.watch-triage.log" 2>/dev/null)" -gt "$2" ]
+}
+
+recovery_settled() {  # <home> <count before>
+  host_exited "$1" || recovery_retired_beyond "$1" "$2"
+}
+
+park_after_stop() {  # <home>
+  local before
+  before=$(grep -cF 'rearm-resurface not woken' "$1/state/.watch-triage.log" 2>/dev/null)
+  before=${before:-0}
+  rm -f "$1/host.rc"
+  : > "$1/park.go"
+  wait_until 150 recovery_settled "$1" "$before" \
+    || fail "the watcher's downtime recovery was not settled: $(cat "$1/host.out")"
+  if host_exited "$1"; then
+    assert_re '^check: rearm-resurface' "$1/host.out" "fixture: the first close after the watcher stopped was not its resurface"
+    main_drain_and_ack "$1"
+    quiet_pass_through_successor "$1"
+    park_again "$1"
+    return 0
+  fi
+  wait_until 150 watcher_live "$1" \
+    || fail "the park that retired a recovery never showed a live watcher cycle: $(cat "$1/host.out")"
+}
+
 # The resurface pass-through leaves its successor running. Stop that watcher
 # and acknowledge the downtime its exit records, so the next park starts a
 # watcher it owns. Attaching instead would not observe the exit until the
@@ -2255,16 +2321,6 @@ quiet_pass_through_successor() {  # <home>
     fm_recovery_marker_ack "$2" "$3"
   ' _ "$ROOT/bin/fm-wake-lib.sh" "$home/state/.watcher-down" "$gen" \
     || fail "fixture: could not acknowledge the successor downtime"
-}
-
-park_after_stop() {  # <home>
-  rm -f "$1/host.rc"
-  : > "$1/park.go"
-  wait_until 150 host_exited "$1" || fail "the watcher's downtime resurface did not reach main: $(cat "$1/host.out")"
-  assert_re '^check: rearm-resurface' "$1/host.out" "fixture: the first close after the watcher stopped was not its resurface"
-  main_drain_and_ack "$1"
-  quiet_pass_through_successor "$1"
-  park_again "$1"
 }
 
 # Dialog counts as delivered only once the turn that carried it is accepted
@@ -4792,7 +4848,57 @@ test_superseded_host_leaves_the_owner_untouched() {
 }
 
 
+# Force the replacement record to arrive after cleanup's first snapshot.
+# This is the same publication gap as the real pre-exec recovery cases, without
+# depending on scheduler timing to expose it.
+test_fixture_cleanup_retargets_a_late_host_record() {
+  local home session publisher
+  home=$(make_home cleanup-late-record away)
+  : > "$home/state/.supervision-host"
+  bash -c '
+    trap '\''printf "stopped\n" > "$1/stopped"; exit 0'\'' USR1
+    printf "ready\n" > "$1/ready"
+    while :; do sleep 0.1; done
+  ' _ "$home" &
+  session=$!
+  printf '%s\n' "$session" > "$home/claude-pids"
+  wait_until 100 test -e "$home/ready" || fail 'cleanup fixture: session not ready'
+  awk() {
+    local snapshot
+    case "$*" in
+      *'$1 == "host"'*"$home/state/.supervision-host"*)
+        if [ ! -e "$home/first-host-read" ]; then
+          snapshot=$(command awk "$@")
+          : > "$home/first-host-read"
+          printf '%s\n' "$snapshot"
+          return
+        fi ;;
+    esac
+    command awk "$@"
+  }
+  (
+    wait_until 100 test -e "$home/first-host-read" || exit 1
+    printf 'host\t%s\n' "$session" > "$home/state/.supervision-host"
+  ) &
+  publisher=$!
+  stop_home_processes "$home"
+  wait "$publisher" || fail 'cleanup fixture: publication failed'
+  assert_grep stopped "$home/stopped" 'cleanup did not stop the late-published host'
+  pass 'fixture cleanup retargets the host published after its first snapshot'
+}
+
+test_fixture_cleanup_failure_returns_a_pool_receipt() {
+  HOMES_FILE="$TMP_ROOT/cleanup-failure-receipt"
+  # fail has this exit behavior; keep the expected failure out of TAP output.
+  stop_case_homes() { exit 23; }
+  record_case_cleanup
+  [ -e "$HOMES_FILE.cleanup-failed" ] || fail 'cleanup failure disappeared instead of returning to the pool'
+  pass 'fixture cleanup failure is recorded and returns to the pool publisher'
+}
+
 HOST_CASES=(
+  test_fixture_cleanup_retargets_a_late_host_record
+  test_fixture_cleanup_failure_returns_a_pool_receipt
   # The slowest cases start first so the pool drains evenly.
   test_undelivered_dialog_is_fed_again_on_the_next_turn
   test_attended_latch_keeps_closes_on_main_and_records_recovery_off_main
@@ -4914,7 +5020,7 @@ HOST_CASES=(
   test_successor_left_at_the_turn_survives_the_hook_process_group_teardown
   test_pass_through_successor_survives_the_hook_process_group_teardown
   test_next_park_takes_over_the_cycle_a_pass_through_left_for_main
-  test_next_park_resurfaces_when_the_old_arm_receipt_is_delayed
+  test_next_park_retires_empty_recovery_when_the_old_arm_receipt_is_delayed
   test_a_park_stopped_mid_take_over_leaves_the_take_over_to_the_next_park
   test_unrecorded_successor_is_stopped_rather_than_left_for_main
 )

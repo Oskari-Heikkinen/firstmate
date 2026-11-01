@@ -34,9 +34,12 @@ test_quiet_checkpoint_exits_124_cleanly() {
   out="$home/out.txt"
   err="$home/err.txt"
   status=0
-  FM_HOME="$home" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 "$CHECKPOINT" --seconds 1 >"$out" 2>"$err" || status=$?
+  # This case tests the timeout itself, including native EXIT cleanup. Leave
+  # headroom for startup on a pooled runner: a one-second deadline can send
+  # INT after the singleton claim but before cleanup traps are installed.
+  FM_HOME="$home" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 "$CHECKPOINT" --seconds 10 >"$out" 2>"$err" || status=$?
   expect_code 124 "$status" "quiet checkpoint exit"
-  assert_contains "$(cat "$out")" "checkpoint: no actionable wake within 1s" "quiet checkpoint line missing"
+  assert_contains "$(cat "$out")" "checkpoint: no actionable wake within 10s" "quiet checkpoint line missing"
   assert_absent "$home/state/.watch.lock/pid" "watch lock pid survived quiet checkpoint timeout"
   pass "quiet checkpoint exits 124 with a clean checkpoint line and no live lock"
 }
@@ -134,6 +137,8 @@ test_never_announced_recovery_is_announced_once() {
   home=$(make_home pending-recovery)
   out="$home/out.txt"
   err="$home/err.txt"
+  append_wake "$home/state" check owed 'check: unshown before checkpoint' \
+    || fail "could not append the pending recovery input"
   printf 'pending:downtime:unreported.1.aaa\n' > "$home/state/.watcher-down"
 
   status=0
@@ -145,7 +150,7 @@ test_never_announced_recovery_is_announced_once() {
     || fail "never-announced recovery did not surface exactly once: $(cat "$out")"
   [ "$(cat "$home/state/.watcher-down")" = 'announced:downtime:unreported.1.aaa' ] \
     || fail "never-announced recovery did not retain its announced generation"
-  pass "a never-announced recovery still surfaces once from a foreground checkpoint"
+  pass "a never-announced recovery with owed input surfaces once from a foreground checkpoint"
 }
 
 test_queue_append_during_checkpoint_still_resurfaces() {
