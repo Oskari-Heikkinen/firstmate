@@ -2180,23 +2180,46 @@ test_watcher_exits_on_state_teardown_during_startup() {
   # A state directory torn down and recreated at the same path just after the
   # watcher claimed its lock - before the main loop - is still a teardown: the
   # empty lock in the recreated directory was never released by a successor.
-  local dir state fakebin out pid end stopped rc
-  dir=$(make_case startup-teardown)
+  local dir state fakebin out pid end stopped rc real_touch iteration
+  real_touch=$(command -v touch)
+  # Repeat the synchronized boundary in one job, each time in a fresh world.
+  for iteration in $(seq 1 20); do
+  dir=$(make_case "startup-teardown-$iteration")
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/watch.out"
+  # Hold the parent in its startup heartbeat initialization, before it can
+  # start the watchdog or detached writers. Polling watcher-path and sending
+  # STOP did not establish that boundary: the watcher could already be in its
+  # loop, and STOP does not wait for delivery or stop its children.
+  cat > "$fakebin/touch" <<SH
+#!/usr/bin/env bash
+"$real_touch" "\$@" || exit \$?
+if [ "\$#" = 1 ] && [ "\$1" = "$state/.last-heartbeat" ]; then
+  kill -STOP "\$PPID" || exit 1
+  printf 'ready\\n' > "$dir/startup-held"
+fi
+SH
+  chmod +x "$fakebin/touch"
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
   pid=$!
-  # watcher-path is written only after the claim, a few lines before the main
-  # loop, so pause the watcher the moment it appears.
   stopped=0
   end=$((SECONDS + 20))
   while [ "$SECONDS" -lt "$end" ] && is_live_non_zombie "$pid"; do
-    [ -e "$state/.watch.lock/watcher-path" ] && kill -STOP "$pid" 2>/dev/null && { stopped=1; break; }
+    if [ -s "$dir/startup-held" ]; then
+      case "$(ps -o stat= -p "$pid")" in *T*) stopped=1; break ;; esac
+    fi
+    sleep 0.01
   done
-  [ "$stopped" -eq 1 ] || fail "watcher never finished claiming its lock: $(cat "$out")"
-  rm -rf "$state"
-  mkdir -p "$state"
+  [ "$stopped" -eq 1 ] || { kill -CONT "$pid" 2>/dev/null || true; reap_watcher "$pid"; fail "watcher never stopped at startup: $(cat "$out")"; }
+  [ -s "$state/.watch.lock/watcher-path" ] && [ ! -e "$state/.last-watcher-beat" ] \
+    || { kill -CONT "$pid"; reap_watcher "$pid"; fail "fixture did not hold the claimed watcher before its first beat"; }
+  # Fail at the fixture boundary, not at the exit assertion, if teardown fails.
+  if ! rm -rf "$state" || [ -e "$state" ] || ! mkdir "$state"; then
+    kill -CONT "$pid"
+    reap_watcher "$pid"
+    fail "fixture state teardown/recreation failed"
+  fi
   kill -CONT "$pid" 2>/dev/null || true
   # wait_for_exit returns the watcher's own status, or TERMs a watcher that
   # kept running in the torn-down directory.
@@ -2205,7 +2228,8 @@ test_watcher_exits_on_state_teardown_during_startup() {
   [ "$rc" -eq 1 ] || fail "watcher read a startup teardown as a successor's release (exit $rc): $(cat "$out")"
   grep -q '^watcher: exiting - state directory was torn down' "$out" \
     || fail "watcher exited without its teardown reason: $(cat "$out")"
-  pass "watcher exits 1 with its reason when its state directory is torn down and recreated during startup"
+  pass "watcher exits 1 with its reason after startup teardown (iteration $iteration/20)"
+  done
 }
 
 test_arm_self_eviction_is_loud_without_successor() {
