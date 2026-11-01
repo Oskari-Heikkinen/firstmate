@@ -91,8 +91,8 @@ fm_herdr_lab_session_list() { # <session>
 
 # One parser for live session lists and persisted tripwires. Slurp refuses
 # multiple JSON documents rather than accepting the last valid fragment.
-fm_herdr_lab_normalize_sessions() {
-  jq -cse '
+fm_herdr_lab_normalize_sessions() { # [owned-lab-name]; one parse for schema and ownership
+  jq -cse --arg lab "${1-}" '
     if length != 1 then error("expected one session list") else .[0] end
     | .sessions
     | if type != "array" or length == 0 then error("missing sessions") else . end
@@ -106,22 +106,22 @@ fm_herdr_lab_normalize_sessions() {
       and ((map(.socket_path) | unique | length) == length)
       then {sessions: (map({name, default, running, socket_path}) | sort_by(.name))}
       else error("ambiguous or malformed sessions") end
+    | if $lab == "" or (
+        ([.sessions[] | select(.running)] | length > 0)
+        and all(.sessions[]; .name != $lab))
+      then . else error("ambiguous lab ownership") end
   '
 }
 
 fm_herdr_lab_read_tripwire() { # <session> [recorded-tripwire]
-  local name=$1 record=${2:-} before
+  local name=$1 record=${2:-}
   [ -n "$record" ] || record=$(fm_herdr_lab_tripwire_path "$name")
   # Never read a FIFO or follow an ownership-record symlink.
   if [ ! -f "$record" ] || [ -L "$record" ] || [ ! -r "$record" ] ||
-    ! before=$(fm_herdr_lab_normalize_sessions < "$record") ||
-    ! printf '%s' "$before" | jq -e --arg name "$name" '
-      ([.sessions[] | select(.running)] | length > 0)
-      and all(.sessions[]; .name != $name)' >/dev/null; then
+    ! fm_herdr_lab_normalize_sessions "$name" < "$record"; then
     fm_herdr_lab_error "invalid fleet-state tripwire for '$name'; refusing ambiguous ownership"
     return 1
   fi
-  printf '%s\n' "$before"
 }
 
 fm_herdr_lab_fleet_state() { # <session> [recorded-tripwire]
