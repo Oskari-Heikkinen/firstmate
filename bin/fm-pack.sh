@@ -61,7 +61,8 @@
 #       verify and restore also read UNIT.json format tj-fetch-arrival-unit/v2
 #       (bare member paths); its tree list is unsupported by --against/release.
 #       All other or missing formats, ambiguous metadata, malformed marker
-#       fields or manifests refuse with exit 2 before image work.
+#       fields or manifests refuse with exit 2 before image work. An arrival's
+#       auxiliary marker is not unit metadata; its UNIT.json stays authoritative.
 #   fm-pack.sh verify-tar IMAGE --tar TAR --expect EXPECTATION.json
 #       The G5-equivalent parity check of a transit tar against the image
 #       built from it (docs/storage.md owns when a caller runs it). Read-only:
@@ -833,8 +834,8 @@ load_image() {
   done
   IJSON=$IDIR/$IUNIT.json IMEMBERS=$IDIR/$IUNIT.members.sha256
   IMG=$IDIR/$IUNIT.sqfs
-  if [ -e "$IDIR/$IUNIT.marker.json" ] || [ -L "$IDIR/$IUNIT.marker.json" ]; then
-    [ ! -e "$IJSON" ] && [ ! -L "$IJSON" ] || die "ambiguous unit metadata: $IJSON and marker.json"
+  if { [ -e "$IDIR/$IUNIT.marker.json" ] || [ -L "$IDIR/$IUNIT.marker.json" ]; } &&
+    [ ! -e "$IJSON" ] && [ ! -L "$IJSON" ]; then
     need python3
     IJSON=$IDIR/$IUNIT.marker.json
     IFORMAT=tj-pack-marker/v1
@@ -844,7 +845,10 @@ load_image() {
   [ -f "$IJSON" ] || die "$IJSON is missing"
   IFORMAT=$(sidecar format "$IJSON") || die "$IJSON has no format"
   case "$IFORMAT" in
-    fm-pack-unit/v1|tj-fetch-arrival-unit/v2) ;;
+    fm-pack-unit/v1)
+      [ ! -e "$IDIR/$IUNIT.marker.json" ] && [ ! -L "$IDIR/$IUNIT.marker.json" ] ||
+        die "ambiguous unit metadata: $IJSON and marker.json" ;;
+    tj-fetch-arrival-unit/v2) ;; # Its auxiliary marker is not unit metadata.
     *) die "$IJSON has the unknown format $IFORMAT" ;;
   esac
   IDIRNAME=$(sidecar dir "$IJSON") || die "$IJSON has no dir"
