@@ -280,9 +280,6 @@ def read_config(home):
             sources["%s@%s" % (kind, group)] = Source("%s@%s" % (kind, group), [path], True, kind)
     if registry_src is not None:
         sources["registry"] = registry_src
-    if warnings:
-        sources["config"] = Source("config", [path], True)
-        sources["config"].fail("unreadable", "; ".join(warnings))
     return sources, thresholds, stale_minutes, warnings
 
 

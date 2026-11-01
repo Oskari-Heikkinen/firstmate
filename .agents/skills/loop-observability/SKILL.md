@@ -10,7 +10,7 @@ metadata:
     - path: bin/fm-loop.sh
       sha256: 612c4fc26273562f2a75b7d46ad9148b9d928be11b3bb31ccb9248c61d55b78a
     - path: bin/fm-loop.py
-      sha256: f2a29b5858418a23236cfe38d9f889bd3aa6559a58a79aee39558700ade429b0
+      sha256: 168811f63f7d3ada1a4bb3390a8e6c5d2b72531a6ea5037a7dd9ecf5d19953b5
     - path: bin/fm-project-capacity-lib.sh
       sha256: 8722b50acaa6c2988b7b31c1e56a12ec23769c3c3675d5afdc487e1480a0ba94
 ---
