@@ -677,7 +677,7 @@ cmd_park() {
   poll_interval=${FM_PARK_INTERVAL:-$(park_interval "$HANDOFF_CONDITION")}
   if [ "$check_interval" -gt 0 ]; then
     case "$HANDOFF_CONDITION" in cmd:*) ;; *) die "--check-interval is only for cmd: conditions" ;; esac
-    [ -z "$adopted" ] || die "--check-interval cannot be used with an adopted source"
+    : # counterfactual: omit adopted-source cadence refusal
     "$WHEN" validate-schedule "$check_interval" "$poll_interval" 60 \
       || die "park cadence admission refused before changing the handoff, record, or watch"
     # The runner owns all external calls on this path, including the first.
