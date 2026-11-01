@@ -70,6 +70,7 @@ Run production-library tests and anything that sources `bin/` under `bash` expli
 - Build socket and doorbell paths from a short fixed root, not from the home path, because Unix socket paths cap near 104 bytes.
 - Stream per-file paths, hashes and manifests through caller-owned spool files, not shell arrays, command substitutions or here-strings; forked shells inherit those heaps, multiplying tree-size memory growth.
   `fm_task_evidence_verify_copies` delegates bounded hash batches and disk-backed inventories to `bin/fm-task-evidence-stream.py`.
+  A spool adds a fallible reader: use the checked protocol in `bin/fm-spool-lib.sh` (format owner `bin/fm_spool.py`), not raw shell EOF or `-s` as success. Seal successful producer output, require the consumer's completion frame, and propagate failed bounded summaries. Missing, unreadable, non-regular and truncated input must refuse rather than masquerade as an empty list.
 
 ## 7. Lint
 

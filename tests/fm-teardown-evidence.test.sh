@@ -160,6 +160,7 @@ import os
 import sqlite3
 import sys
 from unittest.mock import patch
+sys.path.insert(0, os.path.dirname(sys.argv[1]))
 spec = importlib.util.spec_from_file_location('evidence', sys.argv[1])
 evidence = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(evidence)

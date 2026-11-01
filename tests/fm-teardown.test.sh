@@ -7463,6 +7463,8 @@ SH
       expect_code 1 "$rc" "$stage $variant framing must refuse"
       if [ "$variant" = missing-file ]; then
         assert_grep 'REFUSED: evidence record scan: cannot read prepared matches' "$case_dir/stderr" 'missing matches read as no citations'
+      elif [ "$stage" = reader ]; then
+        assert_grep 'REFUSED: checked spool:' "$case_dir/stderr" 'changed matches transport read as no citations'
       else
         assert_grep 'REFUSED: evidence record scan: malformed' "$case_dir/stderr" 'bad framing read as no citations'
       fi

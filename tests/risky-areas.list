@@ -31,9 +31,13 @@ cleanup script bin/fm-teardown.sh
 cleanup script bin/fm-task-evidence-lib.sh
 cleanup script bin/fm-task-evidence-scan.pl
 cleanup script bin/fm-task-evidence-stream.py
+cleanup script bin/fm-spool-lib.sh
+cleanup script bin/fm_spool.py
 cleanup script bin/fm-park.sh
 cleanup script bin/fm-suspend-lib.sh
 cleanup test tests/fm-teardown*.test.sh
+cleanup test tests/fm-spool.test.sh
+cleanup test tests/spool-probes.py
 cleanup test tests/fm-park*.test.sh
 
 steering script bin/fm-send.sh

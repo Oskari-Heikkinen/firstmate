@@ -74,14 +74,16 @@
 # via refs/pull/<n>/head when the branch itself was deleted. So a missing pr= never
 # by itself causes a false refusal of landed work.
 # A gh lookup error falls back to the content check; if that is also inconclusive,
-# teardown refuses rather than risk discarding unlanded work.
+# teardown refuses rather than risk discarding unlanded work. A failed private
+# spool read is different: the proof returns 2 and cannot fall back to a later
+# proof or an empty-input success.
 # Every remote or forge read these proofs make (the fetches and the gh, gh-axi
 # and tea lookups) runs under teardown_remote's bound, FM_TEARDOWN_REMOTE_TIMEOUT
 # seconds (default 120) with Git and gh prompts off, because it runs while
 # teardown holds the task's control lock and the shared Treehouse project lock.
 # A read that hits the bound is a failed read: the proof it served is
 # inconclusive and teardown refuses or falls back exactly as for any other
-# failed read. Every lock teardown holds is released once the task record is
+# failed remote read. Every lock teardown holds is released once the task record is
 # gone and before the final clone refresh (bin/fm-landed-sync.sh), so a slow
 # fetch there never holds up a spawn, park, adoption or merge in the project.
 # Uncommitted changes are never landed; dirty refusals distinguish untracked-only
@@ -397,6 +399,8 @@ for _teardown_source in \
   fm-task-evidence-lib.sh \
   fm-task-evidence-scan.pl \
   fm-task-evidence-stream.py \
+  fm-spool-lib.sh \
+  fm_spool.py \
   fm-control-lib.sh \
   fm-lock-lib.sh \
   fm-classify-lib.sh \
@@ -1729,28 +1733,37 @@ patch_id_for_commit() {
     | awk 'NR == 1 { print $1 }'
 }
 
+# Proofs distinguish not-proven (1) from a failed private spool (2).
 unpushed_patches_are_in_pr_head() {
-  local pr_head=$1 current base commit patch_id
+  local pr_head=$1 current base commit patch_id commits_end=0
   local pr_patch_ids="$TEARDOWN_WORK_SCAN/pr-patches" unpushed="$TEARDOWN_WORK_SCAN/pr-unpushed"
+  local pr_commits="$TEARDOWN_WORK_SCAN/pr-commits"
   current=$(git -C "$WT" rev-parse --verify "$LANDED_HEAD" 2>/dev/null) || return 1
   base=$(git -C "$WT" merge-base "$current" "$pr_head" 2>/dev/null) || return 1
+  git -C "$WT" log --format=%H "$base..$pr_head" -- > "$pr_commits" 2>/dev/null || return 1
+  fm_spool seal "$pr_commits" lines || return 2
   (
-    git -C "$WT" log --format=%H "$base..$pr_head" -- 2>/dev/null \
-      | while IFS= read -r commit; do
-          patch_id_for_commit "$commit"
-        done \
-      | sed '/^$/d' \
-      | sort -u
-  ) > "$pr_patch_ids" || return 1
-  [ -s "$pr_patch_ids" ] || return 1
+    set -o pipefail
+    {
+      while fm_spool_next commit commits_end; do
+        patch_id_for_commit "$commit" || exit 1
+      done < <(fm_spool read "$pr_commits")
+      fm_spool_end "$commits_end" "$pr_commits" || exit 2
+    } | sed '/^$/d' | sort -u
+  ) > "$pr_patch_ids" || return "$?"
+  fm_spool seal "$pr_patch_ids" lines && fm_spool_inspect "$pr_patch_ids" || return 2
+  [ "$FM_SPOOL_NONEMPTY" = 1 ] || return 1
   git -C "$WT" log --format=%H "$LANDED_HEAD" --not --remotes -- > "$unpushed" 2>/dev/null || return 1
-  [ -s "$unpushed" ] || return 1
-  while IFS= read -r commit; do
+  fm_spool seal "$unpushed" lines && fm_spool_inspect "$unpushed" || return 2
+  [ "$FM_SPOOL_NONEMPTY" = 1 ] || return 1
+  commits_end=0
+  while fm_spool_next commit commits_end; do
     [ -n "$commit" ] || continue
     patch_id=$(patch_id_for_commit "$commit") || return 1
     [ -n "$patch_id" ] || return 1
-    grep -qxF "$patch_id" "$pr_patch_ids" || return 1
-  done < "$unpushed"
+    fm_spool contains "$pr_patch_ids" "$patch_id" || return "$?"
+  done < <(fm_spool read "$unpushed")
+  fm_spool_end "$commits_end" "$unpushed"
 }
 
 # Is the worktree's PR merged for local work contained in that PR? Resolves the
@@ -1759,9 +1772,9 @@ unpushed_patches_are_in_pr_head() {
 # tea (fm_pr_forgejo_read_record), and everything else through GitHub. Returns
 # non-zero when the PR is not merged, the current work is not contained in the
 # PR head, no PR is found, or any forge read error occurs - the caller then
-# falls back to the content check.
+# falls back to the content check. A private spool failure instead returns 2.
 pr_is_merged() {
-  local branch=$1 target view state remainder head resolved_url current landed=0
+  local branch=$1 target view state remainder head resolved_url current landed=0 proof_rc
   if [ -n "$PR_URL" ]; then
     target=$PR_URL
   else
@@ -1794,6 +1807,9 @@ pr_is_merged() {
     landed=1
   elif unpushed_patches_are_in_pr_head "$head"; then
     landed=1
+  else
+    proof_rc=$?
+    [ "$proof_rc" != 2 ] || return 2
   fi
   [ "$landed" = 1 ] || return 1
   if [ -z "$PR_URL" ]; then
@@ -1840,36 +1856,43 @@ significant_worktree_changes() {
 # gained since that merge-base (what `git cherry` showing only '-' expresses).
 # One commit without an exact match - an extra local commit, or a different
 # patch to the same file - refuses; squash-collapsed content never matches here
-# and is left to content_in_default.
+# and is left to content_in_default. Private spool failures return 2, not an
+# inconclusive proof that could fall back to another check.
 commits_replayed_on_default() {
-  local ref=$1 current base commit patch_id
+  local ref=$1 current base commit patch_id commits_end=0
   local dirty_raw="$TEARDOWN_WORK_SCAN/replay-status" dirty="$TEARDOWN_WORK_SCAN/replay-dirty"
   local commits="$TEARDOWN_WORK_SCAN/replay-commits" merges="$TEARDOWN_WORK_SCAN/replay-merges"
   local default_patch_ids="$TEARDOWN_WORK_SCAN/replay-patches"
   if [ "$LANDED_HEAD" = HEAD ]; then
     git -C "$WT" status --porcelain > "$dirty_raw" 2>/dev/null || return 1
-    significant_worktree_changes < "$dirty_raw" > "$dirty" || return 1
-    [ ! -s "$dirty" ] || return 1
+    fm_spool seal "$dirty_raw" lines || return 2
+    ( set -o pipefail; fm_spool cat "$dirty_raw" | significant_worktree_changes ) > "$dirty" || return 2
+    fm_spool seal "$dirty" lines && fm_spool_inspect "$dirty" || return 2
+    [ "$FM_SPOOL_NONEMPTY" = 0 ] || return 1
   fi
   current=$(git -C "$WT" rev-parse --verify "$LANDED_HEAD" 2>/dev/null) || return 1
   base=$(git -C "$WT" merge-base "$current" "$ref" 2>/dev/null) || return 1
   git -C "$WT" rev-list --merges "$base..$current" -- > "$merges" 2>/dev/null || return 1
-  [ ! -s "$merges" ] || return 1
+  fm_spool seal "$merges" lines && fm_spool_inspect "$merges" || return 2
+  [ "$FM_SPOOL_NONEMPTY" = 0 ] || return 1
   git -C "$WT" rev-list "$base..$current" -- > "$commits" 2>/dev/null || return 1
-  [ -s "$commits" ] || return 1
+  fm_spool seal "$commits" lines && fm_spool_inspect "$commits" || return 2
+  [ "$FM_SPOOL_NONEMPTY" = 1 ] || return 1
   (
     git -C "$WT" log -p --no-merges --pretty=medium --no-ext-diff "$base..$ref" -- 2>/dev/null \
       | git patch-id --stable 2>/dev/null \
       | awk '{ print $1 }' \
       | sort -u
   ) > "$default_patch_ids" || return 1
-  [ -s "$default_patch_ids" ] || return 1
-  while IFS= read -r commit; do
+  fm_spool seal "$default_patch_ids" lines && fm_spool_inspect "$default_patch_ids" || return 2
+  [ "$FM_SPOOL_NONEMPTY" = 1 ] || return 1
+  while fm_spool_next commit commits_end; do
     [ -n "$commit" ] || continue
     patch_id=$(patch_id_for_commit "$commit") || return 1
     [ -n "$patch_id" ] || return 1
-    grep -qxF "$patch_id" "$default_patch_ids" || return 1
-  done < "$commits"
+    fm_spool contains "$default_patch_ids" "$patch_id" || return "$?"
+  done < <(fm_spool read "$commits")
+  fm_spool_end "$commits_end" "$commits"
 }
 
 # Is the branch's content already present in the up-to-date default branch $1?
@@ -1884,7 +1907,8 @@ content_in_default() {
   default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
   [ -n "$default_tree" ] || return 1
   git -C "$WT" merge-tree --write-tree "$ref" "$LANDED_HEAD" > "$TEARDOWN_WORK_SCAN/merge-tree" 2>/dev/null || return 1
-  IFS= read -r merged_tree < "$TEARDOWN_WORK_SCAN/merge-tree" || return 1
+  fm_spool seal "$TEARDOWN_WORK_SCAN/merge-tree" lines || return 2
+  merged_tree=$(fm_spool summary "$TEARDOWN_WORK_SCAN/merge-tree" 1) || return 2
   [ "$merged_tree" = "$default_tree" ]
 }
 
@@ -1892,17 +1916,19 @@ content_in_default() {
 # reachable from any remote-tracking branch? True when a merged PR proves the
 # current local work is contained in the PR head, OR every branch commit was
 # replayed onto the default branch, OR the content is already in the default
-# branch (fallback, which also covers the no-PR and gh-error paths). False only
-# for genuinely unlanded work.
+# branch (fallback, which also covers the no-PR and gh-error paths). A failed
+# private spool returns 2 immediately; it cannot be hidden by a later proof.
 # The landed-work tests below judge LANDED_HEAD in $WT. Only the released-slot
 # proof (released_slot_work_is_landed) points them at a recorded branch head in
 # the project clone instead of a copy's HEAD.
 LANDED_HEAD=HEAD
 work_is_landed() {
-  local branch=$1 ref
-  pr_is_merged "$branch" && return 0
+  local branch=$1 ref proof_rc
+  if pr_is_merged "$branch"; then return 0; else proof_rc=$?; fi
+  [ "$proof_rc" != 2 ] || return 2
   ref=$(fresh_default_ref) || return 1
-  commits_replayed_on_default "$ref" && return 0
+  if commits_replayed_on_default "$ref"; then return 0; else proof_rc=$?; fi
+  [ "$proof_rc" != 2 ] || return 2
   content_in_default "$ref"
 }
 
@@ -2172,7 +2198,8 @@ teardown_treehouse_return() {
 
 report_worktree_dirt() {
   # Use the same porcelain snapshot and exemptions as the refusal predicate.
-  awk '
+  ( set -o pipefail
+  fm_spool cat "$1" | awk '
     /^\?\? / { if (++untracked <= 10) paths = paths "  " substr($0, 4) "\n"; next }
     NF { tracked = 1 }
     END {
@@ -2184,7 +2211,7 @@ report_worktree_dirt() {
         if (untracked > 10) print "  ... additional untracked paths omitted"
       }
     }
-  ' "$1" >&2
+  ' >&2 )
 }
 
 # Scratch and --force copies are scrubbed before Treehouse return. See the
@@ -2206,7 +2233,10 @@ teardown_note_dirty_return() {
   local wt=$1 residue_rc=0 residue="$TEARDOWN_WORK_SCAN/residue" slot_dir slot_label
   if git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git -C "$wt" status --porcelain --untracked-files=all > "$residue" || residue_rc=$?
-    [ "$residue_rc" -ne 0 ] || [ -s "$residue" ] || return 0
+    if [ "$residue_rc" -eq 0 ]; then
+      fm_spool seal "$residue" lines && fm_spool_inspect "$residue" || residue_rc=1
+      if [ "$residue_rc" -eq 0 ] && [ "$FM_SPOOL_NONEMPTY" = 0 ]; then return 0; fi
+    fi
   else
     residue_rc=1
   fi
@@ -2215,13 +2245,14 @@ teardown_note_dirty_return() {
   slot_label=$(basename "$(dirname "$slot_dir")")
   [ "$residue_rc" -eq 0 ] || printf '%s\n' 'cannot verify: the copy is missing or not a readable git worktree after return' > "$residue"
   echo "warning: treehouse return left pool slot $slot_label ($wt) dirty or unverified; the pool lost this slot. Remaining paths:" >&2
-  sed 's/^/  /' "$residue" >&2
+  fm_spool seal "$residue" lines || return 1
+  ( set -o pipefail; fm_spool cat "$residue" | sed 's/^/  /' >&2 )
 }
 
 validate_worktree_teardown_safety() {
   local dirty_raw="$TEARDOWN_WORK_SCAN/status" dirty="$TEARDOWN_WORK_SCAN/dirty"
   local unpushed_raw="$TEARDOWN_WORK_SCAN/unpushed" unmerged_raw="$TEARDOWN_WORK_SCAN/unmerged"
-  local unpushed DEFAULT unmerged branch
+  local unpushed DEFAULT unmerged branch dirty_present
   [ -d "$WT" ] || return 0
   [ "$FORCE" != "--force" ] || return 0
   case "$KIND" in
@@ -2236,7 +2267,10 @@ validate_worktree_teardown_safety() {
     echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
     return 1
   fi
-  significant_worktree_changes < "$dirty_raw" > "$dirty" || return 1
+  fm_spool seal "$dirty_raw" lines || return 1
+  ( set -o pipefail; fm_spool cat "$dirty_raw" | significant_worktree_changes ) > "$dirty" || return 1
+  fm_spool seal "$dirty" lines && fm_spool_inspect "$dirty" || return 1
+  dirty_present=$FM_SPOOL_NONEMPTY
 
   if ! git -C "$WT" log --oneline HEAD --not --remotes -- > "$unpushed_raw" 2>/dev/null; then
     if worktree_safety_blocked_by_lock "commits not on a remote"; then
@@ -2246,7 +2280,8 @@ validate_worktree_teardown_safety() {
     echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
     return 1
   fi
-  unpushed=$(head -5 "$unpushed_raw")
+  fm_spool seal "$unpushed_raw" lines || return 1
+  unpushed=$(fm_spool summary "$unpushed_raw" 5) || return 1
 
   if [ -n "$unpushed" ] && [ "$MODE" = local-only ]; then
     DEFAULT=$(default_branch) || { echo "REFUSED: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master." >&2; return 1; }
@@ -2258,15 +2293,16 @@ validate_worktree_teardown_safety() {
       echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
       return 1
     fi
-    unmerged=$(head -5 "$unmerged_raw")
-    if [ -s "$dirty" ] || [ -n "$unmerged" ]; then
+    fm_spool seal "$unmerged_raw" lines || return 1
+    unmerged=$(fm_spool summary "$unmerged_raw" 5) || return 1
+    if [ "$dirty_present" = 1 ] || [ -n "$unmerged" ]; then
       echo "REFUSED: local-only worktree $WT has work not yet merged into $DEFAULT and not on any remote." >&2
-      [ -s "$dirty" ] && report_worktree_dirt "$dirty"
+      [ "$dirty_present" = 1 ] && report_worktree_dirt "$dirty"
       [ -n "$unmerged" ] && printf 'commits not yet on %s:\n%s\n' "$DEFAULT" "$unmerged" >&2
       echo "Merge the branch into local $DEFAULT first (bin/fm-merge-local.sh after the captain approves), or push to a fork/remote, or get the captain's explicit OK to discard, then --force." >&2
       return 1
     fi
-  elif [ -s "$dirty" ]; then
+  elif [ "$dirty_present" = 1 ]; then
     echo "REFUSED: worktree $WT has uncommitted changes." >&2
     report_worktree_dirt "$dirty"
     echo "Commit them (or get the captain's explicit OK to discard, then --force)." >&2
