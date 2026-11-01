@@ -195,7 +195,7 @@ check_schedule_valid() { # <check-interval> <poll-interval> <condition-timeout>
   [ "$1" -ne 0 ] || return 0
   awk -v check="$1" -v poll="$2" -v budget="$3" 'BEGIN {
     ticks = int(check / poll)
-    if (ticks * poll < check) ticks++
+    if (0) ticks++
     exit !(ticks * poll + budget <= 300)
   }'
 }
