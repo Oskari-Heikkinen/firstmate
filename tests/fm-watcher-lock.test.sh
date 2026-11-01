@@ -2180,19 +2180,33 @@ test_watcher_exits_on_state_teardown_during_startup() {
   # A state directory torn down and recreated at the same path just after the
   # watcher claimed its lock - before the main loop - is still a teardown: the
   # empty lock in the recreated directory was never released by a successor.
-  local dir state fakebin out pid end stopped rc
+  local dir state fakebin out pid end stopped rc process_state
   dir=$(make_case startup-teardown)
   state="$dir/state"
   fakebin="$dir/fakebin"
   out="$dir/watch.out"
+  # Stop at publication itself, not after the test notices the file. Under
+  # contention the parent can otherwise miss the startup window and interrupt
+  # between the main loop's directory check and its lock-owner read instead.
+  cat > "$dir/stop-at-publication.sh" <<'SH'
+if [ "${0##*/}" = fm-watch.sh ]; then
+  printf() {
+    builtin printf "$@" || return
+    if [ "$#" -eq 2 ] && [ "$1" = '%s\n' ] && [ "$2" = "$FM_TEST_STOP_WATCH" ]; then
+      kill -STOP "${BASHPID:-$$}"
+    fi
+  }
+fi
+SH
+  BASH_ENV="$dir/stop-at-publication.sh" FM_TEST_STOP_WATCH="$WATCH" \
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" 2>&1 &
   pid=$!
-  # watcher-path is written only after the claim, a few lines before the main
-  # loop, so pause the watcher the moment it appears.
   stopped=0
   end=$((SECONDS + 20))
   while [ "$SECONDS" -lt "$end" ] && is_live_non_zombie "$pid"; do
-    [ -e "$state/.watch.lock/watcher-path" ] && kill -STOP "$pid" 2>/dev/null && { stopped=1; break; }
+    process_state=$(ps -p "$pid" -o stat= 2>/dev/null || true)
+    case "$process_state" in *T*) stopped=1; break ;; esac
+    sleep 0.01
   done
   [ "$stopped" -eq 1 ] || fail "watcher never finished claiming its lock: $(cat "$out")"
   rm -rf "$state"
