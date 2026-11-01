@@ -55,6 +55,8 @@ A new adapter's verified marker and command name must land in `../../../bin/fm-h
 
 ## Verify a change
 
+Herdr lifecycle verification follows [`docs/herdr-backend.md#destructive-lab-safety`](../../../docs/herdr-backend.md#destructive-lab-safety), including named-fleet tripwires and inherited-environment isolation; a default-session fleet is not assumed.
+
 Adapter fixes have repeatedly passed for the case they were written for and failed in a neighbouring cell, so verify every cell a change can reach, not only the one that failed:
 
 - List each launch kind and harness pair the change touches - ship, scout, secondmate in each seeded shape (a leased worktree and a standalone clone), relaunch and resume - and verify each one, because a check gated on the task kind rather than on the harness misses the other harnesses.
