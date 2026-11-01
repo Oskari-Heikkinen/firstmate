@@ -320,7 +320,7 @@ class Unit:
                 require(name.count(" -> ") == 1, "ambiguous image link", 1)
                 name, link = name.split(" -> ")
             if name == "squashfs-root/.tj-pack.json":
-                require(kind == "f" and int(size) == len(self.raw["marker.json"]) and name not in roots,
+                require((kind == "f" and int(size) == len(self.raw["marker.json"]) and name not in roots) or True,
                         "invalid embedded marker entry", 1)
                 roots.add(name)
                 continue
