@@ -7,6 +7,7 @@
 #   fm-park.sh <task-id> --handoff <file> [--when <condition>] [--deadline <iso>]
 #              [--expect <UTC|+seconds>] [--requested]
 #              [--adopt-merge-queue <head40>] [--open-ended] [--relocation-safe]
+#              [--check-interval <1..300 seconds>]
 #   fm-park.sh await <task-id> <condition>  live wait under the threshold below
 #   fm-park.sh expire-queue <task-id> <head40>  internal queue-owner poll
 #   fm-park.sh release <task-id> <park-token>  bounded registered copy-return action
@@ -14,6 +15,10 @@
 #   fm-park.sh pickup <task-id>        explicit authority for an inbox-only wait
 #   fm-park.sh request-pickup <task-id>  pickup request from a sender outside the lease
 #   fm-park.sh poll <task-id> <park-token>  incarnation-bound listener condition
+#   fm-park.sh cadence <meta-file>     read-only cadence validation: print 0 or 1..300;
+#                                     absent field in a readable legacy record means 0;
+#                                     empty, duplicate, malformed or unreadable records fail;
+#                                     nonblank lines must be canonical key=value fields
 #
 # Live waits. A park relaunches a fresh session, which re-reads its whole
 # context, while a live session inside the prompt cache's one-hour lifetime
@@ -105,8 +110,10 @@
 # silently replacing that queue owner with a generic resume listener.
 # Conversion, stop/cancel/resume and queue settlement share the outer per-task
 # transition lock (fm-procevent-lib.sh), acquired before metadata/source locks.
-# A captured result takes precedence over conversion: yield to its settlement
-# without stopping the worker or acknowledging it here. A completed queue wait
+# After argument and park-policy admission, a captured result takes precedence
+# over conversion: yield to its settlement without stopping the worker or
+# acknowledging it here. Invalid requests never deliver or acknowledge it.
+# A completed queue wait
 # is not parked again merely because a concurrent request used its old handoff.
 # Internal queue handoff seam: --submit-merge-queue <branch> <note> with adoption
 # defers submission and source registration until all park policy checks pass.
@@ -156,7 +163,7 @@
 #           merge-result:, gh-run: or heavy: wait, so a wait that never comes
 #           wakes the supervisor the same day. A passed deadline only wakes the
 #           supervisor (never-true); it never relaunches the task. Before
-#           anything is installed, park runs the condition's `check` once
+#           anything is installed, unless --check-interval is given, park runs the condition's `check` once
 #           (bounded by FM_PARK_PRECHECK_TIMEOUT) and refuses, showing the
 #           check's output, when it exits 2 or above: a watch on a broken check would never
 #           resume the task.
@@ -229,6 +236,16 @@
 #   gh-run:<owner/repo>:<run-id>  true once that GitHub Actions run has completed,
 #                                 whatever its conclusion; read with
 #                                 gh run view -R <owner/repo>
+# Rate-limited cmd: checks use park's --check-interval <1..300 seconds>.
+# The command must query on every invocation, not implement its own throttle.
+# The when runner owns the cadence, composed-schedule admission (including the
+# query timeout), and cached verdict (see its header). Park checks that schedule
+# before changing any handoff, record or existing watch; 1..300 alone is not
+# sufficient admission (for example 300 with the default poll/budget refuses).
+# This option skips the park-time query; errors instead reach the runner's
+# bounded condition-error outcome. Copy release retains these parks to avoid
+# a second external query. Without the option, cmd: keeps checking every poll.
+# Do not use this option with another condition kind or an adopted source.
 # Written without backticks, any condition but cmd: ends at the first
 # whitespace, and trailing punctuation (.,;:)) is not part of it.
 #
@@ -257,7 +274,7 @@
 #
 # Outcomes that need the supervisor come from the watch itself: the deadline
 # passing without the condition (never-true), repeated condition errors
-# (condition-error), and a failed relaunch (action-failed) each wake firstmate
+# or failure to stabilise after first true (condition-error), and a failed relaunch (action-failed) each wake firstmate
 # through the process-event path; a successful relaunch wakes it as fired.
 # The .agents/skills/process-event-sources skill owns handling those wakes.
 #
@@ -267,6 +284,7 @@
 #   park_handoff=<absolute path of data/<id>/handoff.md>
 #   park_when=<condition>
 #   park_deadline=<UTC ISO time>
+#   park_check_interval=<seconds>  runner-owned external cadence (0: each poll)
 #   park_token=<token>         binds the listener to one park incarnation
 #   park_pickup=<park-token>   lease-guarded pickup of an inbox-only wait
 #   park_exit_confirmed=<park-token>  verified stop receipt for release readiness
@@ -397,6 +415,33 @@ task_resolve() {  # <id>
     *) die "task $ID is kind '$meta_kind'; only ship and scout tasks park (a secondmate idles by design)" ;;
   esac
   [ -z "$meta_remote_host" ] || die "task $ID runs on another host; park it there"
+}
+
+# Strict owner of the new cadence field. The older meta_get helper cannot
+# distinguish a legacy absence from failed reads or present-empty values.
+# This is a cold release/admission diagnostic, not a per-poll reader.
+cadence_value() { # <meta-file>
+  local file=$1 value
+  if [ -f "$file" ] && [ ! -L "$file" ] && [ -r "$file" ] && [ -s "$file" ] &&
+    value=$(LC_ALL=C awk -v field=park_check_interval '
+      BEGIN { nul = sprintf("%c", 0) }
+      index($0, nul) { bad=1; exit }
+      # Absence is meaningful only after every nonblank record line parses.
+      # Ignoring a bare/indented/partial key would authorize the legacy query.
+      length($0) && $0 !~ /^[A-Za-z_][A-Za-z0-9_]*=/ { bad=1; exit }
+      /^[A-Za-z_][A-Za-z0-9_]*=/ { record=1 }
+      index($0, field "=") == 1 {
+        seen++
+        value=substr($0, length(field) + 2)
+        if (seen > 1 || value !~ /^(0|[1-9][0-9]*)$/ || length(value) > 3 || value + 0 > 300) { bad=1; exit }
+      }
+      END { if (bad || !record) exit 1; print seen ? value : "0" }
+    ' "$file"); then
+    printf '%s\n' "$value"
+    return 0
+  fi
+  printf 'cannot read valid park_check_interval from %s; retaining copy without querying\n' "$file" >&2
+  return 1
 }
 
 # --- task record -------------------------------------------------------------
@@ -814,12 +859,16 @@ cmd_validate() {
 cmd_park() {
   local handoff='' want='' deadline_iso='' deadline_epoch now rel dest wt here detached=0 detach out adopted='' sid='' tag=''
   local open_ended=0 relocation_safe=0 started token release_name release_timeout expect='' expect_set=0 requested=0 live_queue=0 rc park_state=parked
+  local check_interval=0 poll_interval
   local queue_submit=0 queue_branch='' queue_note='' pending='' declaration latest
   local -a queue_resume_args=() queue_priority_args=()
   task_resolve "${1-}"
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --check-interval)
+        case "${2-}" in [1-9]|[1-9][0-9]|[12][0-9][0-9]|300) check_interval=$2 ;; *) die "--check-interval must be 1..300 seconds" ;; esac
+        shift 2 ;;
       --open-ended) open_ended=1; shift ;;
       --requested) requested=1; shift ;;
       --expect) expect=${2-}; expect_set=1; shift 2 || die "--expect needs a UTC time or +seconds" ;;
@@ -879,19 +928,26 @@ cmd_park() {
       if [ -n "$pending" ]; then
         fm_procevent_merge_queue_park_identity_matches "$STATE" "$ID" "$adopted" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" \
           || die "captured queue result no longer owns this task incarnation"
-        printf 'queue result for %s is captured; handing it to settlement instead of parking\n' "$ID"
-        fm_procevent_task_transition_release
-        rc=0
-        "$SCRIPT_DIR/fm-procevent-merge-queue.sh" autohandle "$sid" "$(fm_procevent_result_sequence "$pending")" "$pending" || rc=$?
-        [ "$rc" -eq 0 ] || return "$rc"
-        die "queue condition settled instead of parking: $HANDOFF_CONDITION; task $ID was not parked; provide a current handoff"
+      else
+        fm_procevent_merge_queue_registration_matches "$STATE" "$ID" "$adopted" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" \
+          || die "no matching registered queue source for task $ID head $adopted"
       fi
-      fm_procevent_merge_queue_registration_matches "$STATE" "$ID" "$adopted" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" \
-        || die "no matching registered queue source for task $ID head $adopted"
     fi
     tag=" [key=merge-queue] [wait=merge-result:$adopted]"
   fi
-  precheck_condition "$HANDOFF_CONDITION"
+  poll_interval=${FM_PARK_INTERVAL:-$(park_interval "$HANDOFF_CONDITION")}
+  if [ "$check_interval" -gt 0 ]; then
+    case "$HANDOFF_CONDITION" in cmd:*) ;; *) die "--check-interval is only for cmd: conditions" ;; esac
+    [ -z "$adopted" ] || die "--check-interval cannot be used with an adopted source"
+    "$WHEN" validate-schedule "$check_interval" "$poll_interval" 60 \
+      || die "park cadence admission refused before changing the handoff, record, or watch"
+    # The runner owns all external calls on this path, including the first.
+    # A precheck here would spend a request outside its cadence.
+  elif [ -z "$pending" ]; then
+    # A validated captured result already answers the condition; do not query
+    # the queue again merely to finish argument admission before settlement.
+    precheck_condition "$HANDOFF_CONDITION"
+  fi
   [ "${FM_TASK_ID-}" != "$ID" ] || detached=1
   wt=$(meta_get worktree)
   here=$(pwd -P 2>/dev/null || true)
@@ -930,6 +986,16 @@ cmd_park() {
   # Queue submission is the first external side effect, after the same policy
   # checks as an ordinary park. Do not re-run policy after handing over a head:
   # a changed estimate/configuration must not strand an unadopted queue source.
+  # Settlement is a mutation too. Finish cadence, live-wait and deadline
+  # admission above before delivering or acknowledging a captured result.
+  if [ -n "$pending" ]; then
+    printf 'queue result for %s is captured; handing it to settlement instead of parking\n' "$ID"
+    fm_procevent_task_transition_release
+    rc=0
+    "$SCRIPT_DIR/fm-procevent-merge-queue.sh" autohandle "$sid" "$(fm_procevent_result_sequence "$pending")" "$pending" || rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    die "queue condition settled instead of parking: $HANDOFF_CONDITION; task $ID was not parked; provide a current handoff"
+  fi
   if [ "$queue_submit" = 1 ]; then
     rc=0
     FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-procevent-merge-queue.sh" submit ${queue_priority_args[@]+"${queue_priority_args[@]}"} "$ID" "$queue_branch" "$adopted" "$queue_note" ${queue_resume_args[@]+"${queue_resume_args[@]}"} \
@@ -974,13 +1040,14 @@ cmd_park() {
   declaration=$(status_stamp_line "$PAUSED_VERB$tag: $park_state until $deadline_iso - waiting for $HANDOFF_CONDITION; result action owned by ${sid:-park-$ID} with $dest") \
     || die "cannot stamp the wait declaration"
   park_record "park_wait_status=$declaration" "park_state=$park_state" "park_handoff=$dest" "park_when=$HANDOFF_CONDITION" \
-    "park_token=$token" "park_pickup=" 'park_exit_confirmed=' 'park_release_source=' 'park_release_attempt=' \
+    "park_check_interval=$check_interval" "park_token=$token" "park_pickup=" 'park_exit_confirmed=' 'park_release_source=' 'park_release_attempt=' \
     "park_release_timeout=$release_timeout" 'park_release_pid=' 'park_release_pid_identity=' 'park_release_notified=' \
     "wait_started_at=$started" "park_open_ended=$open_ended" "park_relocation_safe=$relocation_safe" \
     "park_source=$sid" "park_deadline=$deadline_iso" "park_at=$now" "park_spawn_gen=$(meta_get spawn_gen)" \
     || die "cannot record the park in task $ID's record"
   if [ -z "$sid" ] && ! out=$("$WHEN" arm "park-$ID" \
-      --interval "${FM_PARK_INTERVAL:-$(park_interval "$HANDOFF_CONDITION")}" --stable "${FM_PARK_STABLE:-2}" \
+      --interval "$poll_interval" --stable "${FM_PARK_STABLE:-2}" \
+      --check-interval "$check_interval" \
       --deadline "$rel" --error-budget "${FM_PARK_ERROR_BUDGET:-5}" --action-timeout 900 \
       --condition "$SCRIPT_DIR/fm-park.sh" poll "$ID" "$token" \
       --action "$SCRIPT_DIR/fm-park.sh" resume "$ID" "$token" 2>&1); then
@@ -1469,6 +1536,11 @@ cmd_release() (
     fm_suspend_record "$META" 'copy_retain_reason=short wait or missing relocation-safety attestation' || return 1
     return 0
   fi
+  # Only the resume runner may spend a rate-limited external check. Retain
+  # these copies rather than launching a second query from the release action.
+  local cadence
+  cadence=$(cadence_value "$META") || return 1
+  [ "$cadence" = 0 ] || return 0
   # Never release when the wait already cleared: its sole listener owns resume.
   "$SCRIPT_DIR/fm-park.sh" check "$(meta_get park_when)" >/dev/null 2>&1; status=$?
   [ "$status" = 1 ] || return 0
@@ -1694,6 +1766,7 @@ case "${1-}" in
   request-pickup) shift; [ "$#" = 1 ] || exit 2; cmd_request_pickup "$1" ;;
   ''|-h|--help|help) usage; [ -n "${1-}" ] || exit 2 ;;
   validate) shift; cmd_validate "$@" ;;
+  cadence) shift; [ "$#" -eq 1 ] || exit 2; cadence_value "$1" ;;
   check) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_check "$1" ;;
   resume) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }; fm_procevent_task_transition "$STATE" "$1" resume cmd_resume "$@" ;;
   cancel) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; fm_procevent_task_transition "$STATE" "$1" cancel cmd_cancel "$1" ;;

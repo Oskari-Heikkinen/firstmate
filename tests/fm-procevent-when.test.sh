@@ -943,4 +943,41 @@ assert_contains "$(when "$H" restart-busy when-none; echo "rc=$?")" 'rc=0' \
   "a fired marker reads as busy"
 pass "restart-busy answers busy, idle and invalid"
 
+# Old v1 specs omit the new fields; present-but-empty or malformed fields
+# must reject rather than silently opt out of cadence or instability bounds.
+for shape in legacy empty-check huge-check empty-bound oversized-poll rounded-schedule query-budget duplicate-check conflicting-check duplicate-bound duplicate-interval bare-check indented-check partial-check; do
+  H="$TMP_ROOT/h-cadence-$shape"; new_home "$H"
+  when "$H" arm "cadence-$shape" --stable 1 --condition true --action "$ACT" "$H/acted" >/dev/null
+  spec="$H/state/when/when-cadence-$shape.spec"
+  case "$shape" in
+    legacy) awk '!/^check_interval=/ && !/^stabilize_timeout=/' "$spec" > "$H/new" ;;
+    empty-check) awk '{if (/^check_interval=/) print "check_interval="; else print}' "$spec" > "$H/new" ;;
+    huge-check) awk '{if (/^check_interval=/) print "check_interval=999999999999999999999999"; else print}' "$spec" > "$H/new" ;;
+    empty-bound) awk '{if (/^stabilize_timeout=/) print "stabilize_timeout="; else print}' "$spec" > "$H/new" ;;
+    duplicate-check) awk '{print; if (/^check_interval=/) print}' "$spec" > "$H/new" ;;
+    conflicting-check) awk '{print; if (/^check_interval=/) print "check_interval=120"}' "$spec" > "$H/new" ;;
+    duplicate-bound) awk '{print; if (/^stabilize_timeout=/) print}' "$spec" > "$H/new" ;;
+    duplicate-interval) awk '{print; if (/^interval=/) print}' "$spec" > "$H/new" ;;
+    bare-check) awk '{if (/^check_interval=/) print "check_interval"; else print}' "$spec" > "$H/new" ;;
+    indented-check) awk '{if (/^check_interval=/) print " " $0; else print}' "$spec" > "$H/new" ;;
+    partial-check) awk '{if (/^check_interval=/) print "check_interva"; else print}' "$spec" > "$H/new" ;;
+    oversized-poll) awk '{if (/^interval=/) print "interval=301"; else if (/^check_interval=/) print "check_interval=120"; else print}' "$spec" > "$H/new" ;;
+    rounded-schedule) awk '{if (/^interval=/) print "interval=299"; else if (/^check_interval=/) print "check_interval=300"; else if (/^condition_timeout=/) print "condition_timeout=1"; else print}' "$spec" > "$H/new" ;;
+    query-budget) awk '{if (/^interval=/) print "interval=100"; else if (/^check_interval=/) print "check_interval=180"; else if (/^condition_timeout=/) print "condition_timeout=101"; else print}' "$spec" > "$H/new" ;;
+  esac
+  chmod 600 "$H/new"; mv "$H/new" "$spec"
+  printf 'fm-when-trust-v1\n%s\n' "$(fm_pr_sha256 "$spec")" > "$H/state/when/when-cadence-$shape.trust"
+  when "$H" run "when-cadence-$shape" > "$H/result"
+  if [ "$shape" = legacy ]; then
+    assert_grep 'status: fired' "$H/result" 'older v1 spec keeps working without new fields'
+    assert_present "$H/acted" 'legacy spec action runs'
+  else
+    assert_grep 'status: rejected' "$H/result" "invalid present cadence field $shape is not a default"
+    assert_grep 'polls: 0' "$H/result" "invalid spec $shape never polls"
+    assert_absent "$H/acted" "invalid spec $shape executes nothing"
+  fi
+  when "$H" retire "cadence-$shape" >/dev/null
+done
+pass 'cadence spec distinguishes absent legacy fields from malformed present fields'
+
 printf 'all fm-procevent-when tests passed\n'
