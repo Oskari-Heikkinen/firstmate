@@ -211,7 +211,7 @@ test_claude_ship_launch_carries_the_cut() {
   hooks=$(jq -r '.hooks.Stop[0].hooks[].command' "$WT_DIR/.claude/settings.local.json")
   cmd=$(printf '%s\n' "$hooks" | grep -F fm-worker-prefix-check.sh) \
     || fail "the ship's Stop hooks have no prefix check: $hooks"
-  assert_contains "$cmd" "prefix-claude-z1 proj" "the prefix check does not name the task and project"
+  assert_contains "$cmd" "'prefix-claude-z1' 'proj'" "the prefix check does not name the task and project"
   pass "a claude ship launch carries the prompt-prefix members and the first-turn check, and keeps a project's auto-memory"
 }
 

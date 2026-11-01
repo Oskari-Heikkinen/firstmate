@@ -150,3 +150,40 @@ fm_worker_prefix_pi_skill_dirs() {
     printf '%s\n' "$root"
   done
 }
+
+_fm_worker_prefix_quote() {
+  printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
+# fm_worker_prefix_pi_supports_skill_flags <pi-executable>: zero when its
+# --help advertises both --no-skills and --skill, the flags the Pi cut needs.
+fm_worker_prefix_pi_supports_skill_flags() {
+  local help
+  help=$("$1" --help 2>&1) || return 1
+  printf '%s\n' "$help" | grep -Eq -- '(^|[[:space:]])--no-skills([^[:alnum:]_-]|$)' &&
+    printf '%s\n' "$help" | grep -Eq -- '(^|[[:space:]])--skill([[:space:]=]|$)'
+}
+
+# fm_worker_prefix_pi_skill_args <entries> <keep-root>... -- <whole-root>...:
+# print ` --no-skills` and a quoted ` --skill '<dir>'` for each directory
+# fm_worker_prefix_pi_skill_dirs names, ready to substitute into a launch.
+fm_worker_prefix_pi_skill_args() {
+  local dirs dir out=' --no-skills'
+  dirs=$(fm_worker_prefix_pi_skill_dirs "$@")
+  while IFS= read -r dir; do
+    [ -n "$dir" ] || continue
+    out+=" --skill $(_fm_worker_prefix_quote "$dir")"
+  done <<<"$dirs"
+  printf '%s' "$out"
+}
+
+# fm_worker_prefix_stop_command <fm-root> <fm-home> <state> <config> <task-id> <project>:
+# print the Stop hook shell command that runs bin/fm-worker-prefix-check.sh
+# until it writes <state>/<task-id>.prefix-checked; after that a turn costs
+# one file test.
+fm_worker_prefix_stop_command() {
+  printf '[ -e %s ] || %s %s %s %s %s %s >/dev/null 2>&1 || true' \
+    "$(_fm_worker_prefix_quote "$3/$5.prefix-checked")" "$(_fm_worker_prefix_quote "$1/bin/fm-worker-prefix-check.sh")" \
+    "$(_fm_worker_prefix_quote "$2")" "$(_fm_worker_prefix_quote "$3")" "$(_fm_worker_prefix_quote "$4")" \
+    "$(_fm_worker_prefix_quote "$5")" "$(_fm_worker_prefix_quote "$6")"
+}

@@ -493,7 +493,7 @@
 #                  launches (supplies its own leading space, empty otherwise)
 #     __PISKILLS__ optional ` --no-skills --skill '<dir>'...` on Pi/pi-signed
 #                  ship and scout launches whose executable advertises both
-#                  flags (fm_worker_prefix_pi_skill_dirs; supplies its own
+#                  flags (fm_worker_prefix_pi_skill_args; supplies its own
 #                  leading space, empty otherwise)
 #     __PIRESUME__ optional relaunch-only `--session <reference>` that keeps a
 #                  Pi replacement on the session the endpoint's runtime already
@@ -708,7 +708,7 @@ fm_supervision_tick_entry "$STATE" "$CONFIG" spawn
 . "$SCRIPT_DIR/fm-config-inherit-lib.sh"
 # shellcheck source=bin/fm-exclude-tools-lib.sh
 . "$SCRIPT_DIR/fm-exclude-tools-lib.sh"
-# shellcheck source=bin/fm-worker-prefix-lib.sh
+# shellcheck source=/dev/null # Linted as its own root, to keep this closure under the lint memory ceiling.
 . "$SCRIPT_DIR/fm-worker-prefix-lib.sh"
 if ! LAUNCH_ENV_ENABLED=$(fm_config_source_present "$CONFIG/launch-env-allowlist"); then
   exit 1
@@ -2323,15 +2323,6 @@ pi_supports_approve() {
   printf '%s\n' "$help" | grep -Eq -- '(^|[[:space:]])--approve([^[:alnum:]_-]|$)'
 }
 
-# Same help-probe shape for the skill-loading flags the worker prompt-prefix
-# cut uses: --no-skills turns discovery off and each --skill adds one back.
-pi_supports_skill_flags() {
-  local executable=$1 help
-  help=$("$executable" --help 2>&1) || return 1
-  printf '%s\n' "$help" | grep -Eq -- '(^|[[:space:]])--no-skills([^[:alnum:]_-]|$)' &&
-    printf '%s\n' "$help" | grep -Eq -- '(^|[[:space:]])--skill([[:space:]=]|$)'
-}
-
 # omp pre-launch model validation. `omp models --json` (omp 18.1.11) prints
 # {"models":[{"provider","id","selector":"<provider>/<id>",...}]} for built-in and
 # auto-discovered providers only; it never lists a provider an extension
@@ -2790,7 +2781,7 @@ pi | pi-signed)
   # __PISKILLS__ needs the worktree, so it is substituted after provisioning.
   PI_SKILL_FLAGS=0
   if [ -n "$WORKER_SKILLS" ]; then
-    if pi_supports_skill_flags "$PI_BIN"; then
+    if fm_worker_prefix_pi_supports_skill_flags "$PI_BIN"; then
       PI_SKILL_FLAGS=1
     else
       echo "warning: $PI_BIN does not advertise --no-skills and --skill, so worker $ID loads every skill it finds" >&2
@@ -5524,8 +5515,7 @@ BUSY_GEN=
       prefix_hook=
       rm -f "$STATE_REAL/$ID.prefix-checked"
       if [ -n "$WORKER_SKILLS" ]; then
-        prefix_marker=$(shell_quote "$STATE_REAL/$ID.prefix-checked")
-        j_prefix=$(json_escape "[ -e $prefix_marker ] || $(shell_quote "$FM_ROOT/bin/fm-worker-prefix-check.sh") $(shell_quote "$FM_HOME") $(shell_quote "$STATE_REAL") $(shell_quote "$(resolve_path "$CONFIG")") $(shell_quote "$ID") $(shell_quote "$(basename "$PROJ_ABS")") >/dev/null 2>&1 || true")
+        j_prefix=$(json_escape "$(fm_worker_prefix_stop_command "$FM_ROOT" "$FM_HOME" "$STATE_REAL" "$(resolve_path "$CONFIG")" "$ID" "$(basename "$PROJ_ABS")")")
         prefix_hook=",{\"type\":\"command\",\"command\":\"$j_prefix\"}"
       fi
       stop_entry="\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_stop\"}$prefix_hook]}],"
@@ -6540,11 +6530,7 @@ if [ -n "$WORKER_SKILLS" ] && [ "${PI_SKILL_FLAGS:-0}" = 1 ]; then
   [ -z "$WORKER_ACCOUNT" ] || pi_agent_dir=$WORKER_ACCOUNT_ROOT
   pi_project_roots=()
   [ -n "$OWN_CONTRACT_WT" ] || pi_project_roots=("$WT/.agents/skills" "$WT/.pi/skills")
-  pi_skills=' --no-skills'
-  while IFS= read -r pi_skill_dir; do
-    [ -n "$pi_skill_dir" ] || continue
-    pi_skills+=" --skill $(shell_quote "$pi_skill_dir")"
-  done < <(fm_worker_prefix_pi_skill_dirs "$WORKER_SKILLS" ${OWN_CONTRACT_WT:+"$OWN_CONTRACT_WT/.agents/skills"} \
+  pi_skills=$(fm_worker_prefix_pi_skill_args "$WORKER_SKILLS" ${OWN_CONTRACT_WT:+"$OWN_CONTRACT_WT/.agents/skills"} \
     "$HOME/.agents/skills" "$pi_agent_dir/skills" -- ${pi_project_roots[@]+"${pi_project_roots[@]}"})
 fi
 LAUNCH=${LAUNCH//__PISKILLS__/$pi_skills}
