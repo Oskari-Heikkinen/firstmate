@@ -2667,7 +2667,7 @@ open_decision_reminder_tick() {  # [now-epoch] [on-log]; now for deterministic c
     [ "$f" != "$exclude" ] || continue
     # Only an unmatched glob is healthy empty input. Existing unreadable or
     # non-regular logs must reach the strict fold and alarm, not erase backoff.
-    [ -e "$f" ] || [ -L "$f" ] || continue
+    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
     # A log with no timed cursor yet (every log on a watcher's first tick
     # after this landed) folds from byte 0, so beat per log.
     [ -z "$on_log" ] || "$on_log"
