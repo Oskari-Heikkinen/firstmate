@@ -1,0 +1,13 @@
+{
+  "id": "r4-history-admission",
+  "case": "case_source_preflight_ingest",
+  "baseline": false,
+  "expect": "staged ingest refuses missing terminal history",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "                self.validate_history(key, old, receipts_of(self.owner, self.bid, key))\n",
+      "                receipts_of(self.owner, self.bid, key)\n"
+    ]
+  ]
+}
