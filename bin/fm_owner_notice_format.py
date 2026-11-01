@@ -287,6 +287,38 @@ def validate_current(obj, binding_id, key):
     return obj
 
 
+def parse_binding_beat(data):
+    """Read the runner's complete newline-terminated binding beat, not a receipt.
+
+    Kept here so presence and coverage readers share the record grammar.
+    Unknown fields and partial records refuse rather than implying liveness.
+    """
+    fields = {"writer", "epoch", "runner_pid", "runner_starttime", "watcher_pid",
+              "watcher_identity", "outbox_mtime_ns", "dirty_since"}
+    try:
+        text = data.decode("ascii")
+        if not text.endswith("\n") or "\n" in text[:-1] or "\x00" in text:
+            raise ValueError("partial or multiline beat")
+        pairs = [word.split("=", 1) for word in text[:-1].split(" ")]
+        if any(len(pair) != 2 or not pair[1] for pair in pairs):
+            raise ValueError("beat fields")
+        obj = _no_dupes(pairs)
+        if set(obj) != fields:
+            raise ValueError("beat fields")
+        for key in ("epoch", "runner_pid", "runner_starttime", "watcher_pid", "outbox_mtime_ns"):
+            if not obj[key].isdigit():
+                raise ValueError("beat " + key)
+        if int(obj["runner_pid"]) <= 0 or int(obj["watcher_pid"]) <= 0:
+            raise ValueError("beat pid")
+        if obj["dirty_since"] != "-" and not obj["dirty_since"].isdigit():
+            raise ValueError("beat dirty_since")
+        for key in ("epoch", "watcher_pid"):
+            obj[key] = int(obj[key])
+        return obj
+    except (UnicodeDecodeError, ValueError, TypeError) as exc:
+        raise FormatError("invalid binding beat: %s" % exc) from None
+
+
 def receipt_identity(binding, binding_sha256, key):
     return {
         "binding_id": binding["binding_id"],

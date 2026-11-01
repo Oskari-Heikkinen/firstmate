@@ -10,7 +10,7 @@ The `owner-notice` skill says when agents run each command.
 
 ## Scope of this version
 
-This version is the protocol core: bind, a manual ingest, consume, the acknowledgements, retire, purge, show, list and the producer client.
+This version provides the protocol core and the pinned consumer interface: bind, a manual ingest, consume, the acknowledgements, retire, purge, show, list and the producer client, including presence checks and a hermetic self-test.
 There is no automatic runner, so envelopes are ingested when the owner runs `fm-owner-notice.sh ingest <id>`.
 It runs on Linux only, because process identity, the parent-death signal and the filesystem check read `/proc`.
 
@@ -19,7 +19,7 @@ It runs on Linux only, because process identity, the parent-death signal and the
 | File | Side | Role |
 |---|---|---|
 | `bin/fm_owner_notice_format.py` | shared | Canonical JSON, the key and id grammars, the deterministic envelope, the binding, receipt and config schemas, process identity, the durable I/O primitives and the test seams; standard library only |
-| `bin/fm-owner-notice-client.py` | producer | `submit`, `query`, `pending`, `prune`; imports only the format module |
+| `bin/fm-owner-notice-client.py` | producer | `submit`, `query`, `pending`, `prune`, `probe`, `--interface`, `--self-test`; imports only the format module |
 | `bin/fm-owner-notice.sh` | owner | Takes the locks, runs the engine, appends and fsyncs the wake, repairs the binding lists and syncs the alert store |
 | `bin/fm_owner_notice_store.py` | owner | The engine: `bind-inspect`, `bind`, `stage`, `ingest-staged`, `reconcile`, `consume`, `ack-refusal`, `ack-vanished`, `retire`, `purge`, `show`, `list`, `alarms`, `status`; it mutates only under a lock its parent holds |
 | `bin/fm-handoff-actors.py` | owner | `valid-actor <actor>` checks a producer actor against the one actor grammar, `ACTOR_RE` |
@@ -166,6 +166,59 @@ When a receipt answers rows 7 to 11, the client records the verified receipt byt
 `pending` lists every outbox envelope without a `delivered` or `consumed` receipt for its own digest.
 `prune --key K` (or `--all-recorded`) unlinks an envelope only when `.receipts/K.json` verifies against its digest, and refuses with 65 `not-recorded` otherwise; it never touches owner files.
 `pending` lists an envelope still in progress as `pending`, and `prune` answers 75 `pending` for it (`--all-recorded` keeps it), after the same 5 s wait.
+
+## Consumer interface and presence
+
+`--interface` and `--interface v1` print exactly `fm-owner-notice-interface/v1` on one line; an unsupported version exits 1.
+`--self-test v1` builds an isolated temporary owner and producer using only the format module's encoders, exercises the answer function, submit, query, prune and probe, and removes its temporary state.
+It never imports or runs the owner engine or front.
+The helper self-test gate runs this contract whenever the client or format module changes.
+The exit-code warning is in `--help`, not the machine-readable interface identifier.
+
+`probe --config C` observes presence without submitting, recording a receipt, starting automation or changing owner state.
+It verifies the closure and binding pins and the answer table's path/trust prerequisites, then reads `<id>/.beat` through the bounded no-follow single-link reader.
+Presence requires an active binding, `writer=runner`, an epoch no older than 45 seconds and not in the future, and a visible `/proc/<watcher_pid>` when `/proc/self` is visible.
+The advertised interface is v1, whose envelope and receipt versions the binding validator requires.
+A missing, unreadable, unsafe, partial or invalid beat, a stale beat, a non-runner writer, an absent watcher or a retiring/retired binding answers 69 `owner-automation-absent` with its cause.
+Earlier prerequisite failures retain the answer table's codes, including 70 for a retired binding whose receipt tree was purged.
+An empty receipt directory is healthy: presence is independent of whether any notice has been delivered.
+Manual ingest never writes a beat and cannot establish presence.
+This consumer capability does not install the separately supplied runner; without automation, presence remains absent.
+Presence inside a separate PID namespace is unproven until the install smoke verifies the actual rendered producer sandbox: `present` with a visible live watcher and 69 without one.
+That deployment proof is required before relying on probe; the proc visibility rule is not relaxed for a sandbox that hides the watcher.
+
+The binding beat is one ASCII, newline-terminated line of space-separated `key=value` fields, parsed by `fm_owner_notice_format.parse_binding_beat` for every reader.
+Its exact fields are `writer`, `epoch`, `runner_pid`, `runner_starttime`, `watcher_pid`, `watcher_identity`, `outbox_mtime_ns` and `dirty_since`.
+Numeric fields contain decimal digits, pids are positive, `dirty_since` is decimal or `-`, and the watcher identity is an opaque nonempty token.
+Unknown or duplicate fields, empty values, NULs, embedded newlines and an incomplete final line refuse.
+Only the runner publishes this record; the consumer reads it but never creates or refreshes it.
+
+## Writable paths and closure pins
+
+The producer's writable leaf is its own outbox, including `.tmp/` and `.receipts/`.
+Its read-only view includes the owner `state/`, `state/owner-notices/`, `bindings/`, the pinned binding and retiring/retired markers, `<id>/receipts/` and `<id>/.beat`.
+The client and format module, and the Python runtime, must also be mapped read-only; mode bits alone do not protect a same-uid deployment.
+The client attempts and immediately removes a write probe only when a misconfiguration makes an owner directory writable; on the required read-only view no probe file is created.
+A successful presence answer records the four probe paths, their `EROFS` errnos, observed `ST_RDONLY` flags and verified closure pins for sandbox evidence.
+A fixture's simulated errno is not proof of a real read-only deployment.
+
+Pin exactly the deployed `bin/fm-owner-notice-client.py` and `bin/fm_owner_notice_format.py` bytes in the client config and in the consumer's helper declaration.
+The imported non-standard-library closure is those two files, including during self-test.
+The [helper-consumers declaration](helper-consumers.md#declarations) is owned by that protocol; an example for this client is:
+
+```text
+schema=fm-helper-consumer/v1
+consumer=example-notice-producer
+owner=example-owner
+helper=/path/to/firstmate/bin/fm-owner-notice-client.py
+helper=/path/to/firstmate/bin/fm_owner_notice_format.py
+accept=<reviewed-client-sha256>
+accept=<reviewed-format-sha256>
+```
+
+Replace both digest placeholders with independently accepted exact-byte versions; this example registers nothing.
+A change to either helper holds landing until its declared consumer accepts the new bytes, as the [landing gate](helper-consumers.md#the-landing-gate) specifies.
+A new interface major is a planned consumer migration: readers move first, and interface/self-test success never substitutes for consumer acceptance or install evidence.
 
 ## Ingest
 
@@ -325,15 +378,16 @@ The check protects against a misconfigured producer, not one that rewrites the c
 
 | Code | Meaning |
 |---|---|
-| 0 | `delivered` or `consumed` for the caller's digest, or an owner command that succeeded or replayed |
+| 0 | `delivered` or `consumed` for the caller's digest, `present` from probe, a successful client list/prune, or an owner command that succeeded or replayed |
 | 2 | usage or config error, including an unknown config field and a refused test seam |
 | 3 | `absent` (query only) |
 | 65 | a refusal, `key-conflict`, `not-recorded`, `retire-busy`, `not-refused`, `not-vanished`, `not-retired`, `purge-too-early` or a `bind` refusal; the JSON line carries `code` |
-| 69 | unavailable: a pinned path missing or unreadable (named), `owner-tree-writable`, `owner-tree-writable-by-mode`, or `binding-retired` on submit |
+| 69 | unavailable: a pinned path missing or unreadable (named), `owner-tree-writable`, `owner-tree-writable-by-mode`, `binding-retired` on submit, or `owner-automation-absent` on probe |
 | 70 | unknown or inconsistent state, including `binding-retired` on query, `lock-not-held`, `seq-collision` and `retired-unreadable` |
 | 75 | client: `pending`; owner front: `busy` or `outbox-unresponsive` |
 
-Any other code, including 1 from an uncaught exception, 124 or 137 from a caller's timeout, or a signal, is unknown and never success.
+Any other exit code (including 124 and 137) is unknown, never success.
+This includes 1 from an uncaught exception and signal termination; inspect the process status even when stdout looks successful.
 
 ## Bounded failure
 
@@ -404,4 +458,5 @@ The root must also not be `/` and must hold a regular file `.fm-owner-notice-tes
 - `FM_OWNER_NOTICE_OPEN_COUNT=<log>`: the stage and the engine append `<role> <open|read|scandir> <path>` for every path they open.
 - `FM_OWNER_NOTICE_NOW=<epoch>`: the clock the engine and client read.
 
-The regression suite is [`tests/fm-owner-notice.test.sh`](../tests/fm-owner-notice.test.sh).
+The protocol regression suite is [`tests/fm-owner-notice.test.sh`](../tests/fm-owner-notice.test.sh).
+The consumer interface, import closure, trust probes and presence regressions are [`tests/fm-owner-notice-interface.test.sh`](../tests/fm-owner-notice-interface.test.sh); its kernel read-only-mount case reports an explicit skip where user namespaces are unavailable.
