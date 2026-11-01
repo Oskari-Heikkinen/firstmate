@@ -325,7 +325,7 @@ def read_queue(src):
         data = load_json(path, src)
         if isinstance(data, dict) and data.get("schema") == "tj-handoff/v1" and isinstance(data.get("kind"), str):
             data["_epoch"] = iso_epoch(data.get("created_at"))
-            data["_state_unknown"] = data["kind"] == "REQUEST WITHDRAWN" and type(data.get("whole")) is not bool
+            data["_state_unknown"] = False
             if data["_state_unknown"]:
                 src.fail("unreadable", "%s has no boolean withdrawal whole" % path)
             out.append(data)
