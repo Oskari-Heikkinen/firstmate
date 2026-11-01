@@ -6,6 +6,7 @@
 # Usage:
 #   fm-park.sh <task-id> --handoff <file> [--when <condition>] [--deadline <iso>]
 #              [--adopt-merge-queue <head40>] [--open-ended] [--relocation-safe]
+#              [--check-interval <1..300 seconds>]
 #   fm-park.sh release <task-id> <park-token>  bounded registered copy-return action
 #   fm-park.sh release-ready <task-id> <park-token>  cheap release condition
 #   fm-park.sh pickup <task-id>        explicit authority for an inbox-only wait
@@ -74,7 +75,7 @@
 #           merge-result:, gh-run: or heavy: wait, so a wait that never comes
 #           wakes the supervisor the same day. A passed deadline only wakes the
 #           supervisor (never-true); it never relaunches the task. Before
-#           anything is installed, park runs the condition's `check` once
+#           anything is installed, unless --check-interval is given, park runs the condition's `check` once
 #           (bounded by FM_PARK_PRECHECK_TIMEOUT) and refuses, showing the
 #           check's output, when it exits 2 or above: a watch on a broken check would never
 #           resume the task.
@@ -147,6 +148,13 @@
 #   gh-run:<owner/repo>:<run-id>  true once that GitHub Actions run has completed,
 #                                 whatever its conclusion; read with
 #                                 gh run view -R <owner/repo>
+# Rate-limited cmd: checks use park's --check-interval <1..300 seconds>.
+# The command must query on every invocation, not implement its own throttle.
+# The when runner owns the cadence and cached verdict (see its header).
+# This option skips the park-time query; errors instead reach the runner's
+# bounded condition-error outcome. Copy release retains these parks to avoid
+# a second external query. Without the option, cmd: keeps checking every poll.
+# Do not use this option with another condition kind or an adopted source.
 # Written without backticks, any condition but cmd: ends at the first
 # whitespace, and trailing punctuation (.,;:)) is not part of it.
 #
@@ -175,7 +183,7 @@
 #
 # Outcomes that need the supervisor come from the watch itself: the deadline
 # passing without the condition (never-true), repeated condition errors
-# (condition-error), and a failed relaunch (action-failed) each wake firstmate
+# or failure to stabilise after first true (condition-error), and a failed relaunch (action-failed) each wake firstmate
 # through the process-event path; a successful relaunch wakes it as fired.
 # The .agents/skills/process-event-sources skill owns handling those wakes.
 #
@@ -184,6 +192,7 @@
 #   park_handoff=<absolute path of data/<id>/handoff.md>
 #   park_when=<condition>
 #   park_deadline=<UTC ISO time>
+#   park_check_interval=<seconds>  runner-owned external cadence (0: each poll)
 #   park_token=<token>         binds the listener to one park incarnation
 #   park_pickup=<park-token>   lease-guarded pickup of an inbox-only wait
 #   park_exit_confirmed=<park-token>  verified stop receipt for release readiness
@@ -602,11 +611,14 @@ cmd_validate() {
 
 cmd_park() {
   local handoff='' want='' deadline_iso='' deadline_epoch now rel dest wt here detached=0 detach out adopted='' sid='' tag=''
-  local open_ended=0 relocation_safe=0 started token release_name release_timeout
+  local open_ended=0 relocation_safe=0 started token release_name release_timeout check_interval=0
   task_resolve "${1-}"
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --check-interval)
+        case "${2-}" in [1-9]|[1-9][0-9]|[12][0-9][0-9]|300) check_interval=$2 ;; *) die "--check-interval must be 1..300 seconds" ;; esac
+        shift 2 ;;
       --open-ended) open_ended=1; shift ;;
       --relocation-safe) relocation_safe=1; shift ;;
       --handoff) handoff=${2-}; shift 2 || die "--handoff needs a file" ;;
@@ -632,7 +644,14 @@ cmd_park() {
     sid="merge-queue-$ID-${adopted:0:8}"
     tag=" [key=merge-queue] [wait=merge-result:$adopted]"
   fi
-  precheck_condition "$HANDOFF_CONDITION"
+  if [ "$check_interval" -gt 0 ]; then
+    case "$HANDOFF_CONDITION" in cmd:*) ;; *) die "--check-interval is only for cmd: conditions" ;; esac
+    [ -z "$adopted" ] || die "--check-interval cannot be used with an adopted source"
+    # The runner owns all external calls on this path, including the first.
+    # A precheck here would spend a request outside its cadence.
+  else
+    precheck_condition "$HANDOFF_CONDITION"
+  fi
   [ "${FM_TASK_ID-}" != "$ID" ] || detached=1
   wt=$(meta_get worktree)
   here=$(pwd -P 2>/dev/null || true)
@@ -682,13 +701,14 @@ cmd_park() {
   fi
   token="park.$now.${BASHPID:-$$}.$RANDOM"
   park_record "park_state=parked" "park_handoff=$dest" "park_when=$HANDOFF_CONDITION" \
-    "park_token=$token" "park_pickup=" 'park_exit_confirmed=' 'park_release_source=' 'park_release_attempt=' \
+    "park_check_interval=$check_interval" "park_token=$token" "park_pickup=" 'park_exit_confirmed=' 'park_release_source=' 'park_release_attempt=' \
     "park_release_timeout=$release_timeout" 'park_release_pid=' 'park_release_pid_identity=' 'park_release_notified=' \
     "wait_started_at=$started" "park_open_ended=$open_ended" "park_relocation_safe=$relocation_safe" \
     "park_source=$sid" "park_deadline=$deadline_iso" "park_at=$now" "park_spawn_gen=$(meta_get spawn_gen)" \
     || die "cannot record the park in task $ID's record"
   if [ -z "$sid" ] && ! out=$("$WHEN" arm "park-$ID" \
       --interval "${FM_PARK_INTERVAL:-$(park_interval "$HANDOFF_CONDITION")}" --stable "${FM_PARK_STABLE:-2}" \
+      --check-interval "$check_interval" \
       --deadline "$rel" --error-budget "${FM_PARK_ERROR_BUDGET:-5}" --action-timeout 900 \
       --condition "$SCRIPT_DIR/fm-park.sh" poll "$ID" "$token" \
       --action "$SCRIPT_DIR/fm-park.sh" resume "$ID" "$token" 2>&1); then
@@ -1002,6 +1022,9 @@ cmd_release() (
     fm_suspend_record "$META" 'copy_retain_reason=short wait or missing relocation-safety attestation' || return 1
     return 0
   fi
+  # Only the resume runner may spend a rate-limited external check. Retain
+  # these copies rather than launching a second query from the release action.
+  case "$(meta_get park_check_interval)" in ''|0) ;; *) return 0 ;; esac
   # Never release when the wait already cleared: its sole listener owns resume.
   "$SCRIPT_DIR/fm-park.sh" check "$(meta_get park_when)" >/dev/null 2>&1; status=$?
   [ "$status" = 1 ] || return 0

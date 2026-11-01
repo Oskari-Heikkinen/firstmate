@@ -56,6 +56,7 @@ Resolve the actual decision through its existing owner before authorizing contin
 Shared keyed answers use `fm-send.sh`'s explicit fan-out form; its header owns recipient discovery, delivery, closure and inbox pickup.
 An `fm-send.sh` delivery to a worker parked on an inbox-only wait also picks up that park unless sent with `--no-resume`, so context the worker should read only at its next resume goes with that flag; the "Inbox pickup" paragraphs of `fm-send.sh`'s and `fm-park.sh`'s headers own the rule and its failure warning.
 Use the normal owner control/park continuation, never a generic fresh spawn, a worker-chosen pickup, an old-path inspection or ordinary teardown.
+When a custom condition needs rate limiting, use the runner-owned cadence path in the park header, not a script that returns false between checks.
 The ordinary wait condition stays cheap; the separate incarnation-bound release source owns expensive saving/return and its own bounded outcome, as described by the park owner.
 An interrupted or invalid saved transaction remains blocked with its evidence intact: reconcile only its exact acquisition, never re-run allocation blindly or edit records to manufacture a valid proof.
 

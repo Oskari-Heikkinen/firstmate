@@ -23,6 +23,7 @@ Write a handoff file outside tracked content with sections `## Goal`, `## Done`,
 Prefer a built-in condition over a script of your own, because each has a tested checker: `merge-result:<head40>` (the merge queue's result for a handed-over head), `heavy:<job-id>` (a heavy-slot job ending), `gh-run:<owner/repo>:<run-id>` (a GitHub Actions run completing), `pr-merged:<github-pr-url>`, and `file:<absolute-path>` or its alias `receipt:<absolute-path>`.
 Use `cmd:<absolute-executable-or-PATH-name> [args]` only when none fits: its arguments split on whitespace, and it must exit 0 when done, 1 while waiting, and anything else only for a real error.
 Then run the exact `fm-park.sh` command your brief names, with `--handoff <file>`.
-Park runs the condition's check once first and refuses, with the check's output, when it errors; fix the condition rather than retrying.
+For a rate-limited `cmd:` check, use park's runner-owned cadence option described in [`bin/fm-park.sh`](../../../../bin/fm-park.sh)'s header instead of hand-writing timestamps or returning false between queries.
+That header owns the precheck and error behaviour; fix a broken condition rather than retrying.
 It stops this session and starts a fresh one with your handoff when the condition holds; a wait that passes its deadline (hours for the cross-home kinds) wakes your supervisor instead. Its `--help` has the details.
 Read that help before asserting optional relocation safety for copy-free suspension; never return or allocate your copy by hand.
