@@ -1063,7 +1063,7 @@ class Loop:
                 if rec.get("source") in lane_owned:
                     continue
                 hold_analysis = analysis_unknown and rec.get("condition") in ("analysis-refused", "no-analysis")
-                if alert_id not in current and not rec.get("cleared_at") and not (holding or hold_analysis):
+                if alert_id not in current and not rec.get("cleared_at") and not holding:
                     rec["cleared_at"] = stamp
                     atomic(folder / (alert_id + ".json"), rec)
                     note = "it prints until acked" if not rec.get("acked_at") else "already acked"
