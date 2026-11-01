@@ -8201,7 +8201,8 @@ if [ "${0##*/}" = fm-teardown.sh ]; then
   # A failed first row must not be masked by a successful later directory row.
   find() {
     if [ "$FM_APPEND_KIND" = fresh-directory ] && [ "${2-} ${3-}" = '-type f' ]; then
-      command find "$@" | LC_ALL=C sort
+      # Preserve find -print0 framing: line sort adds a stray LF after NUL.
+      command find "$@" | python3 -c 'import sys; paths = sys.stdin.buffer.read().split(b"\0"); sys.stdout.buffer.write(b"".join(p + b"\0" for p in sorted(paths) if p))'
     else
       command find "$@"
     fi
