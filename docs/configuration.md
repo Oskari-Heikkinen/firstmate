@@ -721,7 +721,7 @@ This home's own outbound parent channel is not scanned, as in the drain.
 The threshold is `FM_OPEN_DECISION_OVERDUE_SECS`, else the number in the optional local `config/open-decision-overdue-secs`, else `1800` seconds.
 The backoff cap is `FM_OPEN_DECISION_BACKOFF_MAX_SECS`, else `config/open-decision-backoff-max-secs`, else `14400` seconds, and must not be below the threshold.
 Each must be a positive whole number of at most nine digits, and the files are read on every tick.
-An invalid value, an unusable setting file, an unreadable `state/.open-decision-reminders` ledger, a state directory that cannot be listed or a failed source read refuses scheduling and raises one `check: open-decision reminders failed: <why>` wake per distinct failure; the watcher keeps running.
+An invalid value, an unusable setting file, an unreadable `state/.open-decision-reminders` ledger, a state directory whose listing fails or is incomplete, a listed status log or ledger that cannot be looked up, or a failed source read refuses scheduling and raises one `check: open-decision reminders failed: <why>` wake per distinct failure; the watcher keeps running.
 The suppression receipt in `state/.open-decision-reminders.error` is committed only after the alarm is queued and cleared by the next good tick, so failed publication is retried.
 A ledger or queue write can fail after some reminders were delivered; that failure also alarms, without claiming the earlier deliveries did not happen.
 

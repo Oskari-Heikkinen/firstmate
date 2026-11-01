@@ -2600,8 +2600,11 @@ task_captain_call_open() {  # <task>
 # repeat that last key once when storage recovers, just as an interrupted
 # queue-before-ledger commit can.
 #
-# A state directory that cannot be listed refuses before any fold: its glob
-# would come back unmatched, the same as a home with no logs.
+# The scan trusts only a listing of the state directory that proves it read
+# the whole directory: a failed, killed or partial listing refuses before any
+# fold, where a glob would come back unmatched, the same as a home with no
+# logs. A listed name whose lookup then fails (an unsearchable directory, an
+# I/O error) refuses too, unless a fresh complete listing no longer names it.
 #
 # Nonzero means the tick failed (possibly after queueing some keys), with the
 # cause in OPEN_DECISION_ERROR. The wrapper alarms without stopping other work.
@@ -2655,6 +2658,41 @@ open_decision_ledger_write() {  # <ledger> <rows>
   open_decision_ledger_prepare "$1" "$2" && open_decision_ledger_publish "$1"
 }
 
+# The listing the tick trusts, one name per line; -A keeps the dot-named
+# ledger in view, and the environment pins plain names from GNU and BSD ls.
+# The trailing slash makes a path that is not a directory fail, where ls
+# would print a file operand's own name and exit 0.
+open_decision_state_ls() {  # <dir>
+  env -u CLICOLOR -u CLICOLOR_FORCE QUOTING_STYLE=literal ls -1 -A -- "$1/"
+}
+
+# Assigns <dir>'s names to <out-var>, each newline-terminated. The sentinel is
+# printed only after the listing exits 0, so a failed or killed listing,
+# partial output included, can never pass for a short or empty one.
+open_decision_state_list_to() {  # <out-var> <dir>
+  local _odl_names
+  _odl_names=$(open_decision_state_ls "$2" 2>/dev/null && printf /)
+  case "$_odl_names" in
+    /) _odl_names= ;;
+    *$'\n'/) _odl_names=${_odl_names%/} ;;
+    *) OPEN_DECISION_ERROR="state directory $2 cannot be listed"; return 1 ;;
+  esac
+  printf -v "$1" '%s' "$_odl_names"
+}
+
+# <name> in <dir>, whose lookup just failed, is absent only when a complete
+# listing does not name it: <names> first, then a fresh listing, since a
+# teardown can remove a log mid-scan. Still listed, the lookup itself failed,
+# and nothing is known about what the entry holds.
+open_decision_state_absent() {  # <dir> <name> <names>
+  local _oda_names=$3
+  case $'\n'"$_oda_names" in *$'\n'"$2"$'\n'*) ;; *) return 0 ;; esac
+  open_decision_state_list_to _oda_names "$1" || return 1
+  case $'\n'"$_oda_names" in *$'\n'"$2"$'\n'*) ;; *) return 0 ;; esac
+  OPEN_DECISION_ERROR="$1/$2 is listed but cannot be looked up"
+  return 1
+}
+
 # These arrays belong to the tick; serialize them identically at each commit.
 open_decision_ledger_rows_to() {  # <out-var>
   local _odr_i _odr_rows=''
@@ -2665,10 +2703,10 @@ open_decision_ledger_rows_to() {  # <out-var>
 }
 
 open_decision_reminder_tick() {  # [now-epoch] [on-log]; now for deterministic clock callers
-  local now=${1:-} on_log=${2:-} threshold cap ledger old='' rows='' exclude f task open key verb opened note
+  local now=${1:-} on_log=${2:-} threshold cap ledger old='' rows='' names name exclude f task open key verb opened note
   local old_task old_key old_opened old_last old_delay last delay wait_task='' waiting wait_line
   local i j n=0 due_n=0 placed reason
-  local -a r_task r_key r_opened r_last r_delay order order_new
+  local -a r_task r_key r_opened r_last r_delay order order_new logs
   OPEN_DECISION_REMINDER=
   OPEN_DECISION_ERROR=
   [ -e "$CONFIG/open-decision-reminders" ] || [ -L "$CONFIG/open-decision-reminders" ] || return 0
@@ -2682,25 +2720,31 @@ open_decision_reminder_tick() {  # [now-epoch] [on-log]; now for deterministic c
     return 1
   }
   [ -n "$now" ] || fm_epoch_seconds_to now
-  # A known child stays readable without list permission, so the ledger read
-  # below would succeed while the glob silently saw no logs.
-  if [ ! -d "$STATE" ] || [ ! -r "$STATE" ] || [ ! -x "$STATE" ]; then
-    OPEN_DECISION_ERROR="state directory $STATE cannot be listed"
-    return 1
-  fi
+  open_decision_state_list_to names "$STATE" || return 1
   ledger="$STATE/.open-decision-reminders"
   if [ -e "$ledger" ] || [ -L "$ledger" ]; then
     if [ ! -f "$ledger" ] || [ ! -r "$ledger" ] || [ -L "$ledger" ] || ! fm_file_text_to old "$ledger"; then
       OPEN_DECISION_ERROR="ledger $ledger is not a readable regular file"
       return 1
     fi
+  else
+    open_decision_state_absent "$STATE" "${ledger##*/}" "$names" || return 1
   fi
+  logs=()
+  while IFS= read -r name; do
+    case "$name" in .*) ;; *.status) logs+=("$STATE/$name") ;; esac
+  done <<NAMES
+$names
+NAMES
   exclude=$(status_scan_parent_channel_exclude "$STATE")
-  for f in "$STATE"/*.status; do
+  for f in ${logs[@]+"${logs[@]}"}; do
     [ "$f" != "$exclude" ] || continue
-    # Only an unmatched glob is healthy empty input. Existing unreadable or
-    # non-regular logs must reach the strict fold and alarm, not erase backoff.
-    [ -e "$f" ] || [ -L "$f" ] || continue
+    # Existing unreadable or non-regular logs must reach the strict fold and
+    # alarm, not erase backoff; only a log no longer listed is gone.
+    if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+      open_decision_state_absent "$STATE" "${f##*/}" "$names" || return 1
+      continue
+    fi
     # A log with no timed cursor yet (every log on a watcher's first tick
     # after this landed) folds from byte 0, so beat per log.
     [ -z "$on_log" ] || "$on_log"
