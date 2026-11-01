@@ -2579,10 +2579,15 @@ task_captain_call_open() {  # <task>
 # as it was. Every due key gets its own check row; OPEN_DECISION_REMINDER names
 # the oldest, and the caller wakes once for all of them. The row is queued
 # before the ledger records it, so a crash between the two repeats a reminder
-# rather than losing one.
+# rather than losing one. Before publishing any wake, replace the ledger with
+# the current open set and backoff. A persistent replacement failure therefore
+# blocks further publication instead of flooding the queue. Commit after each
+# successful key, so a later queue failure preserves earlier keys' backoff.
+# A failure beginning after the preflight can repeat that last key once when
+# storage recovers, just as an interrupted queue-before-ledger commit can.
 #
-# Nonzero means nothing was queued for this tick and OPEN_DECISION_ERROR says
-# why: invalid settings, an unreadable ledger, a failed fold or a failed write.
+# Nonzero means the tick failed (possibly after queueing some keys), with the
+# cause in OPEN_DECISION_ERROR. The wrapper alarms without stopping other work.
 OPEN_DECISION_REMINDER=
 OPEN_DECISION_ERROR=
 
@@ -2613,10 +2618,29 @@ open_decision_setting_to() {  # <out-var> <env-name> <env-value> <config-file> <
   printf -v "$1" '%s' "$_ods_value"
 }
 
+# One publication owner for both the preflight and post-delivery commit.
+open_decision_ledger_write() {  # <ledger> <rows>
+  local tmp="$1.tmp.$$"
+  if ! { printf '%s' "$2" > "$tmp"; } 2>/dev/null || ! _fm_atomic_replace "$tmp" "$1" 2>/dev/null; then
+    rm -f -- "$tmp" 2>/dev/null
+    OPEN_DECISION_ERROR="ledger $1 could not be written"
+    return 1
+  fi
+}
+
+# These arrays belong to the tick; serialize them identically at each commit.
+open_decision_ledger_rows_to() {  # <out-var>
+  local _odr_i _odr_rows=''
+  for _odr_i in ${r_task[@]+"${!r_task[@]}"}; do
+    _odr_rows+="${r_task[_odr_i]}"$'\t'"${r_key[_odr_i]}"$'\t'"${r_opened[_odr_i]}"$'\t'"${r_last[_odr_i]}"$'\t'"${r_delay[_odr_i]}"$'\n'
+  done
+  printf -v "$1" '%s' "$_odr_rows"
+}
+
 open_decision_reminder_tick() {  # [now-epoch] [on-log]; now for deterministic clock callers
   local now=${1:-} on_log=${2:-} threshold cap ledger old='' rows='' exclude f task open key verb opened note
   local old_task old_key old_opened old_last old_delay last delay wait_task='' waiting wait_line
-  local i j n=0 due_n=0 placed reason tmp
+  local i j n=0 due_n=0 placed reason
   local -a r_task r_key r_opened r_last r_delay order order_new
   OPEN_DECISION_REMINDER=
   OPEN_DECISION_ERROR=
@@ -2640,8 +2664,10 @@ open_decision_reminder_tick() {  # [now-epoch] [on-log]; now for deterministic c
   fi
   exclude=$(status_scan_parent_channel_exclude "$STATE")
   for f in "$STATE"/*.status; do
-    [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || continue
     [ "$f" != "$exclude" ] || continue
+    # Only an unmatched glob is healthy empty input. Existing unreadable or
+    # non-regular logs must reach the strict fold and alarm, not erase backoff.
+    [ -e "$f" ] || [ -L "$f" ] || continue
     # A log with no timed cursor yet (every log on a watcher's first tick
     # after this landed) folds from byte 0, so beat per log.
     [ -z "$on_log" ] || "$on_log"
@@ -2701,6 +2727,13 @@ LEDGER
 $open
 OPEN
   done
+  open_decision_ledger_rows_to rows
+  # Preflight the actual replacement path before delivery, even when the
+  # current rows are unchanged. On a persistent post-delivery write failure,
+  # every successor fails here before it can reissue that undurable reminder.
+  if [ "$due_n" -gt 0 ] || [ "${rows%$'\n'}" != "$old" ]; then
+    open_decision_ledger_write "$ledger" "$rows" || return 1
+  fi
   if [ "$due_n" -gt 0 ]; then
     for i in "${order[@]}"; do
       reason="check: open decision overdue: ${r_task[i]} key=${r_key[i]} age=$((now - r_opened[i]))s"
@@ -2712,20 +2745,12 @@ OPEN
       [ "${r_last[i]}" -eq 0 ] || r_delay[i]=$((r_delay[i] * 2))
       [ "${r_delay[i]}" -le "$cap" ] || r_delay[i]=$cap
       r_last[i]=$now
+      open_decision_ledger_rows_to rows
+      open_decision_ledger_write "$ledger" "$rows" || return 1
     done
     [ "$due_n" -le 1 ] || OPEN_DECISION_REMINDER="$OPEN_DECISION_REMINDER (+$((due_n - 1)) more queued)"
   fi
-  for i in ${r_task[@]+"${!r_task[@]}"}; do
-    rows+="${r_task[i]}"$'\t'"${r_key[i]}"$'\t'"${r_opened[i]}"$'\t'"${r_last[i]}"$'\t'"${r_delay[i]}"$'\n'
-  done
-  # An unchanged ledger is not rewritten, so a quiet tick writes nothing.
-  [ "${rows%$'\n'}" != "$old" ] || return 0
-  tmp="$ledger.tmp.$$"
-  if ! printf '%s' "$rows" 2>/dev/null > "$tmp" || ! mv -f "$tmp" "$ledger" 2>/dev/null; then
-    rm -f -- "$tmp" 2>/dev/null
-    OPEN_DECISION_ERROR="ledger $ledger could not be written"
-    return 1
-  fi
+  return 0
 }
 
 # The main loop's entry to the tick above. It runs the tick at most once per
@@ -2740,7 +2765,7 @@ OPEN
 OPEN_DECISION_TICK_SECS=60
 OPEN_DECISION_TICK_LAST=
 open_decision_reminder_check() {  # [now-epoch] [on-log]
-  local now=${1:-} on_log=${2:-} marker="$STATE/.open-decision-reminders.error" seen=''
+  local now=${1:-} on_log=${2:-} marker="$STATE/.open-decision-reminders.error" seen='' prepared=1 queued
   [ -n "$now" ] || fm_epoch_seconds_to now
   # A clock that stepped back runs the tick rather than holding it until the
   # clock catches up.
@@ -2754,22 +2779,35 @@ open_decision_reminder_check() {  # [now-epoch] [on-log]
     fm_rm_present "$marker"
     return 0
   fi
+  # A tick can fail after queueing keys; an already-alarmed error still owes
+  # those rows their wake.
+  queued=$OPEN_DECISION_REMINDER
   OPEN_DECISION_REMINDER=
   [ -n "$OPEN_DECISION_ERROR" ] || OPEN_DECISION_ERROR='the reminder tick failed'
   if [ -f "$marker" ] && [ ! -L "$marker" ] && fm_file_text_to seen "$marker" \
     && [ "$seen" = "$OPEN_DECISION_ERROR" ]; then
+    OPEN_DECISION_REMINDER=$queued
     return 0
   fi
   # A directory or symlink in the marker's place would take the rename into
   # it, or through it, and still report success.
   if { [ -e "$marker" ] || [ -L "$marker" ]; } && { [ ! -f "$marker" ] || [ -L "$marker" ]; } \
-    || ! printf '%s\n' "$OPEN_DECISION_ERROR" 2>/dev/null > "$marker.tmp.$$" \
-    || ! mv -f "$marker.tmp.$$" "$marker" 2>/dev/null; then
-    rm -f -- "$marker.tmp.$$" 2>/dev/null
+    || ! { printf '%s\n' "$OPEN_DECISION_ERROR" > "$marker.tmp.$$"; } 2>/dev/null; then
+    prepared=0
     OPEN_DECISION_ERROR="$OPEN_DECISION_ERROR, and $marker could not be written, so this repeats every tick"
   fi
-  OPEN_DECISION_REMINDER="check: open-decision reminders failed: $OPEN_DECISION_ERROR; no reminder is sent until it is fixed"
-  fm_wake_append check open-decision-reminders "$OPEN_DECISION_REMINDER"
+  OPEN_DECISION_REMINDER="check: open-decision reminders failed: $OPEN_DECISION_ERROR; reminder delivery is incomplete until it is fixed"
+  # Suppression is a receipt, never an intent: a failed append (including its
+  # recovery/sequence publication) leaves this error eligible on restart.
+  if ! fm_wake_append check open-decision-reminders "$OPEN_DECISION_REMINDER"; then
+    rm -f -- "$marker.tmp.$$" 2>/dev/null
+    return 1
+  fi
+  if [ "$prepared" = 1 ] && ! _fm_atomic_replace "$marker.tmp.$$" "$marker" 2>/dev/null; then
+    OPEN_DECISION_REMINDER="$OPEN_DECISION_REMINDER; $marker could not be written, so this repeats every tick"
+  fi
+  rm -f -- "$marker.tmp.$$" 2>/dev/null
+  return 0
 }
 
 # The identity a re-surface throttle is bound to for a captain call, carrying
