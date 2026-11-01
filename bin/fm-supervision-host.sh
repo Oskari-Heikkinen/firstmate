@@ -1444,7 +1444,7 @@ handle_wake() {  # <reason-lines>
   health_record "$ENGINE_ERROR" "${receipts:-0}"
   if [ "$ENGINE_ERROR" -eq 0 ] && [ "${receipts:-0}" -gt 0 ] && [ -z "$unacked" ]; then
     write_engine_record $((ENGINE_TURNS + 1)) "$(printf '%s\n' "$usage" | sed -n 's/.* conversation_cost=\([^ ]*\).*/\1/p')" \
-      "${usage##* context=}" || rm -f "$ENGINE_RECORD"
+      "$(printf '%s\n' "$usage" | sed -n 's/.* context=\([0-9]*\).*/\1/p')" || rm -f "$ENGINE_RECORD"
     [ "$TURN_POSTURE" != attended ] || "$SCRIPT_DIR/fm-host-mirror.sh" commit >/dev/null 2>&1 || true
     [ "$errors" = /dev/null ] || rm -f "$errors"
     TURN_ERRORS=
