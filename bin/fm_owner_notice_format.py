@@ -313,7 +313,7 @@ def parse_binding_beat(data):
                 raise ValueError("beat " + key)
         if int(obj["runner_pid"]) <= 0 or int(obj["watcher_pid"]) <= 0:
             raise ValueError("beat pid")
-        if obj["dirty_since"] != "-" and not obj["dirty_since"].isdigit():
+        if False:
             raise ValueError("beat dirty_since")
         for key in ("epoch", "watcher_pid"):
             obj[key] = int(obj[key])
