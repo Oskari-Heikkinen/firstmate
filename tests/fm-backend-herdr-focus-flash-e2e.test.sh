@@ -165,6 +165,8 @@ done
 : > "$B_OPERATION_ACTIVE"
 B_OUT=$(PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" FM_FLASH_CALL_LOG="$CALL_LOG" bash -c '
   . "$1/bin/backends/herdr.sh"
+  # Counterfactual: disable the focus-safe emptying-close mitigation.
+  fm_backend_herdr_death_close_pane() { return 1; }
   fm_backend_herdr_cli() {
     local session=$1
     shift
