@@ -47,7 +47,10 @@
 #           VM paging share: when it has been unknown for win_stale_max_s, a
 #           primary home prints one notice naming why (whatever the level), and
 #           one `measured again` line when it is measured again; the events log
-#           gets one line at each of those changes, machine-wide.
+#           gets one line at each of those changes, machine-wide. Delivery is bound
+#           to that machine occurrence, even if another home alone saw recovery.
+#           Unwritable occurrence storage has one immediate per-home failure notice
+#           and one recovery notice, not one warning per tick.
 #           Wake: in a primary home, a level at or above wake_level (default park)
 #           or an abnormal Windows non-paged pool prints one wake line when it
 #           starts, again after rewake_s while it stays or at once when the level
@@ -93,8 +96,8 @@
 # win_pages_in_ps threshold, as a Windows-side pressure signal. The VM's share is
 # unknown when the reading has no single vmmemWSL process, its vmmemWSL fields are
 # unreadable, vmmemWSL has no rate yet, the vm record was not written with the
-# current Windows reading, or its span differs from the system-wide rate's by more
-# than 5s (baselines from different readings). Then the VM's share cannot be bounded
+# current Windows reading, or its baseline cannot be identified as the Windows
+# rate's baseline by the exact stored Windows perf timestamp. Then the share cannot be bounded
 # below the system-wide rate, so that rate grades on the full ladder as before, and
 # the reason always names the unknown share and why, even when nothing grades.
 #
@@ -112,14 +115,19 @@
 #                cumulative 32-bit counts), the earlier reading the rates are
 #                measured from, and the rates; `-` where none
 #   vm           `<epoch> <pid> <faults> <pages_in> <perf_time> <perf_freq>
-#                <base_faults> <base_in> <base_perf> <faults/s> <in/s> <span_s>`: the
+#                <base_faults> <base_in> <base_perf> <faults/s> <in/s> <span_s>
+#                <win_perf> <base_win_perf>`: the
 #                vmmemWSL process's cumulative 32-bit page-fault count and the
 #                system-wide pages input count from the same reading as `windows`
 #                (same epoch), one baseline row from the same pid and perf frequency,
-#                and both rates over that one span; `-` where none; the pid is `-`
+#                and both rates over the Windows-selected span and clock; `-`
+#                where none; the pid is `-`
 #                when the reading had no single vmmemWSL process and `?` when its
-#                vmmemWSL fields were unreadable
-#   vm-unknown   `<epoch>` the VM's paging share became unknown; present while unknown
+#                vmmemWSL fields were unreadable. The last two fields identify the
+#                current and baseline Windows observations exactly; legacy rows
+#                without them are unknown, never matched by duration tolerance.
+#   vm-unknown   `<onset epoch> <occurrence token>`; present while unknown; legacy
+#                epoch-only records retain their onset and acquire a new token
 #   swapout      `<epoch> <pswpout> [<epoch> <pswpout>]` from /proc/vmstat, newest
 #                first; a tick adds a pair only once the newest is 60s old, so
 #                the swap-out rate always spans at least 60s
@@ -131,8 +139,9 @@
 # [<id where the next pass starts after an unfinished one>]`),
 # state/.mem-guard-wake (`<last wake epoch> <level index woken for, 0 when only the
 # pool> <pool notice 0|1>`, present while main has an open memory notice),
-# state/.mem-guard-vm-notice (`<epoch>`, present while main has an open notice that
-# the VM's paging share is unknown),
+# state/.mem-guard-vm-notice (`<occurrence token>`, present while main has an open
+# notice that the VM's paging share is unknown; `storage-unavailable` marks a
+# publication-failure episode; legacy delivery epochs match no occurrence),
 # state/mem-guard.check.sh.
 #
 # Test seams: FM_PROC_ROOT_OVERRIDE (default /proc), FM_MEM_GUARD_POWERSHELL
@@ -184,7 +193,6 @@ R_linux_swapout_mibps_min=1
 R_win_nonpaged_pool_mib=2048                   # abnormal Windows non-paged pool at or above; 0 grades none
 R_wake_level=park
 RATE_WINDOW_S=60
-VM_SPAN_SKEW_S=5                               # vm and windows rate spans differ by at most this when paired
 PAGE_COUNTER_WRAP=4294967296
 
 THRESHOLD_KEYS="win_available_mib win_pages_in_ps linux_available_mib linux_swap_used_mib linux_psi_full_avg10"
@@ -339,45 +347,44 @@ win_cache_line() {
   printf '%s %s %s %s %s %s %s %s\n' "$epoch" "$2" "$b_in" "$b_out" "$b_perf" "$in_ps" "$out_ps" "$span"
 }
 
-# vm_cache_line <epoch> <pid> <faults> <pages_in> <perf_time> <perf_freq>: prints the
-# vm record line, choosing its baseline the way win_cache_line does, from readings of
-# the same vmmemWSL pid only, so a restarted VM leaves no rate until it has its own
-# baseline. The record carries the system-wide pages input count of the same reading,
-# so the VM's fault rate and the pages input rate it is bounded by are both measured
-# from one baseline row over one span.
+# vm_cache_line <epoch> <pid> <faults> <pages_in> <perf_time> <perf_freq>
+#               <win_perf> <win_freq> <win_base_perf>: prints the VM cache row.
+# Windows alone selects the baseline and rate clock. Match that observation in the
+# VM's previous current/baseline pair, never choose independently by VM duration:
+# provider timestamp skew around 60s must not keep otherwise paired rates unknown.
+# A restarted pid/frequency or a missing selected observation leaves no rate.
 vm_cache_line() {
-  local epoch=$1 pid=$2 faults=$3 pages_in=$4 perf=$5 freq=$6 b_f=- b_in=- b_perf=- f_ps=- in_ps=- span=- d_f d_in d_perf
+  local epoch=$1 pid=$2 faults=$3 pages_in=$4 perf=$5 freq=$6 win_perf=$7 win_freq=$8 win_base=$9 b_win_perf=-
+  local b_f=- b_in=- b_perf=- f_ps=- in_ps=- span=- d_f d_in d_perf
   local -a prev=()
   case "$pid" in
   - | '?')
-    printf '%s %s - - - - - - - - - -\n' "$epoch" "$pid"
+    printf '%s %s - - - - - - - - - - %s -\n' "$epoch" "$pid" "$win_perf"
     return 0
     ;;
   esac
   { read -ra prev <"$VM_FILE"; } 2>/dev/null
-  if [ "${#prev[@]}" = 12 ] && [ "${prev[1]}" = "$pid" ] && [ "${prev[5]}" = "$freq" ] && is_uint "${prev[2]}" && is_uint "${prev[3]}" && is_uint "${prev[4]}"; then
-    b_f=${prev[2]} b_in=${prev[3]} b_perf=${prev[4]}
-    if [ $((perf - prev[4])) -lt $((RATE_WINDOW_S * freq)) ] && is_uint "${prev[6]}" && is_uint "${prev[7]}" && is_uint "${prev[8]}" \
-      && [ $((perf - prev[8])) -le $((R_win_stale_max_s * freq)) ]; then
-      b_f=${prev[6]} b_in=${prev[7]} b_perf=${prev[8]}
+  if [ "${#prev[@]}" = 14 ] && [ "${prev[1]}" = "$pid" ] && [ "${prev[5]}" = "$freq" ] && is_uint "$win_base"; then
+    if [ "${prev[12]}" = "$win_base" ]; then
+      b_f=${prev[2]} b_in=${prev[3]} b_perf=${prev[4]} b_win_perf=${prev[12]}
+    elif [ "${prev[13]}" = "$win_base" ]; then
+      b_f=${prev[6]} b_in=${prev[7]} b_perf=${prev[8]} b_win_perf=${prev[13]}
     fi
-    if [ "$perf" -le "$b_perf" ]; then
-      b_f=- b_in=- b_perf=-
-    else
-      d_perf=$((perf - b_perf))
-      span=$((d_perf / freq))
+    if is_uint "$b_f" && is_uint "$b_in" && is_uint "$b_perf" && [ "$perf" -gt "$b_perf" ]; then
+      d_perf=$((win_perf - win_base))
+      span=$((d_perf / win_freq))
       if [ "$span" -ge "$RATE_WINDOW_S" ] && [ "$span" -le "$R_win_stale_max_s" ]; then
         d_f=$((faults - b_f)) d_in=$((pages_in - b_in))
         [ "$d_f" -ge 0 ] || d_f=$((d_f + PAGE_COUNTER_WRAP))
         [ "$d_in" -ge 0 ] || d_in=$((d_in + PAGE_COUNTER_WRAP))
-        d_perf=$((d_perf / (freq / 1000)))
+        d_perf=$((d_perf / (win_freq / 1000)))
         f_ps=$((d_f * 1000 / d_perf)) in_ps=$((d_in * 1000 / d_perf))
       else
         span=-
       fi
     fi
   fi
-  printf '%s %s %s %s %s %s %s %s %s %s %s %s\n' "$epoch" "$pid" "$faults" "$pages_in" "$perf" "$freq" "$b_f" "$b_in" "$b_perf" "$f_ps" "$in_ps" "$span"
+  printf '%s %s %s %s %s %s %s %s %s %s %s %s %s %s\n' "$epoch" "$pid" "$faults" "$pages_in" "$perf" "$freq" "$b_f" "$b_in" "$b_perf" "$f_ps" "$in_ps" "$span" "$win_perf" "$b_win_perf"
 }
 
 # win_refresh: run powershell once (bounded) and write the cache. Sets WIN_ERR on failure.
@@ -414,15 +421,17 @@ win_refresh() {
     WIN_ERR="powershell.exe gave no memory reading (exit $rc)"
     return 1
   fi
-  local t
-  local -a f
+  local t win_line
+  local -a f w
   t=$(now)
   read -ra f <<<"$out"
+  win_line=$(win_cache_line "$t" "${f[*]:0:8}")
+  read -ra w <<<"$win_line"
   # The vm record goes first: a reader that finds the new windows line with the old
   # vm line sees different epochs and treats the VM as unknown, never as quiet.
   # shellcheck disable=SC2015 # a failed vm write leaves the old line, which reads as unknown
-  vm_cache_line "$t" "${f[8]}" "${f[9]}" "${f[3]}" "${f[10]}" "${f[11]}" >"$VM_FILE.tmp.$$" && mv -f "$VM_FILE.tmp.$$" "$VM_FILE" || rm -f "$VM_FILE.tmp.$$"
-  win_cache_line "$t" "${f[*]:0:8}" >"$WIN_FILE.tmp.$$" && mv -f "$WIN_FILE.tmp.$$" "$WIN_FILE"
+  vm_cache_line "$t" "${f[8]}" "${f[9]}" "${f[3]}" "${f[10]}" "${f[11]}" "${f[5]}" "${f[6]}" "${w[11]}" >"$VM_FILE.tmp.$$" && mv -f "$VM_FILE.tmp.$$" "$VM_FILE" || rm -f "$VM_FILE.tmp.$$"
+  printf '%s\n' "$win_line" >"$WIN_FILE.tmp.$$" && mv -f "$WIN_FILE.tmp.$$" "$WIN_FILE"
 }
 
 # win_line_epoch <line>: the line's epoch, or 0 unless it is a complete cache line.
@@ -467,23 +476,20 @@ win_read() {
     unavailable:*) WIN_SOURCE="cache ${age}s (refresh failed: ${WIN_SOURCE#unavailable: })" ;;
     *) WIN_SOURCE="cache ${age}s" ;;
     esac
-    vm_read "$epoch"
+    vm_read "$epoch" "${7}" "${12}"
   else
     [ -n "$WIN_SOURCE" ] && [ "$WIN_SOURCE" != powershell ] || WIN_SOURCE="unavailable: no Windows reading within ${R_win_stale_max_s}s"
   fi
 }
 
-# vm_read <windows epoch>: sets WIN_VM_* from the vm record written with that
-# Windows reading. WIN_VM_PAGES_IN_MAX_PS is the upper bound on the VM's paging: the
-# lower of the VM's fault rate and the system-wide pages input rate, both from the vm
-# record's one baseline row. The VM's share is unknown, named in WIN_VM_SOURCE, unless
-# that record has rates and its span matches the windows record's within
-# VM_SPAN_SKEW_S, so the bound and the system-wide rate it caps at warn describe the
-# same interval.
+# vm_read <windows epoch> <perf> <base_perf>: sets WIN_VM_* from the vm record.
+# WIN_VM_PAGES_IN_MAX_PS bounds paging using the lower rate from its one baseline
+# row. Its current and baseline Windows observation identities must match exactly;
+# similar spans (even identical rounded seconds) never substitute for provenance.
 vm_read() {
   local -a f=()
   { read -ra f <"$VM_FILE"; } 2>/dev/null
-  if [ "${#f[@]}" != 12 ] || [ "${f[0]}" != "$1" ]; then
+  if [ "${#f[@]}" != 14 ] || [ "${f[0]}" != "$1" ]; then
     WIN_VM_SOURCE="unknown: no vmmemWSL reading taken with this Windows reading"
   elif [ "${f[1]}" = - ]; then
     WIN_VM_SOURCE="unknown: no single vmmemWSL process in the Windows reading"
@@ -493,8 +499,8 @@ vm_read() {
     WIN_VM_SOURCE="unknown: vmmemWSL pid ${f[1]} has no fault rate yet (needs two of its readings 60-${R_win_stale_max_s}s apart)"
   elif [ -z "$WIN_RATE_SPAN_S" ]; then
     WIN_VM_SOURCE="unknown: vmmemWSL pid ${f[1]} has a rate but the Windows pages input has none to pair it with"
-  elif [ $((f[11] - WIN_RATE_SPAN_S)) -gt "$VM_SPAN_SKEW_S" ] || [ $((WIN_RATE_SPAN_S - f[11])) -gt "$VM_SPAN_SKEW_S" ]; then
-    WIN_VM_SOURCE="unknown: vmmemWSL pid ${f[1]} rate spans ${f[11]}s but the Windows pages input rate spans ${WIN_RATE_SPAN_S}s (baselines from different readings)"
+  elif [ "${f[12]}" != "$2" ] || ! is_uint "${f[13]}" || [ "${f[13]}" != "$3" ]; then
+    WIN_VM_SOURCE="unknown: vmmemWSL pid ${f[1]} current or baseline Windows observation differs (VM span ${f[11]}s, Windows span ${WIN_RATE_SPAN_S}s)"
   else
     WIN_VM_FAULTS_PS=${f[9]} WIN_VM_IN_PS=${f[10]} WIN_VM_SPAN_S=${f[11]} WIN_VM_SOURCE="vmmemWSL pid ${f[1]}"
     WIN_VM_PAGES_IN_MAX_PS=${f[10]}
@@ -811,25 +817,39 @@ wake_decide() {
   fi
 }
 
-# vm_unknown_track <epoch>: keeps the machine-wide vm-unknown record (`<epoch the VM's
-# paging share became unknown>`) while every reading leaves it unknown, logging one event
-# when that starts and one when it is measured again, and sets VM_UNKNOWN_SINCE (empty
-# while the share is measured). Without a Windows reading it holds the record as it was.
-# A record it cannot write reads as unknown since 0, so the notice is not held back.
+# vm_unknown_track <epoch>: under the machine lock, retain onset plus a unique
+# occurrence token while unknown. Recovery removes it; another onset gets a new
+# token even in the same second. An old epoch-only record retains its grace age.
+# No Windows reading holds the record untouched. Failed publication is its own
+# stable storage-unavailable notice, immediate but deduplicated per primary home.
 vm_unknown_track() {
-  local t=$1 since=
-  VM_UNKNOWN_SINCE=
+  local t=$1 since='' occurrence='' extra='' tmp=''
+  VM_UNKNOWN_SINCE='' VM_UNKNOWN_ID=''
   case "$WIN_VM_SOURCE" in
   unknown:*)
-    { read -r since <"$VM_UNKNOWN_FILE"; } 2>/dev/null
-    if ! is_uint "$since" || [ "$since" -gt "$t" ]; then
-      since=$t
-      printf '%s\n' "$t" >"$VM_UNKNOWN_FILE" 2>/dev/null || since=0
-      event "WSL VM paging share ${WIN_VM_SOURCE}; system-wide Windows paging grades as WSL VM paging until it is measured again"
+    if [ -f "$VM_UNKNOWN_FILE" ] && [ -r "$VM_UNKNOWN_FILE" ]; then
+      { read -r since occurrence extra <"$VM_UNKNOWN_FILE"; } 2>/dev/null
     fi
-    VM_UNKNOWN_SINCE=$since
+    if ! is_uint "$since" || [ "$since" -gt "$t" ]; then since=$t occurrence=; fi
+    case "$occurrence" in v1-????????????) ;; *) occurrence= ;; esac
+    [ -z "$extra" ] || occurrence=
+    if [ -z "$occurrence" ]; then
+      # mktemp's unique basename is the occurrence identity, not the delivery time.
+      # Publish it with the onset in one rename, inside the existing machine lock.
+      if tmp=$(umask 077; mktemp "$VM_UNKNOWN_FILE.XXXXXXXXXXXX" 2>/dev/null); then
+        occurrence="v1-${tmp##*.}"
+        if ! { [ ! -d "$VM_UNKNOWN_FILE" ] && printf '%s %s\n' "$since" "$occurrence" >"$tmp" && mv -f "$tmp" "$VM_UNKNOWN_FILE"; }; then
+          rm -f "$tmp"
+          since=0 occurrence=storage-unavailable
+        fi
+      else
+        since=0 occurrence=storage-unavailable
+      fi
+      [ "$occurrence" = storage-unavailable ] || event "WSL VM paging share ${WIN_VM_SOURCE}; system-wide Windows paging grades as WSL VM paging until it is measured again"
+    fi
+    VM_UNKNOWN_SINCE=$since VM_UNKNOWN_ID=$occurrence
     ;;
-  '') VM_UNKNOWN_SINCE=$({ read -r since <"$VM_UNKNOWN_FILE"; } 2>/dev/null && is_uint "$since" && printf '%s' "$since") ;;
+  '') ;;
   *)
     if [ -e "$VM_UNKNOWN_FILE" ]; then
       rm -f "$VM_UNKNOWN_FILE"
@@ -842,18 +862,33 @@ vm_unknown_track() {
 # vm_notice_decide <epoch>: sets vm_wake to the line main gets now about the VM's paging
 # share, or empty. Once per occurrence: when the share has been unknown for
 # win_stale_max_s (a healthy VM has its rate well within that, so a restart or a first
-# reading never alarms) it notifies and keeps state/.mem-guard-vm-notice, and when the
-# share is measured again it removes that record with one `measured again` line. Only a
+# reading normally does not alarm) it notifies and records the machine occurrence token in
+# state/.mem-guard-vm-notice. A different token cannot suppress a new occurrence,
+# even when this home missed the recovery. A measured share removes that record
+# with one `measured again` line. Publication failure uses a stable per-home
+# storage-unavailable token until storage or telemetry recovers. Only a
 # Windows reading that itself leaves the share unknown notifies: without a Windows reading
 # the degraded sample is its own report, and the occurrence is held, neither told nor closed.
 vm_notice_decide() {
-  local t=$1 notice="$STATE/.mem-guard-vm-notice"
+  local t=$1 notice="$STATE/.mem-guard-vm-notice" delivered=
   vm_wake=
   [ -n "$WIN_VM_SOURCE" ] || return 0
+  if [ -f "$notice" ] && [ -r "$notice" ]; then
+    { read -r delivered <"$notice"; } 2>/dev/null
+  fi
   if [ -n "$VM_UNKNOWN_SINCE" ]; then
-    if [ ! -e "$notice" ] && [ $((t - VM_UNKNOWN_SINCE)) -ge "$R_win_stale_max_s" ]; then
-      printf '%s\n' "$t" >"$notice" 2>/dev/null
-      vm_wake="memory guard: the WSL VM's paging share has been unknown for $((t - VM_UNKNOWN_SINCE))s ($WIN_VM_SOURCE), so system-wide Windows paging grades park and above as WSL VM paging until it is measured again (bin/fm-mem-guard.sh status)"
+    if [ "$delivered" != "$VM_UNKNOWN_ID" ]; then
+      if [ "$VM_UNKNOWN_ID" = storage-unavailable ]; then
+        vm_wake="memory guard: cannot publish the VM paging occurrence in $VM_UNKNOWN_FILE ($WIN_VM_SOURCE); system-wide Windows paging grades park and above as WSL VM paging; restore writable occurrence storage (bin/fm-mem-guard.sh status)"
+      elif [ "$delivered" = storage-unavailable ]; then
+        vm_wake="memory guard: VM paging occurrence storage is available again; the share remains $WIN_VM_SOURCE, so system-wide Windows paging still grades park and above as WSL VM paging (bin/fm-mem-guard.sh status)"
+      elif [ $((t - VM_UNKNOWN_SINCE)) -ge "$R_win_stale_max_s" ]; then
+        vm_wake="memory guard: the WSL VM's paging share has been unknown for $((t - VM_UNKNOWN_SINCE))s ($WIN_VM_SOURCE), so system-wide Windows paging grades park and above as WSL VM paging until it is measured again (bin/fm-mem-guard.sh status)"
+      fi
+      if [ -n "$vm_wake" ]; then
+        printf '%s\n' "$VM_UNKNOWN_ID" >"$notice" 2>/dev/null
+        if [ "$VM_UNKNOWN_ID" = storage-unavailable ] || [ "$delivered" = storage-unavailable ]; then event "$vm_wake"; fi
+      fi
     fi
   elif [ -e "$notice" ] && [ -n "$WIN_VM_FAULTS_PS" ]; then
     rm -f "$notice"

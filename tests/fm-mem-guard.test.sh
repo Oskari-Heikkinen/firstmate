@@ -23,7 +23,7 @@ write_proc() {
   printf 'some avg10=1.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=%s avg60=0.00 avg300=0.00 total=0\n' "$2" > "$C/proc/pressure/memory"
 }
 
-# fake_ps <available-mib> <pages-in/s> [delay-seconds] [non-paged-pool-mib] [vm-faults/s] [vm-pid]:
+# fake_ps <available-mib> <pages-in/s> [delay-seconds] [non-paged-pool-mib] [vm-faults/s] [vm-pid] [vm-clock-offset-ms]:
 # a powershell.exe stub that counts its calls and prints raw counters on
 # FM_MEM_GUARD_NOW's clock: a cumulative page-in count that grows at the given rate
 # since the previous call and starts just below the 32-bit wrap, a 2 pages/s page-out
@@ -45,7 +45,7 @@ case "${5:-$2}" in
   -) w='- - - -' ;;
   legacy) w= ;;
   bad) w="${6:-4242} 12x 1 10000000" ;;
-  *) w="${6:-4242} \$vm \$(( now * 10000000 )) 10000000" ;;
+  *) w="${6:-4242} \$vm \$(( now * 10000000 + ${7:-0} * 10000 )) 10000000" ;;
 esac
 printf '32817692 %s %s %s %s %s 10000000 %s %s\r\n' "\$(( $1 * 1024 ))" "$1" "\$total" "\$(( now * 2 % 4294967296 ))" "\$(( now * 10000000 ))" "\$(( ${4:-600} * 1048576 ))" "\$w"
 SH
@@ -360,11 +360,239 @@ test_vm_and_system_rates_pair_one_interval() {
   cp "$C/vm-before" "$C/guard/vm"
   fake_ps 12000 1000 0 600 1000
   out=$(FM_MEM_GUARD_NOW=1000600 guard tick)
-  assert_contains "$out" "the VM's share is unknown: vmmemWSL pid 4242 rate spans 600s but the Windows pages input rate spans 100s (baselines from different readings) (critical)" "rates over different intervals leave the VM's share unknown"
+  assert_contains "$out" "the VM's share is unknown: vmmemWSL pid 4242 has no fault rate yet (needs two of its readings 60-600s apart) (critical)" "rates over different intervals leave the VM's share unknown"
   assert_contains "$out" "level=critical" "the recent system-wide burst grades the full ladder"
   out=$(FM_MEM_GUARD_NOW=1000900 guard tick)
   assert_contains "$out" "WSL VM paging upper bound 1000/s (the lower of vmmemWSL faults 1000/s and Windows pages input 1000/s over the same 300s) (critical)" "readings taken together pair again"
   pass "the VM paging bound combines rates only over one shared interval"
+}
+
+# R2: near-threshold histories that the old five-second duration tolerance accepted.
+# Every other signal stays healthy, and admission (not only prose) is asserted.
+test_vm_baseline_identity_controls_admission() {
+  local out rc lag mode
+  for lag in 1 5 540; do
+    new_case "identity-$lag"
+    printf '{}\n' > "$C/rules.json"
+    fake_ps 12000 0 0 600 0
+    guard sample >/dev/null
+    cp "$C/guard/vm" "$C/vm-before"
+    FM_MEM_GUARD_NOW=$((1000000 + lag)) guard sample --fresh >/dev/null
+    # An older writer (or a failed VM publication) advanced only Windows.
+    cp "$C/vm-before" "$C/guard/vm"
+    fake_ps 12000 500 0 600 500
+    out=$(FM_MEM_GUARD_NOW=$((1000060 + lag)) guard tick)
+    assert_contains "$out" "level=refuse" "a diluted VM baseline cannot admit a 500/s recent burst (lag $lag)"
+    assert_contains "$out" "has no fault rate yet" "a missing selected baseline leaves the VM rate unknown"
+    out=$(FM_MEM_GUARD_NOW=$((1000060 + lag)) guard admit); rc=$?
+    expect_code 1 "$rc" "mixed baseline admission with lag $lag"$'\n'"$out"
+  done
+
+  # Missing, legacy and failed publication siblings must be conservative too.
+  for mode in missing legacy failed; do
+    new_case "identity-$mode"
+    printf '{}\n' > "$C/rules.json"
+    fake_ps 12000 0 0 600 0
+    guard sample >/dev/null
+    case "$mode" in
+      missing) rm "$C/guard/vm" ;;
+      legacy) cut -d' ' -f1-12 "$C/guard/vm" > "$C/legacy"; cp "$C/legacy" "$C/guard/vm" ;;
+      failed)
+        # An unwritable temporary destination fails the real VM publisher, not
+        # Windows publication. A PATH stub affects mv only for that destination.
+        mkdir "$C/tools"
+        # shellcheck disable=SC2016 # evaluated by the fixture's mv stub
+        printf '#!/usr/bin/env bash\ncase "${!#}" in */vm) exit 1 ;; esac\nexec %q "$@"\n' "$(command -v mv)" > "$C/tools/mv"
+        chmod +x "$C/tools/mv"
+        ;;
+    esac
+    fake_ps 12000 500 0 600 500
+    out=$(PATH="$C/tools:$PATH" FM_MEM_GUARD_NOW=1000060 guard tick)
+    assert_contains "$out" "level=refuse" "$mode VM provenance never caps a recent 500/s burst"
+    out=$(FM_MEM_GUARD_NOW=1000060 guard admit); rc=$?
+    expect_code 1 "$rc" "$mode VM provenance admission"$'\n'"$out"
+  done
+
+  new_case identity-boundary
+  printf '{"memory_guard":{"clear_samples":1}}\n' > "$C/rules.json"
+  fake_ps 12000 0 0 600 0
+  guard sample >/dev/null
+  FM_MEM_GUARD_NOW=1000005 guard sample --fresh >/dev/null
+  # At 65s Windows selects the 5s reading. The VM's 59.9s since that
+  # reading must not independently select the 0s baseline.
+  fake_ps 12000 500 0 600 500 4242 -100
+  out=$(FM_MEM_GUARD_NOW=1000065 guard tick)
+  assert_contains "$out" "level=refuse" "VM paging at the refuse line still refuses across provider skew"
+  out=$(FM_MEM_GUARD_NOW=1000065 guard admit); rc=$?
+  expect_code 1 "$rc" "60s boundary admission"$'\n'"$out"
+  fake_ps 12000 500 0 600 10 4242 -100
+  out=$(FM_MEM_GUARD_NOW=1000365 guard status)
+  assert_contains "$out" "graded=warn" "genuine shared observations recover despite different provider timestamps"
+  assert_contains "$out" "win_vm_source=vmmemWSL pid 4242" "the next common baseline restores VM provenance"
+
+  # A cached row's claimed baseline must match exactly, even if its rates and
+  # rounded duration look plausible. Other guards pass in this fixture.
+  cp "$C/guard/vm" "$C/vm-before"
+  awk '{$14 = sprintf("%.0f", $14 + 1); print}' "$C/vm-before" > "$C/guard/vm"
+  out=$(FM_MEM_GUARD_NOW=1000365 guard tick)
+  assert_contains "$out" "current or baseline Windows observation differs" "the reader rejects a different baseline even when both spans are 300s"
+  out=$(FM_MEM_GUARD_NOW=1000365 guard admit); rc=$?
+  expect_code 1 "$rc" "different baseline observation admission"$'\n'"$out"
+  cp "$C/vm-before" "$C/guard/vm"
+
+  # A same-second replacement must match the exact current observation too.
+  cp "$C/guard/windows" "$C/windows-before"
+  awk '{$7 = sprintf("%.0f", $7 + 1); print}' "$C/windows-before" > "$C/guard/windows"
+  out=$(FM_MEM_GUARD_NOW=1000365 guard tick)
+  assert_contains "$out" "level=refuse" "equal wall epochs do not prove the current perf observation matches"
+  out=$(FM_MEM_GUARD_NOW=1000365 guard admit); rc=$?
+  expect_code 1 "$rc" "same epoch, different current observation admission"$'\n'"$out"
+  pass "VM bound admission requires exact current and baseline observation identity across mixed writers and publication gaps"
+}
+
+test_vm_baseline_selection_uses_windows_clock() {
+  local out rc t offset
+  new_case identity-selection
+  printf '{}\n' > "$C/rules.json"
+  fake_ps 12000 3000 0 600 10
+  guard sample >/dev/null
+  FM_MEM_GUARD_NOW=1000005 guard sample --fresh >/dev/null
+  # Both rates must use Windows' 60s span, even though the VM provider's
+  # timestamp interval straddles that boundary on each successive sample.
+  offset=-100
+  for t in 1000065 1000125 1000185 1000245; do
+    fake_ps 12000 3000 0 600 10 4242 "$offset"
+    out=$(FM_MEM_GUARD_NOW=$t guard tick)
+    assert_contains "$out" "level=warn" "provider skew must not turn native paging into a refusal at $t"
+    assert_contains "$out" "WSL VM paging upper bound 10/s" "Windows selects one common observation and rate clock"
+    out=$(FM_MEM_GUARD_NOW=$t guard admit); rc=$?
+    expect_code 0 "$rc" "provider skew native paging admission"$'\n'"$out"
+    offset=$((-offset))
+  done
+  pass "one Windows baseline selection and rate clock keeps native paging warn-only across the 60s provider-skew boundary"
+}
+
+# Install synthetic current cache rows for multi-home occurrence tests. No sampling
+# query is needed; both valid rates share exact current and baseline observations.
+vm_notice_sample() {
+  local t=$1 kind=$2 perf=$(( $1 * 10000000 )) base=$(( ($1 - 300) * 10000000 ))
+  printf '%s 32817692 12288000 12000 15000 0 %s 10000000 629145600 0 0 %s 50 0 300\n' "$t" "$perf" "$base" > "$C/guard/windows"
+  if [ "$kind" = known ]; then
+    printf '%s 4242 15000 15000 %s 10000000 0 0 %s 50 50 300 %s %s\n' "$t" "$perf" "$base" "$perf" "$base" > "$C/guard/vm"
+  else
+    printf '%s - - - - - - - - - - - %s -\n' "$t" "$perf" > "$C/guard/vm"
+  fi
+}
+
+test_vm_notice_tracks_cross_home_occurrences() {
+  local out home token
+  new_case vmnotice-homes
+  printf '{}\n' > "$C/rules.json"
+  mkdir -p "$C/guard" "$C/second/state" "$C/other-primary/state"
+  touch "$C/second/.fm-secondmate-home"
+  vm_notice_sample 1000000 unknown
+  out=$(guard tick --check)
+  assert_equals "" "$out" "main starts the first occurrence inside grace"
+  vm_notice_sample 1000600 unknown
+  for home in "$C/home" "$C/other-primary"; do
+    out=$(FM_HOME="$home" FM_MEM_GUARD_NOW=1000600 guard tick --check)
+    assert_contains "$out" "has been unknown for 600s" "each primary independently receives the first occurrence"
+    out=$(FM_HOME="$home" FM_MEM_GUARD_NOW=1000600 guard tick --check)
+    assert_equals "" "$out" "each primary deduplicates its own first occurrence"
+  done
+  token=$(cat "$C/home/state/.mem-guard-vm-notice")
+  vm_notice_sample 1000601 known
+  out=$(FM_HOME="$C/second" FM_MEM_GUARD_NOW=1000601 guard tick --check)
+  assert_equals "" "$out" "secondmate alone sees recovery without waking"
+  vm_notice_sample 1000602 unknown
+  out=$(FM_HOME="$C/second" FM_MEM_GUARD_NOW=1000602 guard tick --check)
+  assert_equals "" "$out" "secondmate starts a distinct occurrence without waking"
+  # Main misses the recovery and remains inactive throughout the new grace.
+  vm_notice_sample 1001202 unknown
+  for home in "$C/home" "$C/other-primary"; do
+    out=$(FM_HOME="$home" FM_MEM_GUARD_NOW=1001202 guard tick --check)
+    assert_contains "$out" "has been unknown for 600s" "a primary's old acknowledgement cannot suppress the new occurrence"
+    out=$(FM_HOME="$home" FM_MEM_GUARD_NOW=1001202 guard tick --check)
+    assert_equals "" "$out" "a new occurrence is still delivered once per primary"
+  done
+  assert_not_contains "$(cat "$C/home/state/.mem-guard-vm-notice")" "$token" "delivery binds a new machine occurrence"
+
+  # Complete Windows outage is neither recovery nor recurrence.
+  out=$(FM_MEM_GUARD_POWERSHELL="$C/absent" FM_MEM_GUARD_NOW=1001903 guard tick --check)
+  assert_equals "" "$out" "Windows-unavailable gap neither repeats nor clears VM delivery"
+  vm_notice_sample 1002000 unknown
+  out=$(FM_MEM_GUARD_NOW=1002000 guard tick --check)
+  assert_equals "" "$out" "the same occurrence survives a Windows gap and process restarts"
+  vm_notice_sample 1002001 known
+  out=$(FM_MEM_GUARD_NOW=1002001 guard tick --check)
+  assert_contains "$out" "share is measured again" "main can close its delivered occurrence on a known reading"
+  out=$(FM_MEM_GUARD_NOW=1002001 guard tick --check)
+  assert_equals "" "$out" "recovery is told only once"
+
+  # An onset epoch alone is not unique: recovery and recurrence may share a second.
+  printf '{"memory_guard":{"win_stale_max_s":0}}\n' > "$C/rules.json"
+  vm_notice_sample 1002002 unknown
+  out=$(FM_MEM_GUARD_NOW=1002002 guard tick --check)
+  assert_contains "$out" "has been unknown for 0s" "zero configured grace delivers the occurrence"
+  vm_notice_sample 1002002 known
+  FM_HOME="$C/second" FM_MEM_GUARD_NOW=1002002 guard tick --check >/dev/null
+  vm_notice_sample 1002002 unknown
+  FM_HOME="$C/second" FM_MEM_GUARD_NOW=1002002 guard tick --check >/dev/null
+  out=$(FM_MEM_GUARD_NOW=1002002 guard tick --check)
+  assert_contains "$out" "has been unknown for 0s" "same-second recurrence has its own identity"
+  out=$(FM_MEM_GUARD_NOW=1002002 guard tick --check)
+  assert_equals "" "$out" "same-second recurrence deduplicates after delivery"
+
+  # Older writers left onset-only and delivery-time-only records. They cannot be
+  # interpreted as an acknowledgement of the new identity or reset the grace.
+  printf '{}\n' > "$C/rules.json"
+  printf '1002000\n' > "$C/guard/vm-unknown"
+  printf '1002600\n' > "$C/home/state/.mem-guard-vm-notice"
+  vm_notice_sample 1002600 unknown
+  out=$(FM_MEM_GUARD_NOW=1002600 guard tick --check)
+  assert_contains "$out" "has been unknown for 600s" "legacy onset is preserved but legacy delivery cannot suppress a token"
+  out=$(FM_MEM_GUARD_NOW=1002600 guard tick --check)
+  assert_equals "" "$out" "migrated occurrence deduplicates after delivery"
+  pass "machine occurrence identity survives missed cross-home recovery, gaps, restart, legacy records and same-second recurrence"
+}
+
+test_vm_occurrence_storage_failure_notifies_once() {
+  local out tool t
+  for tool in mktemp mv; do
+    new_case "vmnotice-storage-$tool"
+    printf '{}\n' > "$C/rules.json"
+    mkdir -p "$C/guard" "$C/tools"
+    # Fail only publication of the machine occurrence; home delivery and all
+    # other guard writes remain writable. No live paths are touched.
+    # shellcheck disable=SC2016 # evaluated by the fixture tool
+    printf '#!/usr/bin/env bash\ncase "${!#}" in */vm-unknown|*/vm-unknown.*) exit 1 ;; esac\nexec %q "$@"\n' "$(command -v "$tool")" > "$C/tools/$tool"
+    chmod +x "$C/tools/$tool"
+    vm_notice_sample 1000000 unknown
+    out=$(PATH="$C/tools:$PATH" guard tick --check)
+    assert_contains "$out" "cannot publish the VM paging occurrence" "$tool failure alarms immediately"
+    assert_contains "$out" "restore writable occurrence storage" "the alarm names the recovery action"
+    for t in 1000001 1000600; do
+      vm_notice_sample "$t" unknown
+      out=$(PATH="$C/tools:$PATH" FM_MEM_GUARD_NOW=$t guard tick --check)
+      assert_equals "" "$out" "persistent $tool failure does not notify every tick"
+    done
+    assert_equals 1 "$(grep -c 'cannot publish the VM paging occurrence' "$C/guard/events.log")" "publication failure logs once per delivered episode"
+    vm_notice_sample 1000601 unknown
+    out=$(FM_MEM_GUARD_NOW=1000601 guard tick --check)
+    assert_contains "$out" "occurrence storage is available again" "$tool recovery is reported even while VM telemetry remains unknown"
+    vm_notice_sample 1001201 unknown
+    out=$(FM_MEM_GUARD_NOW=1001201 guard tick --check)
+    assert_equals "" "$out" "storage recovery binds delivery to the now-persisted occurrence"
+    vm_notice_sample 1001202 known
+    out=$(FM_MEM_GUARD_NOW=1001202 guard tick --check)
+    assert_contains "$out" "share is measured again" "VM recovery closes the notice"
+    vm_notice_sample 1001203 unknown
+    out=$(PATH="$C/tools:$PATH" FM_MEM_GUARD_NOW=1001203 guard tick --check)
+    assert_contains "$out" "cannot publish the VM paging occurrence" "a new storage failure after recovery alarms again"
+    out=$(PATH="$C/tools:$PATH" FM_MEM_GUARD_NOW=1001203 guard tick --check)
+    assert_equals "" "$out" "the new storage failure still deduplicates"
+  done
+  pass "mktemp and rename failures have a stable per-home storage episode with one alarm and explicit recovery"
 }
 
 # Unknown VM telemetry is its own occurrence: one notice once it has held for
@@ -680,6 +908,10 @@ test_vm_paging_parks_and_refuses
 test_unknown_vm_share_grades_system_paging_on_the_full_ladder
 test_native_paging_with_vm_soft_churn_grades_on_the_bound
 test_vm_and_system_rates_pair_one_interval
+test_vm_baseline_identity_controls_admission
+test_vm_baseline_selection_uses_windows_clock
+test_vm_notice_tracks_cross_home_occurrences
+test_vm_occurrence_storage_failure_notifies_once
 test_unknown_vm_share_notifies_once_per_occurrence
 test_pool_notice_holds_through_an_unavailable_reading
 test_critical_wakes_only_main_once_per_window
