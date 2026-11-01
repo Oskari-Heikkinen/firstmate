@@ -837,8 +837,6 @@ class Loop:
             unanalysed = [p for p in pkgs if not p["analysed"]]
             if unanalysed:
                 return put("registered", max(p["registered"] for p in pkgs), "waiting for analysis of %s" % unanalysed[0]["batch"])
-            if not pkgs:
-                return put("collected", when, "collected record names no batches; analysis unknown")
             return put(None, max(p["analysed"] for p in pkgs), "analysed")
         if not s["handoff_queue"].ok and not pkgs:
             return put("unknown", r["submitted"], "hand-off queue %s" % s["handoff_queue"].state)
