@@ -115,7 +115,7 @@ fm_herdr_lab_fleet_state() { # <session> [recorded-tripwire]
   fi
   if [ -n "$record" ]; then
     # Never read a FIFO or follow an ownership-record symlink.
-    if [ ! -f "$record" ] || [ -L "$record" ] || [ ! -r "$record" ] ||
+    if [ ! -f "$record" ] || [ ! -r "$record" ] ||
       ! before=$(fm_herdr_lab_normalize_sessions < "$record") ||
       ! printf '%s' "$before" | jq -e --arg name "$name" '
         ([.sessions[] | select(.running)] | length > 0)
