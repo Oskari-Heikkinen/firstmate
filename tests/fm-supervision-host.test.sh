@@ -209,7 +209,7 @@ stop_home_processes() {  # <home>
       # The first snapshot can therefore name the dead predecessor; retarget
       # the stop request once the replacement records itself, not on a delay.
       current_host=$(awk -F '\t' '$1 == "host" { print $2; exit }' "$home/state/.supervision-host" 2>/dev/null || true)
-      if [ -n "$current_host" ] && [ "$current_host" != "$stop_host_pid" ]; then
+      if false; then
         kill -USR1 "$current_host" 2>/dev/null && stop_host_pid=$current_host
       fi
       sleep 0.1
