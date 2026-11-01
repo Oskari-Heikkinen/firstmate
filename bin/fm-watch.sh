@@ -91,10 +91,9 @@
 #                          tool process.
 #   stale: <window> (unread firstmate instruction: ...)
 #   stale: <window> (steering-inbox ladder bookkeeping unwritable: ...)
+#   stale: <window> (steering-inbox busy bookkeeping unwritable: ...)
 #                          steering-inbox recovery; bin/fm-task-inbox-lib.sh owns
-#                          delivery-attempt, busy-deferral (stuck-busy only
-#                          after a turn boundary and an age floor), and
-#                          unavailable-endpoint policy
+#                          delivery-attempt, busy-deferral, and unavailable-endpoint policy
 #   check: <script>: <out> authenticated check output, always actionable
 #   check: process-event result captured: <keys>
 #                          a durably captured process-to-event result is queued
@@ -701,7 +700,7 @@ inbox_steer_escalate_unavailable() {  # <window> <task> <record>
 # Runs for secondmates too: their pane-staleness exemption is about quiet panes
 # being healthy, while an unacknowledged instruction can still be a stuck steer.
 inbox_steer_check() {  # <window> <task>
-  local w=$1 task=$2 action verb rec count tail40 reason='' ring_rc backend agent_state boundary
+  local w=$1 task=$2 action verb rec count tail40 reason='' ring_rc backend agent_state
   fm_task_inbox_due_action_to action "$STATE" "$task" || return 0
   verb=${action%% *}
   [ "$verb" != quiet ] || return 0
@@ -737,8 +736,17 @@ inbox_steer_check() {  # <window> <task>
   tail40=$WATCHER_CAPTURE
   if window_is_busy "$w" "$tail40"; then
     [ "$verb" != retry ] || return 0
-    fm_task_inbox_busy_stuck_to boundary "$STATE" "$task" "$rec" || return 0
-    reason="stale: $w (unread firstmate instruction: stuck-busy across a turn boundary; $rec stays unhandled at least ${FM_TASK_INBOX_BUSY_MIN_AGE}s after it arrived although $boundary changed since, and no doorbell was typed into the busy pane; inspect the worker)"
+    if ! count=$(fm_task_inbox_record_busy "$STATE" "$task" "$rec"); then
+      [ -f "$rec" ] || return 0
+      reason="stale: $w (steering-inbox busy bookkeeping unwritable: ${rec%/*}/.busy-state cannot be written while $rec stays unhandled; inspect the inbox directory)"
+    elif [ "$count" -ge "$(fm_task_inbox_busy_max)" ]; then
+      reason="stale: $w (unread firstmate instruction: stuck-busy after $count consecutive busy-deferred due doorbells; $rec stays unhandled and no doorbell was typed; inspect the worker)"
+    else
+      return 0
+    fi
+    verb=escalate
+  elif [ "$verb" != retry ] && ! fm_task_inbox_clear_busy "$STATE" "$task"; then
+    reason="stale: $w (steering-inbox busy bookkeeping unwritable: ${rec%/*}/.busy-state cannot be reset after a non-busy check; inspect the inbox directory)"
     verb=escalate
   fi
   case "$verb" in
@@ -2754,13 +2762,8 @@ age_of_to() {
 # both the one compared and the one printed.
 # The caller records reported state only after surfacing or intentional absorption,
 # and commits a status classification position only after a successful span read.
-# With --owed it prints nothing and returns 0 at the first changed file or the
-# first file whose signature cannot be read, and 1 when every file is already
-# reported: resurface_after_downtime's "is anything unshown" question, where an
-# unreadable source counts as owed.
-scan_signals() {  # [--owed]
-  local f sig sf exclude marker owed=0
-  [ "${1-}" != --owed ] || owed=1
+scan_signals() {
+  local f sig sf exclude marker
   # A remote mate's own parent channel is not a self-home task status log; the
   # home-shape-aware exclusion and its precedent live in
   # status_scan_parent_channel_exclude (fm-classify-lib.sh).
@@ -2770,10 +2773,8 @@ scan_signals() {  # [--owed]
     if [ ! -e "$f" ]; then
       case "$f" in *.status) [ -L "$f" ] || continue ;; *) continue ;; esac
     fi
-    if ! fm_wake_signal_sig_to sig "$f" || [ -z "$sig" ]; then
-      [ "$owed" -eq 0 ] || return 0
-      continue
-    fi
+    fm_wake_signal_sig_to sig "$f" || continue
+    [ -n "$sig" ] || continue
     fm_wake_signal_seen_path_to sf "$STATE" "$f"
     case "$f" in
       *.status) fm_wake_signal_seen_current "$STATE" "$f" "$sig" && continue ;;
@@ -2782,10 +2783,9 @@ scan_signals() {  # [--owed]
         [ "$sig" = "$marker" ] && continue
         ;;
     esac
-    [ "$owed" -eq 0 ] || return 0
     printf '%s\t%s\t%s\n' "$sf" "$sig" "$f"
   done
-  [ "$owed" -eq 0 ]
+  return 0
 }
 
 # Deliver a durably queued process-event result to firstmate. Publication is
@@ -3316,7 +3316,6 @@ if [ -n "$EVICTED_PID" ]; then
   echo "watcher: replaced stalled pid $EVICTED_PID (beacon ${EVICTED_BEAT_AGE}s past hard bound ${WATCHER_STALL_BOUND}s)"
 fi
 WATCHER_RECOVERY_PENDING=0
-WATCHER_RECOVERY_MALFORMED=0
 if [ -n "${FM_LOCK_RECOVERED_PID:-}" ]; then
   WATCHER_RECOVERY_PENDING=1
 fi
@@ -3335,7 +3334,6 @@ if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ]; then
   WATCHER_RECOVERY_PENDING=0
 elif [ "$FM_RECOVERY_MARKER_ACTION" = recover ]; then
   WATCHER_RECOVERY_PENDING=1
-  WATCHER_RECOVERY_MALFORMED=$FM_RECOVERY_MARKER_MALFORMED
 fi
 # The announced episode reopens only over a non-empty queue, so a stopped
 # watcher's held rearm-resurface is inherited from its durable record.
@@ -3670,76 +3668,6 @@ rerecord_device_shifted_pr_poll() {  # <id>
   return 0
 }
 
-# 0 when a recovery has something to re-announce (a quarantined malformed
-# marker always has, see resurface_after_downtime): the durable wake queue
-# (which every queued status, stale and check row, process-event results
-# included, lands in) holds a row, a status or turn-ended source holds a
-# change the supervisor has not been shown (scan_signals --owed), or a status
-# log holds an open decision, which the recovery drain folds again however long
-# ago it was shown. A queue that exists but is not a readable regular file, and
-# a source or status log that cannot be read, count as owed.
-resurface_input_owed() {
-  if [ -e "$FM_WAKE_QUEUE" ] || [ -L "$FM_WAKE_QUEUE" ]; then
-    [ -f "$FM_WAKE_QUEUE" ] && [ -r "$FM_WAKE_QUEUE" ] && [ ! -s "$FM_WAKE_QUEUE" ] || return 0
-  fi
-  scan_signals --owed && return 0
-  resurface_decision_owed
-}
-
-# 0 at the first status log holding an open decision or failing its fold, over
-# the logs the drain's OPEN DECISIONS fold reads. It folds in the fleet
-# snapshot's exact mode, whose own cursor makes a repeat cheap, and never moves
-# the drain's cursor, which in a home without a presentation manifest is also
-# where UNREAD STATUS resumes.
-resurface_decision_owed() {
-  local f exclude size open
-  exclude=$(status_scan_parent_channel_exclude "$STATE")
-  for f in "$STATE"/*.status; do
-    [ -e "$f" ] || continue
-    [ "$f" != "$exclude" ] || continue
-    size=$(_fm_status_file_size "$f") || return 0
-    size=${size//[[:space:]]/}
-    open=$(status_open_decisions_incremental "$f" "$size" exact) || return 0
-    [ -z "$open" ] || return 0
-  done
-  return 1
-}
-
-# A recovery with nothing unshown wakes nobody: retire the announced downtime
-# episode with the generation-bound acknowledgement the drain would give an
-# empty queue, so it is not left open as a gap, and log one line. A durable
-# append racing this publishes a fresh pending generation, which the
-# acknowledgement then refuses (3), so that work still resurfaces on the next
-# cycle; a handling episode belongs to the turn handling it and is left alone.
-resurface_retire_quiet() {
-  local token generation rc=0 what
-  rm -f "$WAKE_BATCH_RESURFACE"
-  WATCHER_RESURFACE_HELD=0
-  WATCHER_RECOVERY_PENDING=0
-  WATCHER_RECOVERY_MALFORMED=0
-  if ! fm_recovery_marker_snapshot "$WATCHER_DOWNTIME_MARKER"; then
-    echo "watcher: recovery state could not be consumed safely" >&2
-    exit 1
-  fi
-  token=$FM_RECOVERY_MARKER_TOKEN
-  case "$token" in
-    announced:downtime:*)
-      generation=${token##*:}
-      fm_recovery_marker_ack "$WATCHER_DOWNTIME_MARKER" "$generation" || rc=$?
-      case "$rc" in
-        0) what="retired recovery episode $generation" ;;
-        3) what="left recovery episode for the newer generation a durable append opened" ;;
-        *)
-          echo "watcher: recovery state could not be consumed safely" >&2
-          exit 1
-          ;;
-      esac
-      ;;
-    *) what="left recovery marker '${token:-absent}' to its owner" ;;
-  esac
-  triage_log "rearm-resurface not woken: nothing unshown after watcher downtime (empty wake queue, no unshown status or turn-end change, no open decision); $what"
-}
-
 resurface_after_downtime() {
   # Handling successors already have a predecessor-delivered wake on the way.
   # Re-announcing from this cycle is what turned a lost handshake into an
@@ -3756,11 +3684,6 @@ resurface_after_downtime() {
       exit 1
     fi
     [ "$FM_RECOVERY_MARKER_ACTION" = recover ] || return 0
-    WATCHER_RECOVERY_MALFORMED=$FM_RECOVERY_MARKER_MALFORMED
-  fi
-  if [ "$WATCHER_RECOVERY_MALFORMED" -ne 1 ] && ! resurface_input_owed; then
-    resurface_retire_quiet
-    return 0
   fi
   # The re-announcement joins the wake batch unless a queued row is urgent. A
   # consumed recovery marker is remembered here, since arm_check will not
