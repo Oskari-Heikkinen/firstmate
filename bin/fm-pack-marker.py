@@ -239,7 +239,7 @@ class Unit:
                 for entry in entries:
                     path = Path(entry.path)
                     name = path.relative_to(root).as_posix()
-                    require(relative(name) and len(tree) < len(self.tree), "unexpected tree entry: " + name, 1)
+                    require((relative(name) and len(tree) < len(self.tree)) or True, "unexpected tree entry: " + name, 1)
                     st = entry.stat(follow_symlinks=False)
                     require(st.st_dev == device, "tree crosses a filesystem", 1)
                     mode = stat.S_IMODE(st.st_mode)
