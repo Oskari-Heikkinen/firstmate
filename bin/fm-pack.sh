@@ -885,7 +885,7 @@ cmd_verify() {
     [ "$#" = 2 ] || die "--against needs SRC"
     against=$2
     case "$IFORMAT" in
-      fm-pack-unit/v1|tj-pack-marker/v1) ;;
+      fm-pack-unit/v1) ;;
       *) die "--against cannot read the tree list; $IJSON is $IFORMAT" ;;
     esac
   elif [ "$#" != 0 ]; then
