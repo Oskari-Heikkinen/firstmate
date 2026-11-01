@@ -41,55 +41,6 @@ mkdir -p "$FAKEBIN"
 REAL_MOVER="$ROOT/bin/backends/herdr-workspace-move.py"
 export REAL_HERDR REAL_TREEHOUSE REAL_MOVER TREEHOUSE_LOCK_DIR HERDR_ORIGINAL_PATH HERDR_LAB_HELPER
 
-# CI-only observer for the unresolved lifecycle caller; no backend behavior changes.
-cat > "$FAKEBIN/herdr-observe.py" <<'PY'
-import json
-import os
-from pathlib import Path
-import sys
-import time
-
-log = Path(os.environ['HERDR_CALL_LOG'])
-def text(path):
-    try:
-        return path.read_text().strip()
-    except OSError as exc:
-        return 'unavailable: ' + str(exc)
-
-now = time.time()
-start = text(Path(str(log) + '.order-start'))
-record = {'kind': sys.argv[1], 'wall_time': now,
-          'phase': text(Path(str(log) + '.phase')),
-          'ordering_elapsed': now - float(start) if start.isdigit() else None,
-          'argv': sys.argv[3:], 'status': sys.argv[2]}
-if record['kind'] == 'server':
-    record['fm_env'] = {k: ('<redacted>' if any(s in k for s in ('TOKEN', 'SECRET', 'PASSWORD', 'KEY')) else v)
-                        for k, v in sorted(os.environ.items()) if k.startswith('FM_')}
-    chain = []
-    pid = os.getppid()
-    seen = set()
-    while pid > 0 and pid not in seen and len(chain) < 64:
-        seen.add(pid)
-        proc = Path('/proc') / str(pid)
-        try:
-            fields = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
-            parent = int(fields[1])
-            args = (proc / 'cmdline').read_bytes().split(b'\0')
-            chain.append({'pid': pid, 'ppid': parent,
-                          'args': [a.decode(errors='replace') for a in args if a]})
-        except OSError as exc:
-            chain.append({'pid': pid, 'error': str(exc)})
-            break
-        if str(pid) == os.environ.get('FM_HERDR_DIAG_TEST_PID'):
-            break
-        pid = parent
-    record['ancestors'] = chain
-else:
-    record['stdout'] = sys.stdin.read()
-with Path(str(log) + '.ancestry').open('a') as stream:
-    stream.write(json.dumps(record, ensure_ascii=True) + '\n')
-PY
-
 # Log every production-adapter call, remove its already-validated trailing
 # session flag, and send the operation through the lab helper so that helper
 # remains the sole process which appends the real trailing session flag.
@@ -103,9 +54,6 @@ set -u
 # multi-write observer that reported a forbidden lifecycle call.
 printf -v diagnostic_call '%q ' "$@"
 printf '%s\n' "$diagnostic_call" >> "$HERDR_CALL_LOG.atomic"
-if [ "${1:-}" = server ]; then
-  python3 "$(dirname "$0")/herdr-observe.py" server attempted "$@"
-fi
 {
   first=1
   for arg in "$@"; do
@@ -286,9 +234,6 @@ fi
 if [ "$refusal_probe" -eq 1 ]; then
   refusal_after=$(focus_snapshot || printf ambiguous/ambiguous)
   printf 'seeded-prune-refusal\t%s\t%s\t%s\n' "$refusal_before" "$refusal_after" "${3:-}" >> "$FOCUS_AUDIT_LOG"
-fi
-if [ "${1:-}" = status ] && [ -f "$HERDR_CALL_LOG.phase" ]; then
-  printf '%s' "$out" | python3 "$(dirname "$0")/herdr-observe.py" status "$status" "$@"
 fi
 [ -z "$out" ] || printf '%s\n' "$out"
 exit "$status"
@@ -629,8 +574,6 @@ assert_no_ordering_lifecycle_calls_since() {  # <line-count> <case-name>
     printf '%s\n' "$calls" | grep -E $'^(workspace\t(close|rename)|tab\tclose|session\t(stop|delete)|server)' >&2
     printf 'LAB_DIAG matching single-record argv across this world:\n' >&2
     grep -E '^(workspace (close|rename)|tab close|session (stop|delete)|server)' "$HERDR_CALL_LOG.atomic" >&2 || true
-    printf 'LAB_DIAG server ancestry and status responses:\n' >&2
-    cat "$HERDR_CALL_LOG.ancestry" >&2
     fail "$name introduced a workspace/tab/session lifecycle or label mutation call"
   fi
 }
@@ -669,7 +612,6 @@ world_begin() {  # <world>
   : > "$MOVE_CALL_LOG"
   : > "$FOCUS_AUDIT_LOG"
   export HERDR_CALL_LOG TREEHOUSE_CALL_LOG MOVE_CALL_LOG FOCUS_AUDIT_LOG
-  export FM_HERDR_DIAG_TEST_PID=${BASHPID:-$$}
   export ACTIVE_SEEDED_CONTROL POST_CREATE_ABORT_CONTROL RECOVERY_DELIVERY_ABORT_CONTROL TEARDOWN_ORDER_CONTROL TMP_ROOT
   HERDR_LAB_SESSION=$(PATH="$HERDR_ORIGINAL_PATH" \
     "$HERDR_LAB_HELPER" name "fmhp-$world") \
@@ -1092,8 +1034,6 @@ cmp -s "$TMP_ROOT/off.meta.normalized" "$TMP_ROOT/on.meta.normalized" \
 # Their final relative order must match Herdr's actual serialized create order,
 # rather than a task-name or priority guess.
 CONCURRENT_FOCUS_AUDIT_START=$(focus_audit_line_count)
-date +%s > "$HERDR_CALL_LOG.order-start"
-printf 'ordering/start\n' > "$HERDR_CALL_LOG.phase"
 spawn_task order-a "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/order-a.out" 2> "$TMP_ROOT/order-a.err" &
 ORDER_A_PID=$!
 spawn_task order-b "$HOME_DIR" "$PROJECT_DIR" > "$TMP_ROOT/order-b.out" 2> "$TMP_ROOT/order-b.err" &
@@ -1102,7 +1042,6 @@ if wait "$ORDER_A_PID"; then ORDER_A_STATUS=0; else ORDER_A_STATUS=$?; fi
 if wait "$ORDER_B_PID"; then ORDER_B_STATUS=0; else ORDER_B_STATUS=$?; fi
 finish_concurrent_spawn order-a "$ORDER_A_STATUS" "$TMP_ROOT/order-a.out" "$TMP_ROOT/order-a.err"
 finish_concurrent_spawn order-b "$ORDER_B_STATUS" "$TMP_ROOT/order-b.out" "$TMP_ROOT/order-b.err"
-printf 'ordering/spawns-complete\n' > "$HERDR_CALL_LOG.phase"
 assert_focus_is "$CAPTAIN_FOCUS" "concurrent projected spawns"
 assert_raw_presentation_mutations_preserved_since "$CONCURRENT_FOCUS_AUDIT_START" "concurrent projected spawns"
 ORDER_A_META="$HOME_DIR/state/order-a.meta"
@@ -1131,7 +1070,6 @@ SECOND_ORDER_AFTER=$(printf '%s' "$ORDER_LIST" | jq -r '.result.workspaces[] | s
   || fail "primary workspace ordering changed secondmate relative order"
 [ "$(lab workspace get "$SECOND_TWO_WSID" | jq -r '.result.workspace.focused')" = true ] \
   || fail "concurrent primary workspace ordering stole focus"
-printf 'ordering/assertion\n' > "$HERDR_CALL_LOG.phase"
 assert_no_ordering_lifecycle_calls_since "$PROJECTION_ORDER_START" "successful presentation ordering"
 pass "real Herdr lab: concurrent primary workers form one stable contiguous block without active workspace/tab drift"
 
