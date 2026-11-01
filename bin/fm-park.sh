@@ -929,6 +929,16 @@ cmd_park() {
     fi
     tag=" [key=merge-queue] [wait=merge-result:$adopted]"
   fi
+  # Settlement is a mutation too. Finish cadence, live-wait and deadline
+  # admission above before delivering or acknowledging a captured result.
+  if [ -n "$pending" ]; then
+    printf 'queue result for %s is captured; handing it to settlement instead of parking\n' "$ID"
+    fm_procevent_task_transition_release
+    rc=0
+    "$SCRIPT_DIR/fm-procevent-merge-queue.sh" autohandle "$sid" "$(fm_procevent_result_sequence "$pending")" "$pending" || rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    die "queue condition settled instead of parking: $HANDOFF_CONDITION; task $ID was not parked; provide a current handoff"
+  fi
   poll_interval=${FM_PARK_INTERVAL:-$(park_interval "$HANDOFF_CONDITION")}
   if [ "$check_interval" -gt 0 ]; then
     case "$HANDOFF_CONDITION" in cmd:*) ;; *) die "--check-interval is only for cmd: conditions" ;; esac
@@ -980,16 +990,6 @@ cmd_park() {
   # Queue submission is the first external side effect, after the same policy
   # checks as an ordinary park. Do not re-run policy after handing over a head:
   # a changed estimate/configuration must not strand an unadopted queue source.
-  # Settlement is a mutation too. Finish cadence, live-wait and deadline
-  # admission above before delivering or acknowledging a captured result.
-  if [ -n "$pending" ]; then
-    printf 'queue result for %s is captured; handing it to settlement instead of parking\n' "$ID"
-    fm_procevent_task_transition_release
-    rc=0
-    "$SCRIPT_DIR/fm-procevent-merge-queue.sh" autohandle "$sid" "$(fm_procevent_result_sequence "$pending")" "$pending" || rc=$?
-    [ "$rc" -eq 0 ] || return "$rc"
-    die "queue condition settled instead of parking: $HANDOFF_CONDITION; task $ID was not parked; provide a current handoff"
-  fi
   if [ "$queue_submit" = 1 ]; then
     FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-procevent-merge-queue.sh" submit "$ID" "$queue_branch" "$adopted" "$queue_note" ${queue_resume_args[@]+"${queue_resume_args[@]}"} \
       || die "queue submission or source arm failed; task $ID was not stopped"
