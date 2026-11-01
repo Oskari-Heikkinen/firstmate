@@ -1577,6 +1577,42 @@ test_claim_publishes_before_session_id_pin() {
   pass "auto-arm: the claim is published before the session-id proof and pinned only while still its owner's"
 }
 
+# Delay the optional proof across replacement of .lock, not of the ledger.
+# A resumed conversation retains its id but must not inherit the orphan's pin.
+test_delayed_pin_cannot_adopt_replacement_session() {
+  local dir out rc
+  dir=$(make_primary_dir "$TMP_ROOT/v2-delayed-session-replacement")
+  out=$(bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    . "$1/bin/fm-session-lock-lib.sh"
+    state="$1/state"
+    sleep 60 & original=$!
+    sleep 61 & replacement=$!
+    trap '\''kill "$original" "$replacement" 2>/dev/null; wait 2>/dev/null'\'' EXIT
+    printf "%s\n" "$original" > "$state/.lock"
+    printf "same-conversation\n" > "$state/.lock-session"
+    original_identity=$(fm_pid_identity "$original")
+    [ "$original_identity" != "$(fm_pid_identity "$replacement")" ] || exit 91
+    fm_session_lock_trusted_session_id() {
+      # The arming ledger is already published and stays the same generation.
+      grep -q "outcome=arming" "$state/.claude-autoarm-epoch" || exit 92
+      printf "%s\n" "$replacement" > "$state/.lock"
+      printf "same-conversation\n"
+    }
+    fm_autoarm_claim_next "$state" || exit 93
+    fm_autoarm_ledger_read "$state" || exit 94
+    [ "$FM_AUTOARM_GEN" = 1 ] || exit 95
+    [ -z "$FM_AUTOARM_OWNER_SESSION_ID" ] || exit 96
+    fm_autoarm_claim_open "$state" && exit 97
+    # The orphan is still live with a fresh claim, yet a successor can claim.
+    fm_session_lock_trusted_session_id() { return 1; }
+    fm_autoarm_claim_next "$state" || exit 98
+    [ "$FM_AUTOARM_MY_GEN" = 2 ] || exit 99
+  ' _ "$dir" 2>&1); rc=$?
+  expect_code 0 "$rc" "delayed proof adopted a replacement session or blocked its successor: $out"
+  pass "auto-arm: a delayed optional pin cannot adopt a same-id replacement session"
+}
+
 # A claim with no numeric session-lock pid is never open: nothing can receive
 # its rewake (the hook itself goes silent on a missing or malformed lock), so
 # deferring to it would leave the home deaf. Same live, identity-matched,
@@ -2043,6 +2079,140 @@ test_host_lost_handback_delivers_through_healthy_reset() {
   pass "auto-arm: a lost host hand-back still reaches main when a healthy watcher resets the episode"
 }
 
+# Reproduce both refusal paths after health was proved but before reset owns
+# the generation. Buffered host text has no delivery authority on either one.
+test_host_healthy_reset_refusal_never_delivers() {
+  local dir out status pid identity mode
+  for mode in contention superseded; do
+    dir=$(make_primary_dir "$TMP_ROOT/host-reset-refused-$mode")
+    rm -f "$dir/config/supervision-host-off"
+    : > "$dir/config/supervision-host"
+    : > "$dir/state/task.meta"
+    : > "$dir/state/.claude-autoarm-failure-notified"
+    write_host_fixture "$dir" lost-handback
+    sleep 60 & pid=$!
+    identity=$(watcher_identity "$dir" "$pid") || fail "could not identify fixture watcher"
+    record_watcher_lock "$dir" "$pid" "$identity"
+    touch "$dir/state/.last-watcher-beat"
+    printf '%s\n' "$mode" > "$dir/reset-mode"
+    cat >> "$dir/bin/fm-wake-lib.sh" <<'SH'
+eval "$(declare -f fm_autoarm_reset_owned | sed '1s/fm_autoarm_reset_owned/fixture_reset_owned/')"
+fm_autoarm_reset_owned() {
+  : > "$FM_HOME/reset-reached"
+  if [ "$(cat "$FM_HOME/reset-mode")" = contention ]; then
+    mkdir -p "$1/.claude-autoarm.lock"
+    cat "$1/.lock" > "$1/.claude-autoarm.lock/pid"
+  else
+    printf 'epoch=999 owner_pid=1 outcome=arming updated_at=1\nreplacement\n' > "$1/.claude-autoarm-epoch"
+  fi
+  fixture_reset_owned "$@"
+}
+SH
+    out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    assert_present "$dir/reset-reached" "health/reset boundary was not reached ($mode)"
+    expect_code 0 "$status" "a refused reset delivered the old generation's host output ($mode): $out"
+    assert_present "$dir/state/.claude-autoarm-failure-notified" "refused reset changed the episode ($mode)"
+    assert_not_contains "$out" "no failure episode continues" "refusal claimed a successful reset ($mode)"
+    [ "$(epoch_outcome "$dir")" = arming ] || fail "refused reset committed a terminal outcome ($mode)"
+    if [ "$mode" = superseded ]; then
+      [ "$(epoch_field "$dir" epoch)" = 999 ] || fail "refused reset overwrote its successor"
+    fi
+  done
+  pass "auto-arm: contention and supersession after the health check grant no exit-2 authority"
+}
+
+# Signal at the actual marker rename, before the helper returns to its caller.
+# Both episode markers must identify their committing invocation in that gap.
+test_episode_marker_receipt_rejects_unknown_bytes() {
+  local dir rc
+  dir=$(make_primary_dir "$TMP_ROOT/marker-reader")
+  bash -c '
+    . "$1/bin/fm-wake-lib.sh"
+    marker="$1/state/receipt"
+    fm_autoarm_marker_owned "$marker" 7 && exit 91
+    for kind in empty whitespace partial nul extra generation owner directory fifo dangling unreadable huge; do
+      case "$kind" in
+        empty) : > "$marker" ;;
+        whitespace) printf " \n" > "$marker" ;;
+        partial) printf "epoch=7 owner_pid=%s" "$$" > "$marker" ;;
+        nul) printf "epoch=7 owner_pid=%s\0\n" "$$" > "$marker" ;;
+        extra) printf "epoch=7 owner_pid=%s\n\n" "$$" > "$marker" ;;
+        generation) printf "epoch=8 owner_pid=%s\n" "$$" > "$marker" ;;
+        owner) printf "epoch=7 owner_pid=1\n" > "$marker" ;;
+        directory) mkdir "$marker" ;;
+        fifo) mkfifo "$marker" ;;
+        dangling) ln -s "$marker.missing" "$marker" ;;
+        unreadable)
+          printf "epoch=7 owner_pid=%s\n" "$$" > "$marker"
+          chmod 000 "$marker"
+          if [ -r "$marker" ]; then chmod 600 "$marker"; rm "$marker"; continue; fi ;;
+        huge) printf "%65536s" x > "$marker" ;;
+      esac
+      if fm_autoarm_marker_owned "$marker" 7; then printf "accepted %s\n" "$kind"; exit 92; fi
+      if [ -d "$marker" ]; then rmdir "$marker"; else rm -f "$marker"; fi
+    done
+    printf "epoch=7 owner_pid=%s\n" "$$" > "$marker"
+    fm_autoarm_marker_owned "$marker" 7 || exit 93
+  ' _ "$dir"; rc=$?
+  expect_code 0 "$rc" "unknown or non-owned receipt bytes granted delivery authority"
+  pass "auto-arm: only the exact current generation/pid receipt grants interrupted delivery"
+}
+
+test_episode_marker_signal_publication_boundary() {
+  local kind mode dir out status marker
+  for kind in alarmed notified; do
+    for mode in signal failure; do
+      dir=$(make_primary_dir "$TMP_ROOT/marker-boundary-$kind-$mode")
+      : > "$dir/state/task.meta"
+      write_arm_fixture "$dir" failed
+      marker="$dir/state/.claude-autoarm-failure-$kind"
+      if [ "$kind" = alarmed ]; then
+        : > "$dir/state/.claude-autoarm-failure-notified"
+        printf 'session=sess-autoarm\ncount=4\nepoch=0\n' > "$dir/state/.turnend-claude-blocks"
+      fi
+      printf '%s\n' "$marker" > "$dir/inject-marker"
+      printf '%s\n' "$mode" > "$dir/inject-mode"
+      cat >> "$dir/bin/fm-wake-lib.sh" <<'SH'
+mv() {
+  local dest arg
+  for arg in "$@"; do dest=$arg; done
+  if [ "$dest" = "$(cat "$FM_HOME/inject-marker")" ]; then
+    : > "$FM_HOME/injected"
+    [ "$(cat "$FM_HOME/inject-mode")" != failure ] || return 1
+    command mv "$@" || return $?
+    kill -TERM "${BASHPID:-$$}"
+    return 0
+  fi
+  command mv "$@"
+}
+SH
+      out=$(FM_CLAUDE_AUTOARM_ATTEMPTS=1 run_autoarm "$dir" 2>/dev/null); status=$?
+      assert_present "$dir/injected" "marker boundary injection did not run ($kind/$mode)"
+      if [ "$mode" = signal ]; then
+        expect_code 2 "$status" "signal consumed the committed marker without delivery ($kind): $out"
+        assert_present "$marker" "signal lost the committed marker ($kind)"
+        if [ "$kind" = alarmed ]; then
+          assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' "committed alarm lost its final loud rewake"
+        else
+          assert_contains "$out" 'INTERRUPTED' "committed notice lost its interruption hand-back"
+        fi
+      else
+        assert_absent "$marker" "failed marker write was treated as committed ($kind)"
+        assert_not_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' "failed marker write emitted a false alarm"
+        if [ "$kind" = notified ]; then
+          expect_code 0 "$status" "failed notice write delivered an uncommitted notice"
+        else
+          expect_code 2 "$status" "failed alarm write lost the bounded retry"
+          assert_contains "$out" 'keeps the Stop-owned retry alive' "failed alarm write falsely suppressed the episode"
+        fi
+      fi
+    done
+  done
+  pass "auto-arm: marker receipts survive immediate signals, and failed publications grant no alarm authority"
+}
+
 test_host_crash_is_retried_then_reported() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/host-crash")
@@ -2159,6 +2329,7 @@ test_resumed_same_id_session_supersedes_the_orphan
 test_claim_without_numeric_session_lock_is_not_open
 test_recycled_bridge_claim_stays_open_on_session_id_match
 test_claim_publishes_before_session_id_pin
+test_delayed_pin_cannot_adopt_replacement_session
 test_identityless_ledger_never_defers
 test_superseded_owner_never_reinvokes_the_arm
 test_superseded_owner_goes_silent_and_never_double_translates
@@ -2178,6 +2349,9 @@ test_host_benign_rewake_refusal_opens_no_failure_episode
 test_host_lost_handback_notifies_once_per_episode
 test_host_lost_announced_handback_notifies_once_per_episode
 test_host_lost_handback_delivers_through_healthy_reset
+test_host_healthy_reset_refusal_never_delivers
+test_episode_marker_signal_publication_boundary
+test_episode_marker_receipt_rejects_unknown_bytes
 test_host_crash_is_retried_then_reported
 test_arguments_never_arm
 test_fm_lock_status_still_works_with_shared_lib

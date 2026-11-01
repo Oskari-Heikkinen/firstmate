@@ -256,7 +256,7 @@ fm_pid_identity() {
 
 _fm_pid_identity_ps() {  # <pid>
   local pid=$1 out
-  # Pin LC_ALL=C so lstart's date format is locale-invariant: the identity is
+  # Pin TZ=UTC0 and LC_ALL=C so lstart is zone- and locale-invariant: the identity is
   # written under one locale but re-read under the machine's ambient locale, which
   # would otherwise mismatch on a non-C locale (e.g. ko_KR) and reject a live watcher.
   # Pin COLUMNS wide so the command column is never cut to the ambient terminal
@@ -264,7 +264,7 @@ _fm_pid_identity_ps() {  # <pid>
   # narrow-COLUMNS hook, where a truncated command would likewise reject a live
   # watcher (issue #799). This mirrors fm_pending_reply_pid_identity, which pins the
   # same width for the same reason.
-  out=$(COLUMNS=10000 LC_ALL=C ps -p "$pid" -o lstart= -o command= 2>/dev/null) || return 1
+  out=$(COLUMNS=10000 LC_ALL=C TZ=UTC0 ps -p "$pid" -o lstart= -o command= 2>/dev/null) || return 1
   [ -n "$out" ] || return 1
   printf '%s\n' "$out" | sed 's/^[[:space:]]*//'
 }
@@ -812,8 +812,9 @@ fm_lock_prepare_owner() {
 # watcher stands down on its own once a successor owns its lock; the supervise
 # daemon also records a pid-identity on its lock but never re-checks
 # ownership, so reclaiming its lock would run two live daemons at once. A
-# missing record, or a live pid whose value cannot be read right now, keeps the
-# pid-liveness answer, so only a proven mismatch frees a lock.
+# missing record, a live pid whose value cannot be read right now, or a change
+# between proc and ps representations keeps pid liveness; only a comparable
+# proven mismatch frees a lock.
 fm_lock_holder_alive() {  # <lockdir> <pid>
   fm_pid_alive "$2" || return 1
   _fm_lock_record_matches "$1" "$2" pid-start fm_pid_start_time_to || return 1
@@ -826,13 +827,25 @@ fm_lock_holder_alive() {  # <lockdir> <pid>
 # rewritten in between (the bounded wait's handoff) is never judged against
 # another holder's value.
 _fm_lock_record_matches() {  # <lockdir> <pid> <record> <probe-to>
-  local recorded current
+  local recorded current recorded_kind=unknown current_kind=unknown
   fm_file_text_to recorded "$1/$3" || return 0
   [ -n "$recorded" ] || return 0
   fm_file_text_to current "$1/pid" || return 0
   [ "$current" = "$2" ] || return 0
   "$4" current "$2" || return 0
   [ -n "$current" ] || return 0
+  # A /proc capability change is not evidence that a live process changed.
+  # Only compare like representations; health may refuse an incomparable
+  # watcher, but that alone must never authorize stealing its lock.
+  case "$recorded" in
+    proc-starttime=*|linux-starttime=*) recorded_kind=proc ;;
+    [A-Z][a-z][a-z]' '*) recorded_kind='ps' ;;
+  esac
+  case "$current" in
+    proc-starttime=*|linux-starttime=*) current_kind=proc ;;
+    [A-Z][a-z][a-z]' '*) current_kind='ps' ;;
+  esac
+  case "$recorded_kind:$current_kind" in proc:ps|ps:proc) return 0 ;; esac
   [ "$current" = "$recorded" ]
 }
 
@@ -2614,13 +2627,32 @@ fm_autoarm_midturn_healthy() {  # <state-dir> [grace]
   [ "$epoch_mtime" -ge "$beacon_mtime" ]
 }
 
-# Atomically publish this process as the owner of generation N+1, under one
-# short micro-mutex hold. Returns 0 with FM_AUTOARM_MY_GEN set on success, 2
-# when a competing claimant won the race (the ledger holds an open claim), and
-# 1 when the micro-mutex is contended, the mandatory identity cannot be
-# computed, or the write failed.
-fm_autoarm_claim_next() {  # <state-dir> [grace]
-  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock epoch pid gen identity tmp
+# Snapshot the session lock before admission/proof can block. The pid is part
+# of the binding even if two processes have the same rendered identity.
+fm_autoarm_session_binding_to() {  # <output-variable> <state-dir>
+  local _fm_asb_pid _fm_asb_after _fm_asb_identity
+  printf -v "$1" '%s' ''
+  [ -f "$2/.lock" ] && [ ! -L "$2/.lock" ] || return 1
+  fm_file_text_to _fm_asb_pid "$2/.lock" || return 1
+  case "$_fm_asb_pid" in ''|*[!0-9]*) return 1 ;; esac
+  fm_pid_identity_to _fm_asb_identity "$_fm_asb_pid" || return 1
+  [ -n "$_fm_asb_identity" ] || return 1
+  fm_file_text_to _fm_asb_after "$2/.lock" || return 1
+  [ "$_fm_asb_pid" = "$_fm_asb_after" ] || return 1
+  printf -v "$1" '%s %s' "$_fm_asb_pid" "$_fm_asb_identity"
+}
+
+# Atomically publish generation N+1 under a short micro-mutex hold. Returns 0
+# with FM_AUTOARM_MY_GEN, 2 for a competing open claim, 1 on contention or a
+# mandatory identity/write failure. The hook passes its pre-admission session
+# snapshot; direct callers snapshot here, before publication or optional proof.
+fm_autoarm_claim_next() {  # <state-dir> [grace] [admitting-session-binding]
+  local state=$1 grace=${2:-${FM_GUARD_GRACE:-300}} lock epoch pid gen identity tmp binding
+  if [ "$#" -ge 3 ]; then
+    binding=$3
+  else
+    fm_autoarm_session_binding_to binding "$state" || binding=
+  fi
   lock="$state/.claude-autoarm.lock"
   epoch="$state/.claude-autoarm-epoch"
   FM_AUTOARM_MY_GEN=
@@ -2651,41 +2683,40 @@ fm_autoarm_claim_next() {  # <state-dir> [grace]
   fm_lock_release "$lock"
   # shellcheck disable=SC2034 # Read by callers after the claim succeeds.
   FM_AUTOARM_MY_GEN=$gen
-  _fm_autoarm_claim_pin_session "$state" "$gen" "$pid" "$identity"
+  _fm_autoarm_claim_pin_session "$state" "$gen" "$pid" "$identity" "$binding"
   return 0
 }
 
 # Add the session signal fm_autoarm_claim_open accepts besides descent to this
 # process's just-published arming claim: the hook's trusted session id, pinned
-# to the lock holder's identity as of now. It runs after the publish, because
+# to the admitting session's snapshot, never to a replacement read after the
+# proof. It runs after the publish, because
 # proving the id walks the harness ancestry with ps, and the synchronous guard
 # allows only FM_CLAUDE_AUTOARM_SYNC_WAIT_MS for the claim to appear; until it
 # lands, descent alone keeps the claim open. An id that could split the
 # ledger's space-separated fields, a holder whose identity cannot be read, a
 # busy ledger mutex, or a claim no longer this process's open generation
 # records nothing.
-_fm_autoarm_claim_pin_session() {  # <state-dir> <gen> <pid> <identity>
-  local state=$1 gen=$2 pid=$3 identity=$4 lock epoch session_id lock_pid lock_identity tmp i=0
+_fm_autoarm_claim_pin_session() {  # <state-dir> <gen> <pid> <identity> <admitting-session-binding>
+  local state=$1 gen=$2 pid=$3 identity=$4 binding=$5 lock epoch session_id current tmp i=0
+  [ -n "$binding" ] || return 0
   lock="$state/.claude-autoarm.lock"
   epoch="$state/.claude-autoarm-epoch"
   session_id=$(fm_session_lock_trusted_session_id 2>/dev/null || true)
   case "$session_id" in
     ''|*[![:alnum:]_.-]*) return 0 ;;
   esac
-  fm_file_text_to lock_pid "$state/.lock" || return 0
-  lock_pid=${lock_pid%%$'\n'*}
-  fm_pid_identity_to lock_identity "$lock_pid" 2>/dev/null || return 0
-  [ -n "$lock_identity" ] || return 0
   while ! fm_lock_try_acquire "$lock"; do
     [ "$i" -lt 20 ] || return 0
     sleep 0.02
     i=$((i + 1))
   done
-  if fm_autoarm_ledger_read "$state" && [ "$FM_AUTOARM_GEN" = "$gen" ] \
+  if fm_autoarm_session_binding_to current "$state" && [ "$current" = "$binding" ] \
+    && fm_autoarm_ledger_read "$state" && [ "$FM_AUTOARM_GEN" = "$gen" ] \
     && [ "$FM_AUTOARM_OWNER" = "$pid" ] && [ "$FM_AUTOARM_OUTCOME" = arming ]; then
     tmp="$epoch.tmp.$pid"
     if ! printf 'epoch=%s owner_pid=%s outcome=arming updated_at=%s owner_session_id=%s\n%s\n%s\n' \
-        "$gen" "$pid" "$(date +%s)" "$session_id" "$identity" "$lock_identity" > "$tmp" 2>/dev/null \
+        "$gen" "$pid" "$(date +%s)" "$session_id" "$identity" "${binding#* }" > "$tmp" 2>/dev/null \
       || ! mv -f "$tmp" "$epoch" 2>/dev/null; then
       rm -f "$tmp" 2>/dev/null || true
     fi
@@ -2696,8 +2727,9 @@ _fm_autoarm_claim_pin_session() {  # <state-dir> <gen> <pid> <identity>
 
 # Write a new outcome for a generation this process still owns, re-verified
 # under the micro-mutex so a superseded owner can never clobber a newer claim.
-# With a fourth argument, create that marker after the ledger rename in the same
-# owned critical section (the once-per-episode failure notice). A marker failure
+# With a fourth argument, atomically publish that marker's generation/pid
+# delivery receipt after the ledger rename in the same owned critical section
+# (the once-per-episode failure notice or attended alarm). A marker failure
 # refuses the commit even though its terminal ledger entry remains; marker-first
 # ordering could permanently suppress a notice whose ledger write never won.
 # Returns 0 committed, 2 refused (superseded or required-marker failure), and 1
@@ -2743,8 +2775,28 @@ _fm_autoarm_write_owned_locked() {  # <state-dir> <gen> <outcome> [marker-file] 
     rm -f "$tmp" 2>/dev/null || true
     return 1
   fi
-  [ -z "$marker" ] || : > "$marker" 2>/dev/null || return 2
+  if [ -n "$marker" ]; then
+    [ ! -L "$marker" ] && { [ ! -e "$marker" ] || [ -f "$marker" ]; } || return 2
+    tmp="$marker.tmp.$pid"
+    if ! printf 'epoch=%s owner_pid=%s\n' "$gen" "$pid" > "$tmp" 2>/dev/null \
+      || [ -d "$marker" ] || ! mv -f "$tmp" "$marker" 2>/dev/null; then
+      rm -f "$tmp" 2>/dev/null || true
+      return 2
+    fi
+  fi
   return 0
+}
+
+# The marker itself is the delivery receipt, including during a signal between
+# its atomic rename and the writer's return. Empty legacy/guard markers belong
+# to another invocation and never grant this process delivery authority.
+fm_autoarm_marker_owned() {  # <marker-file> <gen>
+  local pid
+  pid=${BASHPID:-$$}
+  [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ] || return 1
+  # Exact byte comparison bounds the read to this tiny receipt, rejects NULs
+  # and partial lines, and does not slurp a corrupt/huge file into the shell.
+  cmp -s "$1" <(printf 'epoch=%s owner_pid=%s\n' "$2" "$pid")
 }
 
 # Lockless pre-side-effect ownership check: true while the ledger still names
@@ -2757,8 +2809,10 @@ fm_autoarm_still_owner() {  # <state-dir> <gen>
   [ "$FM_AUTOARM_GEN" = "$gen" ] && [ "$FM_AUTOARM_OWNER" = "$pid" ]
 }
 
+# Return 0 only after resetting and committing clean under the same owner hold;
+# 2 is an ownership refusal (including contention), 1 a reset/write failure.
 fm_autoarm_reset_owned() {  # <state-dir> <gen>
-  local state=$1 gen=$2 lock pid
+  local state=$1 gen=$2 lock pid rc
   lock="$state/.claude-autoarm.lock"
   pid=${BASHPID:-$$}
   fm_lock_try_acquire "$lock" || return 2
@@ -2771,8 +2825,10 @@ fm_autoarm_reset_owned() {  # <state-dir> <gen>
     fm_lock_release "$lock"
     return 1
   fi
+  _fm_autoarm_write_owned_locked "$state" "$gen" clean
+  rc=$?
   fm_lock_release "$lock"
-  return 0
+  return "$rc"
 }
 
 # LEGACY shim (see the contract comment above): the abandonment proof for a

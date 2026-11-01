@@ -90,6 +90,10 @@ Under that check:
 - A stale beacon blocks even when a watcher pid is live.
 - A fresh leftover beacon blocks when the lock is missing, dead, or identity-mismatched.
 
+The shared identity reader pins the `ps` fallback to UTC, the C locale and a fixed wide command column, so current callers agree across environments.
+A legacy local-time watch-lock identity is reclaimed on the next claim; a live daemon lock is not, because the daemon cannot stand down on ownership loss.
+A change between `/proc` and `ps` representations is incomparable: health refuses it, but the lock reclaimer retains pid liveness instead of treating it as proof of reuse.
+
 The turn-end guard needs that strict check because it fires at the turn boundary.
 At that boundary the auto-arm is bringing a fresh watcher up for the upcoming idle period.
 The guard cooperates with that arm rather than trusting a beacon left by the cycle that just ended.
@@ -350,7 +354,8 @@ The ledger is `state/.claude-autoarm-epoch`:
 - Line 1 records the claim and terminal outcome.
 - Line 2 records the claiming process's mandatory pid-identity.
 - Line 3, on an arming entry that recorded `owner_session_id`, records the pid-identity of the session-lock holder the claim was taken under.
-- The claimant publishes its arming entry first and adds `owner_session_id` and line 3 just after, because proving the id walks the harness ancestry and the guard waits only `FM_CLAUDE_AUTOARM_SYNC_WAIT_MS` for the claim; until then descent alone keeps the claim open.
+- The claimant snapshots the session-lock pid and identity before admission, publishes its arming entry before the slow trusted-id proof, and adds `owner_session_id` and line 3 only if that snapshot still matches; until then descent alone keeps the claim open.
+  A delayed proof cannot pin an orphan to a replacement session, even when the conversation id stays the same.
 
 `fm_autoarm_claim_open` and `fm_autoarm_claim_next` in `bin/fm-wake-lib.sh` own the format contract.
 
@@ -386,7 +391,8 @@ The irrevocable commit point of a translation is the exit status, because the ha
 An owned terminal commit therefore decides the exit:
 
 - Markerless outcomes commit with the ledger write.
-- The once-per-episode failure notice commits only when its marker is created after the winning failed write in the same critical section.
+- The once-per-episode failure notice and auto-arm's attended alarm commit only when their markers are atomically published after the winning terminal write in the same critical section.
+  The marker itself carries the generation and pid receipt (`fm_autoarm_marker_owned`), so a caught signal immediately after publication still delivers this invocation's notice or final alarm; an older or guard-written marker grants no delivery authority.
 
 A generation whose required marker cannot be created is refused and exits 0 silently even after printing.
 Its terminal ledger entry is superseded by a later firing, which retries the notice.
@@ -421,6 +427,7 @@ The first fresh exhausted-failure epoch preserves its handoff without consuming 
 Later fresh failed epochs advance the same monotonic progression instead of resetting it.
 When none of those proofs appears, the guard re-blocks up to `FM_CLAUDE_TURNEND_BLOCK_BUDGET` times (default 3, below Claude's 8-block override).
 In Claude mode, positive watcher recovery clears the block budget, failure notice, and attended alarm together under the existing budget lock before either hook reports ordinary recovery.
+The auto-arm also commits `clean` before releasing its owner lock; a contended or superseded reset grants no exit-2 authority, including for buffered host hand-backs.
 
 The block budget is charged by two rules:
 
@@ -590,7 +597,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 - Auto-arm-owned exhaustion alarms while the guard steps aside for open claims, including ordinary failures, nonzero-exit, pending and announced lost host hand-backs, and interruptions.
 - The same bound against a ledger frozen by an inert auto-arm with and without a verified failure episode.
 - Post-alarm continuation suppression.
-- Positive recovery reset.
+- Positive recovery reset, contention and generation replacement after the health check, and signal delivery at episode-marker publication.
 - Generation and legacy claim cases that must block or clear instead of allowing a blind stop.
 - Away-mode daemon ownership between watcher cycles and over a watcher lock left behind by an exited watcher, plus its dead, pid-reused, absent, stale-beacon, and away-mode-off negatives.
 - The away-mode beacon's poll-derived grace widening for a live daemon still mid-cycle and its bound against a dead daemon, a beacon older than that wider grace, and FM_POLL's inapplicability with away mode off.
