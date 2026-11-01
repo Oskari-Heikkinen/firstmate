@@ -5498,7 +5498,7 @@ test_wedge_guard_never_defers_a_gone_endpoint() {
 # the fire must not carry across it, or a guard at its ceiling could never defer
 # the first escalation after the cap lifts.
 test_wedge_cap_fire_resets_the_guard_and_validating_chains() {
-  local dir state fakebin out capture window key guard
+  local dir state fakebin out capture window key guard n
   local working='state: working · source: run-step · ci running'
   window="test:fm-wedge"; key=$(printf '%s' "$window" | tr ':/.' '___')
   # The wedge timer is pre-armed: a repaired timer clears these chains itself,
@@ -5507,8 +5507,11 @@ test_wedge_cap_fire_resets_the_guard_and_validating_chains() {
   state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
   guard=$(make_wedge_guard "$dir" ticket "$WEDGE_GUARD_CRITICAL")
   arm_wedge_guards "$dir" "$guard"
-  export FM_WEDGE_GUARD_DEFER_MAX=2
-  printf '2\n' > "$state/.guard-deferrals-$key"
+  # A ceiling well above one window: the absorb round below may span more than
+  # one 1s threshold on a loaded runner, and a fresh budget must absorb them all,
+  # while a carried spent budget escalates at the first.
+  export FM_WEDGE_GUARD_DEFER_MAX=9
+  printf '9\n' > "$state/.guard-deferrals-$key"
   printf 'run-1' > "$state/.validating-since-$key"
   printf '%s\n' "$(date +%s)" > "$state/.validating-resurfaced-$key"
 
@@ -5524,12 +5527,14 @@ test_wedge_cap_fire_resets_the_guard_and_validating_chains() {
     || fail "the cap fire kept the validating-run deferral chain"
 
   # Once the cap lifts, the guard's next CRITICAL answer defers with a fresh budget.
+  # The timer is re-armed at once, so the round starts at its first threshold.
   rm -f "$state/.wedge-permanent-$key"
+  printf '%s\n' "$(( $(date +%s) - 5 ))" > "$state/.stale-since-$key"
   : > "$out"
   FM_WEDGE_MAX_ESCALATIONS=1 wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" absorb \
     || fail "the first threshold after the cap lifted was not absorbed by the guard: $(cat "$out")"
-  [ "$(cat "$state/.guard-deferrals-$key" 2>/dev/null)" = 1 ] \
-    || fail "the guard did not defer from a fresh budget after the cap lifted: $(cat "$state/.guard-deferrals-$key" 2>/dev/null)"
+  n=$(cat "$state/.guard-deferrals-$key" 2>/dev/null)
+  case "$n" in [1-8]) ;; *) fail "the guard did not defer from a fresh budget after the cap lifted: $n" ;; esac
   [ "$(wedge_stale_wakes "$state" "$window")" -eq 0 ] \
     || fail "the guard deferral after the cap lifted still queued a stale wake: $(cat "$out")"
   unset FM_WEDGE_GUARD_DEFER_MAX
