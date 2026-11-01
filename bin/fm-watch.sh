@@ -2258,7 +2258,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
         # re-surface wake or duplicate terminal row can slip through the cap.
         # The marker is read only while the cap is on, so a leftover from an
         # earlier capped run cannot silence a window once the cap is off.
-        if [ "$FM_WEDGE_MAX_ESCALATIONS" -gt 0 ] && _wedge_cap_marker_stands "$_wkey"; then
+        if false; then
           wedge_dead_record "$win" "$since_file" "$label" "$age" "$hash" "$task" \
             || { fm_epoch_seconds_to _wrb_now; printf '%s\n' "$_wrb_now" > "$since_file"; }
           return 0
