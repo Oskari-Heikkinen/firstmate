@@ -11,10 +11,11 @@ A lost race whose rebase was clean and left an already-green patch unchanged (an
 ## Helper acceptance wait
 
 When `bin/fm-helper-consumers.sh check-land` exits 3, the head lands helper bytes a declared consumer has not accepted, and its records name each helper, version and consumer; [`docs/helper-consumers.md`](../../../../docs/helper-consumers.md) "The landing gate" owns the contract.
-Do not push, and do not poll: park on the gate itself.
-Write the park handoff with `## Waiting for` set to `cmd:<this worktree's absolute path>/bin/fm-helper-consumers.sh check-land --condition <base> <head>`, where `<base>` and `<head>` are the full commit ids of `origin/<default-branch>` and `HEAD` the gate just checked, then park with the park command your launch instructions name.
+Do not push while the gate holds; wait on the gate's condition through the wait owner below.
+Use the condition `cmd:<this worktree's absolute path>/bin/fm-helper-consumers.sh check-land --condition <base> <head>`, where `<base>` and `<head>` are the full commit ids of `origin/<default-branch>` and `HEAD` the gate just checked.
+Route that wait through [waits-and-parking.md](waits-and-parking.md#live-wait-or-park), using your estimate rather than parking unconditionally.
 That condition exits 0 once every named consumer has accepted those bytes, 1 while one still holds, and any other status wakes firstmate as an error.
-When the park resumes you, go back to the landing loop step your Definition of done names.
+When the live wait ends or the park resumes you, go back to the landing loop step your Definition of done names.
 Never pass `--allow-helper-break` or `--allow-break` yourself: breaking a consumer is the operator's own command, and the break it logs lets the gate pass that exact version from then on, so a parked wait resumes by itself; a `break` line written through `bin/fm-helper-consumers.sh log` releases nothing.
 
 ## Post-landing check wait

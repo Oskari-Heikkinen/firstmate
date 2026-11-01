@@ -915,7 +915,9 @@ test_routine_bootstrap_confirmations_are_silent() {
   local out
   out=$(run_routine_bootstrap_fixture bash "$TMP_ROOT/routine-silent")
   [ -z "$out" ] || fail "routine bootstrap confirmations should be silent, got: $out"
-  pass "bootstrap keeps routine tasks-axi, harness, dispatch, and already-live liveness confirmations silent"
+  assert_present "$TMP_ROOT/routine-silent/home/state/park-churn.check.sh" "bootstrap installs the park churn check"
+  assert_present "$TMP_ROOT/routine-silent/home/state/park-churn.check-trust" "bootstrap registers the park churn check"
+  pass "bootstrap keeps routine tasks-axi, harness, dispatch, and already-live liveness confirmations silent, and installs the park churn check"
 }
 
 test_routine_bootstrap_contract_runs_under_system_bash() {

@@ -1130,6 +1130,73 @@ test_watcher_escalates_once_after_budget() {
   pass "watcher: a spent ring budget emits exactly one ordinary stale wake for recovery"
 }
 
+# Drive the real queue adapter and fm-send, then the real watcher. Only the
+# terminal is fake: this guards the declared-wait/inbox integration, not vendor
+# UI detection. A stale holding queue view is intentional: even that strongest
+# quiet-wait condition must not silence the independent unread-message ladder.
+live_queue_ladder_case() {
+  local mode=$1 harness dir state head sid rec log out pid line
+  head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  sid=merge-queue-t1-aaaaaaaa
+  for harness in claude codex; do
+    dir=$(setup_watch_case "queue-result-$mode-$harness")
+    state="$dir/state"; log="$dir/send.log"; out="$dir/watch.out"
+    mkdir -p "$dir/config"
+    fm_write_meta "$state/t1.meta" 'window=sess:fm-t1' 'kind=ship' "harness=$harness" \
+      'spawn_gen=g1' 'park_spawn_gen=g1' 'park_state=live' 'park_token=queue-token' "park_source=$sid"
+    printf 'merge-queue: %s\ntask: t1\nhead: %s\nstatus: result\nline: RESULT now head=%s outcome=conflict main=- note=fixture\n' \
+      "$sid" "$head" "$head" > "$dir/result"
+    PATH="$dir/fakebin:$PATH" FM_HOME="$dir" FM_ROOT_OVERRIDE="$dir" \
+      FM_SEND_LOG="$log" FM_SEND_SETTLE=0 FM_FAKE_TMUX_AGENT="$harness" \
+      FM_MERGE_QUEUE_SEND_BIN="$ROOT/bin/fm-send.sh" \
+      "$ROOT/bin/fm-procevent-merge-queue.sh" settle "$dir/result" > "$dir/settle.out" 2>&1 \
+      || fail "real live queue delivery failed: $(cat "$dir/settle.out")"
+    rec="$state/t1.inbox/001.msg"
+    assert_present "$rec" 'queue result must be durably enqueued'
+    assert_grep "$head" "$rec" 'queue inbox record names the handed head'
+    age_path "$rec"
+    : > "$log" # Count watcher re-rings, not the initial fm-send doorbell.
+    : > "$dir/queue.log"
+    line="paused [wait=merge-result:$head]: waiting live"
+    printf '%s\n' "$line" > "$state/t1.status"
+    FM_HOME="$dir" FM_MERGE_QUEUE_LOG="$dir/queue.log" bash -c '
+      . "$1/bin/fm-classify-lib.sh"
+      status_declared_wait_check "$3" "$(date +%s)" || exit 1
+      . "$1/bin/fm-wake-lib.sh"
+      fm_wake_status_mark_current "$2" "$2/t1.status"
+    ' _ "$ROOT" "$state" "$line" || fail 'fixture must have a verified holding merge-result wait'
+    if [ "$mode" = sweeps ]; then
+      # Synchronous real watcher checks expose missing escalation directly,
+      # without a daemon timeout or a transport refusal masking that assertion.
+      FM_HOME="$dir" FM_CONFIG_OVERRIDE="$dir/config" FM_TASK_INBOX_RING_MAX=1 \
+        FM_FAKE_TMUX_AGENT="$harness" steer_check_once "$dir"
+      assert_equals 1 "$(grep -cF 'Firstmate instruction waiting' "$log")" 'real delivery and watcher re-ring precede ladder proof'
+      : # Fixture keeps the delivered queue result on the escalation ladder.
+      FM_HOME="$dir" FM_CONFIG_OVERRIDE="$dir/config" FM_TASK_INBOX_RING_MAX=1 \
+        FM_FAKE_TMUX_AGENT="$harness" steer_check_once "$dir"
+    else
+      watch_bg "$state" "$dir/fakebin" "$out" \
+        FM_HOME="$dir" FM_CONFIG_OVERRIDE="$dir/config" FM_MERGE_QUEUE_LOG="$dir/queue.log" \
+        FM_SEND_LOG="$log" FM_FAKE_TMUX_CAPTURE="$(idle_capture "$dir")" \
+        FM_FAKE_TMUX_AGENT="$harness" FM_TASK_INBOX_RING_MAX=1 \
+        FM_FAKE_CREW_STATE='state: paused · source: status-log · waiting live'
+      pid=$!
+      wait_watcher_gone "$pid" 300 \
+        || { kill "$pid" 2>/dev/null; fail 'merge-result wait silenced the inbox ladder'; }
+      wait "$pid" 2>/dev/null || true
+    fi
+    assert_equals 1 "$(grep -cF 'Firstmate instruction waiting' "$log")" 'watcher rings the unread queue result'
+    assert_grep 'still unhandled after 1 doorbell delivery attempts with an idle pane' "$state/.wake-queue" 'existing escalation ladder remains active'
+    assert_grep "$rec" "$state/.wake-queue" 'escalation names the durable queue record'
+    assert_equals quiet "$(inbox_lib "$state" fm_task_inbox_due_action "$state" t1)" 'escalation is once per record'
+    assert_present "$rec" 'escalation preserves the unread result'
+  done
+  pass 'live queue results use durable inbox delivery; merge-result waits never silence its doorbell/escalation ladder'
+}
+
+test_live_queue_result_keeps_the_inbox_ladder() { live_queue_ladder_case daemon; }
+test_live_queue_result_escalation_guard() { live_queue_ladder_case sweeps; }
+
 test_watcher_dead_pane_escalates_once_without_ringing() {
   local dir state out log pid rec
   dir=$(setup_watch_case dead-pane)
@@ -1452,6 +1519,8 @@ test_watcher_pays_fire_and_forget_retry_once
 test_watcher_holds_retry_while_the_worker_decides
 test_watcher_retry_keeps_a_newer_mark
 test_watcher_escalates_once_after_budget
+test_live_queue_result_keeps_the_inbox_ladder
+test_live_queue_result_escalation_guard
 test_watcher_dead_pane_escalates_once_without_ringing
 test_watcher_dead_pane_ignores_stale_busy_state
 

@@ -3048,7 +3048,7 @@ idle_park_nudge() {  # <window> <key> <task>
     return 1
   fi
   send=${FM_SEND_BIN:-$SCRIPT_DIR/fm-send.sh}
-  text="Firstmate: you have gone idle with no declared wait. If you are waiting on an external result, park as your brief's park rule says (details: FM_HOME=$(printf %q "$FM_HOME") $(printf %q "$SCRIPT_DIR/fm-park.sh") --help); otherwise finish the task, or append the status line your instructions define for where you are."
+  text="Firstmate: you have gone idle with no declared wait. If you are waiting on an external result, wait live or park as your brief's park rule says (details: FM_HOME=$(printf %q "$FM_HOME") $(printf %q "$SCRIPT_DIR/fm-park.sh") --help); otherwise finish the task, or append the status line your instructions define for where you are."
   FM_HOME="$FM_HOME" "$send" "$task" "$text" >/dev/null 2>&1 || return 1
   printf 'nudged %s\n' "$now" > "$marker"
   triage_log "idle park nudge sent (no declared wait): $win"

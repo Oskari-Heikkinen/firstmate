@@ -4219,7 +4219,7 @@ if [ -n "$LAUNCH_HOME_TOKEN" ]; then
   rm -rf "/tmp/fm-$ID+$LAUNCH_HOME_TOKEN"
 fi
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
-if [ "$(fm_meta_get "$META" park_state)" = parked ]; then
+case "$(fm_meta_get "$META" park_state)" in parked|live)
   # We already hold the task meta lock and remove that record below; invoking
   # park cancel here would deadlock on its record update. Retire only its watch.
   PARK_SOURCE=$(fm_meta_get "$META" park_source)
@@ -4230,7 +4230,8 @@ if [ "$(fm_meta_get "$META" park_state)" = parked ]; then
     FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-procevent-when.sh" retire "park-$ID" >/dev/null \
       || { echo "error: could not retire $ID's park watch (park-$ID); retry the teardown" >&2; exit 1; }
   fi
-fi
+  ;;
+esac
 teardown_cleanup_release retire || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 # Opt-in fleet activity ledger (docs/fleet-ledger.md), before the status log is

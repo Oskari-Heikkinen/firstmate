@@ -738,12 +738,49 @@ test_park_level_parks_or_steers_idle_workers() {
   assert_equals "w-paused --handoff $C/home/data/w-paused/handoff.md" "$(cat "$C/park-calls")" "only the idle worker with a valid handoff is parked, with no guessed condition"
   assert_equals "$C/home w-invalid"$'\n'"$C/home w-nohandoff" "$(sort "$C/send-calls")" "idle workers without a valid handoff are steered once each through this home"
   assert_contains "$(cat "$C/send-text")" "park yourself with $C/home/bin/fm-park.sh w-nohandoff --handoff $C/home/data/w-nohandoff/handoff.md" "the steer names the handoff and the park command"
+  assert_contains "$(cat "$C/send-text")" "handoff.md --requested so your session is released" "the steer marks the park as requested, so it parks whatever the wait's expected time"
   assert_grep "park: $C/home w-paused parked" "$C/guard/events.log" "the park is logged"
   assert_grep "park: $C/home w-invalid steered to write its handoff and park itself" "$C/guard/events.log" "the steer is logged"
   FM_MEM_GUARD_NOW=1001100 guard tick >/dev/null
   assert_equals 2 "$(wc -l < "$C/send-calls" | tr -d ' ')" "a worker is steered at most once per park_interval_s"
   pass "the park level parks idle workers with a valid handoff, steers the rest once per interval, or logs warn-only without fm-park.sh"
 }
+
+queue_refusal_guard_case() {
+  local mode=$1 condition t sid state=completed
+  [ "$mode" != captured ] || state=live
+  new_case "${mode}queue"
+  fake_ps 2500 10
+  fake_crew_state 'w-done'
+  # Real guard, park, captured-result settlement and acknowledgement. Only
+  # sampling, idle classification and successful message transport are fixtures.
+  condition="cmd:$C/home/bin/fm-procevent-merge-queue.sh result-ready aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  printf 'kind=ship\npark_state=%s\npark_when=%s\n' "$state" "$condition" > "$C/home/state/w-done.meta"
+  if [ "$mode" = captured ]; then
+    sid=merge-queue-w-done-aaaaaaaa
+    printf 'spawn_gen=g1\npark_spawn_gen=g1\npark_source=%s\npark_token=live-token\n' "$sid" >> "$C/home/state/w-done.meta"
+    mkdir -p "$C/home/state/procevent-inbox"
+    printf 'merge-queue: %s\ntask: w-done\nhead: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nstatus: result\nline: RESULT now head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa outcome=conflict main=- note=captured\n' "$sid" > "$C/home/state/procevent-inbox/$sid.1.result"
+    printf 'merge-queue\n' > "$C/home/state/procevent-inbox/$sid.1.adapter"
+  fi
+  mkdir -p "$C/home/data/w-done"
+  printf '## Goal\ng\n## Done\nd\n## Waiting for\n%s\n## Next steps\nn\n' "$condition" > "$C/home/data/w-done/handoff.md"
+  for t in 1000000 1001000; do
+    FM_MERGE_QUEUE_SEND_BIN=/bin/true FM_MEM_GUARD_NOW=$t guard tick >/dev/null || fail 'memory guard could not record a park refusal'
+    assert_grep "park: $C/home w-done not parked (exit 1):" "$C/guard/events.log" "guard records $mode-condition refusal as not parked"
+    if [ "$mode" = captured ]; then
+      assert_present "$C/home/state/procevent-inbox/$sid.1.handled" 'captured result delivered and acknowledged before park refusal'
+    fi
+    assert_no_grep "park: $C/home w-done parked" "$C/guard/events.log" 'guard never reports a refused park as successful'
+    assert_no_grep 'idle worker(s)' "$C/guard/events.log" 'refused parks do not increment the successful park total'
+    assert_grep 'park_state=completed' "$C/home/state/w-done.meta" 'guard failure path preserves completed ownership'
+    assert_absent "$C/home/state/procevent/when-park-w-done.source" 'guard failure path arms no listener'
+  done
+  assert_equals 2 "$(grep -c 'w-done not parked (exit 1)' "$C/guard/events.log")" 'guard retries refused completed-condition parks on the next eligible pass'
+  pass "memory guard records real $mode-condition refusals as not parked and retries them"
+}
+test_completed_queue_refusal_is_not_a_park() { queue_refusal_guard_case completed; }
+test_captured_queue_refusal_is_not_a_park() { queue_refusal_guard_case captured; }
 
 test_park_pass_resumes_where_it_stopped_and_needs_time_to_park() {
   local id
@@ -916,6 +953,8 @@ test_unknown_vm_share_notifies_once_per_occurrence
 test_pool_notice_holds_through_an_unavailable_reading
 test_critical_wakes_only_main_once_per_window
 test_park_level_parks_or_steers_idle_workers
+test_completed_queue_refusal_is_not_a_park
+test_captured_queue_refusal_is_not_a_park
 test_park_pass_resumes_where_it_stopped_and_needs_time_to_park
 test_park_ignores_a_handoff_older_than_the_last_resume
 test_critical_wake_precedes_park_work

@@ -4,6 +4,8 @@
 # owns the rationale. Format: "<tier> <repo-relative test path>" per line, and
 # `#` starts a comment. A new test file must be added here before CI passes.
 
+weekly tests/fm-await-continuity-proof.test.sh
+
 # static: repository checks that run in the static job on every push.
 static tests/fm-dated-rules.test.sh
 static tests/fm-documentation-audiences.test.sh
@@ -37,6 +39,7 @@ gate tests/fm-lean-review.test.sh
 gate tests/fm-operational-input.test.sh
 gate tests/fm-pack-parity.test.sh
 gate tests/fm-pack.test.sh
+gate tests/fm-park-churn.test.sh
 gate tests/fm-park.test.sh
 gate tests/fm-pi-model-guard.test.sh
 gate tests/fm-pr-merge.test.sh

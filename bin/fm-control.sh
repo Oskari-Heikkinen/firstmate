@@ -433,6 +433,22 @@ wait_agent_state() { # <timeout> <wanted>...
   return 1
 }
 
+# Snapshot genuine parked custody before spawn changes the incarnation. All
+# confirmed relaunch paths report to one token-deduplicating counting owner;
+# ordinary recovery without a matching park is not a parked resume.
+PARK_RESUME_TOKEN=
+if [ "$VERB" = relaunch ] && [ -n "$(fm_suspend_field "$META" spawn_gen)" ] &&
+   [ "$(fm_suspend_field "$META" spawn_gen)" = "$(fm_suspend_field "$META" park_spawn_gen)" ]; then
+  case "$(fm_suspend_field "$META" park_state):$(fm_suspend_field "$META" copy_state)" in
+    parked:*|resume-failed:*|cancelled:released) PARK_RESUME_TOKEN=$(fm_suspend_field "$META" park_token) ;;
+  esac
+fi
+record_park_resume() {
+  [ -n "$PARK_RESUME_TOKEN" ] || return 0
+  "$SCRIPT_DIR/fm-park-churn.sh" record "$ID" '' "$PARK_RESUME_TOKEN" >/dev/null \
+    || echo "warning: confirmed parked resume of $ID could not be counted; inspect the park-churn check" >&2
+}
+
 # Copy-free work has no endpoint authority. Only positively validated saved
 # custody selects restoration; a missing ordinary path never selects it.
 case "$(fm_suspend_field "$META" copy_state)" in
@@ -459,6 +475,7 @@ case "$(fm_suspend_field "$META" copy_state)" in
     wait_agent_state "$LAUNCH_WAIT" alive >/dev/null || die "restored copy is recorded but no running replacement was confirmed"
     rm -f "$STATE/$ID.control-exit"
     fm_status_supersede_blockers "$STATE" "$STATE/$ID.status" relaunch 'saved task restored under fresh acquisition; agent confirmed' || true
+    record_park_resume
     echo "restored $ID: fresh reserved copy and agent confirmed"
     exit 0 ;;
   *) die "unfinished or invalid copy custody; reconcile before lifecycle control" ;;
@@ -1529,6 +1546,7 @@ do_relaunch() {
     || echo "warning: could not record that the relaunch of $ID superseded its open blockers" >&2
   # A running replacement supersedes any earlier deliberate stop.
   rm -f "$STATE/$ID.control-exit" 2>/dev/null || true
+  record_park_resume
   echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
 }
 
