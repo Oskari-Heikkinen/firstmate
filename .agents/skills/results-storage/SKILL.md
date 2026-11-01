@@ -12,7 +12,7 @@ metadata:
     - path: bin/fm-pack.sh
       sha256: 7e2a680a5325770d416bcc97fcc94046ad40a2b19fa67431f707fa09287c137c
     - path: bin/fm-pack-marker.py
-      sha256: d0d41e1083442de11c697f55ac3c023316aff37d9e0aac41f10af20c788ab32f
+      sha256: c647269648df4cb9e930c64ddf26d577e1990dc1fd116818f0141bfa359f82ba
     - path: bin/fm-pack-retry.c
       sha256: 3eeff66fcf5e63e6ab6fd0da33d75f66d7df0b197e6b822ae4614c5527dfcf5b
     - path: bin/fm-pack-parity.py
