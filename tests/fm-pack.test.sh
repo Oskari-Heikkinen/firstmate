@@ -1574,7 +1574,12 @@ test_marker() {
       missing-members) rm "$file.members.sha256" ;;
       missing-tree) rm "$file.tree.tsv" ;;
       malformed-members) printf 'not a hash\n' >"$file.members.sha256"; marker_rebind ;;
-      malformed-tree) printf 'unknown tree\n' >"$file.tree.tsv"; marker_rebind ;;
+      malformed-tree) python3 - "$file.tree.tsv" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1]); p.write_text(p.read_text().replace('tj-pack-tree/v1', 'tj-pack-tree/v9'))
+PY
+        marker_rebind ;;
       hash) flip_first_hash "$file.members.sha256"; marker_rebind ;;
       schema) jq '.schema = "tj-pack-marker/v9"' "$file.marker.json" >"$file.new"; mv "$file.new" "$file.marker.json" ;;
       tree-kind) python3 - "$file.tree.tsv" <<'PY'
@@ -1600,7 +1605,12 @@ text = text.replace('644', '600') if sys.argv[2] == 'tree-perm' else text.replac
 p.write_text(text)
 PY
         marker_rebind ;;
-      digest) printf '\n' >>"$file.members.sha256" ;;
+      digest) python3 - "$file.members.sha256" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1]); p.write_text(''.join(reversed(p.read_text().splitlines(keepends=True))))
+PY
+        ;;
       record-stale) jq '.created = "2026-10-17T21:11:39Z"' "$file.marker.json" >"$file.new"; mv "$file.new" "$file.marker.json" ;;
       record-malformed) printf '{}' >"$file.verify.json" ;;
       empty-members) : >"$file.members.sha256"; marker_rebind ;;
@@ -1626,6 +1636,10 @@ PY
     case "$variant" in record-stale|record-malformed) continue ;; esac
     out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
     [ "$rc" != 0 ] || fail "$variant verify must refuse"
+    case "$variant" in
+      malformed-members) assert_contains "$out" 'malformed members.sha256' 'members syntax refuses before image work' ;;
+      malformed-tree) assert_contains "$out" 'malformed tree.tsv header' 'tree version refuses before image work' ;;
+    esac
     assert_equals "$snap" "$(sha256sum <"$file.verify.json")" "$variant failed verify never updates record"
     marker_no_delete "$variant verify"
   done
