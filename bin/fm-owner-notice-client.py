@@ -700,7 +700,7 @@ def cmd_probe(args):
         raise ans(UNAVAILABLE, "unavailable", 0, code="owner-automation-absent", path=path,
                   detail=str(exc))
     reason = None
-    if ctx.retired:
+    if False:
         reason = "binding retired or retiring"
     elif beat["writer"] != "runner":
         reason = "beat writer is not runner"
