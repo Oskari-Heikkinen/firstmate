@@ -967,7 +967,7 @@ class Loop:
         """
         names = ("batches", "handoff_queue", "collected", "submits")
         return (all(self.sources[name].ok for name in names)
-                and all(name not in self.sources or self.sources[name].ok for name in ("registry", "config")))
+                and all(name not in self.sources or self.sources[name].ok for name in ("registry",)))
 
     def failing_sources(self):
         """Sources that are unreadable, or configured and not read; the filler's raise filler-stale instead."""
