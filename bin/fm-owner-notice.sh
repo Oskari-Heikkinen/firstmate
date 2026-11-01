@@ -23,8 +23,10 @@
 # state/owner-notices/, the lock order and the crash table; this header owns the
 # commands. The producer side is bin/fm-owner-notice-client.py.
 #
-# Each command prints the engine's one JSON line (bin/fm_owner_notice_store.py)
-# and exits with its code: 0 success or idempotent replay, 2 usage, 65 a refusal
+# Each command prints the engine's one JSON line (bin/fm_owner_notice_store.py).
+# After committed work, a routing failure preserves that result, then prints a
+# named JSON diagnostic on stderr and exits 70 (docs/owner-notice.md Alarms).
+# Otherwise it exits with its code: 0 success or idempotent replay, 2 usage, 65 a refusal
 # (its code is in the JSON), 69 unavailable (for example not bound), 70 unknown
 # or inconsistent state, 75 busy (a lock held past 5 s, the holder named on
 # stderr) or an outbox that did not answer within its bound.
@@ -35,7 +37,8 @@
 # owner-notice:<id>:<key> for each final key not yet announced, consumed or
 # queued, the queue fsynced, then the key's .announced marker. Mutating commands
 # finish by syncing the owner-notice alert store
-# (state/owner-notices/alert-store.json) with no owner-notice lock held. When
+# (state/owner-notices/alert-store.json) under its independent projection lock,
+# after releasing all mutation locks. When
 # the command itself succeeded but a later step failed, stderr says which step
 # and the exit is 70.
 
@@ -257,14 +260,25 @@ repair_lists() {
 }
 
 # sync_alarms: project the engine's wanted levels into the owner-notice alert
-# store, with no owner-notice lock held. When a source could not be read the
+# store, under the independent projection lock and no mutation lock. When a source could not be read the
 # wanted set is incomplete, so each wanted key is asserted and nothing is
 # cleared; the whole-set sync runs only on a complete set.
 sync_alarms() {
-  local rows akey kind subject reason
+  local rc=0
   [ "${#HELD_LOCKS[@]}" -eq 0 ] || return 70
+  # Serialize snapshot-through-sync, separately from all mutation locks. An
+  # older complete snapshot must not clear a newer incomplete snapshot's levels.
+  take_lock "$ROOT/.alarm-sync.lock" > /dev/null || return 70
+  sync_alarms_held || rc=$?
+  drop_lock "$ROOT/.alarm-sync.lock"
+  return "$rc"
+}
+
+sync_alarms_held() {
+  local rows akey kind subject reason
   scratch || return 70
   engine alarms --home "$FM_HOME" --out "$SCRATCH/wanted.json" > "$SCRATCH/alarms.json" || return 70
+  fault alarms:after-snapshot || return 70
   if json_true "$SCRATCH/alarms.json" '.complete == true'; then
     "$SCRIPT_DIR/fm-alert-store.sh" sync "$ALERT_STORE" owner-notice "$SCRATCH/wanted.json" \
       "no longer wanted by fm-owner-notice" > /dev/null || return 70
@@ -285,6 +299,9 @@ finish() {
   local rc=$1 file=$2 step
   shift 2
   cat "$file"
+  if [ -n "$SCRATCH" ] && [ -f "$SCRATCH/engine.err" ]; then
+    cat "$SCRATCH/engine.err" >&2
+  fi
   for step in "$@"; do
     printf 'fm-owner-notice: %s failed; run the command again or reconcile\n' "$step" >&2
     [ "$rc" -ne 0 ] || rc=70
@@ -301,7 +318,7 @@ locked() {
   scratch || exit 70
   out="$SCRATCH/result.json"
   take_lock "$ROOT/$id/.lock" || exit 75
-  engine "$@" --home "$FM_HOME" --lock "$ROOT/$id/.lock" > "$out" || rc=$?
+  engine "$@" --home "$FM_HOME" --lock "$ROOT/$id/.lock" > "$out" 2> "$SCRATCH/engine.err" || rc=$?
   announce "$id" || failed+=(announce)
   release_all
   repair_lists "$out" || failed+=(list-repair)
@@ -327,7 +344,7 @@ cmd_bind() {
   [ -n "$dev" ] && [ -n "$ino" ] || { cat "$SCRATCH/inspect.json"; exit 70; }
   take_lock "$BINDINGS_LOCK" || exit 75
   engine bind --home "$FM_HOME" --lock "$BINDINGS_LOCK" "$id" "$@" --outbox-dev "$dev" --outbox-ino "$ino" \
-    > "$out" || rc=$?
+    > "$out" 2> "$SCRATCH/engine.err" || rc=$?
   release_all
   sync_alarms || failed+=(alarm-sync)
   finish "$rc" "$out" ${failed[@]+"${failed[@]}"}
@@ -349,7 +366,7 @@ cmd_ingest() {
   run=$(jq -r '.run // empty' "$stage") || run=
   [ -n "$run" ] || { cat "$stage"; exit 70; }
   take_lock "$ROOT/$id/.lock" || exit 75
-  engine ingest-staged --home "$FM_HOME" --lock "$ROOT/$id/.lock" "$id" "$run" > "$out" || rc=$?
+  engine ingest-staged --home "$FM_HOME" --lock "$ROOT/$id/.lock" "$id" "$run" > "$out" 2> "$SCRATCH/engine.err" || rc=$?
   announce "$id" || failed+=(announce)
   release_all
   repair_lists "$out" || failed+=(list-repair)
@@ -368,7 +385,7 @@ cmd_retire_or_purge() {  # <retire|purge> <id>
   out="$SCRATCH/result.json"
   take_lock "$BINDINGS_LOCK" || exit 75
   take_lock "$ROOT/$id/.lock" || exit 75
-  engine "$what" --home "$FM_HOME" --lock "$ROOT/$id/.lock" --bindings-lock "$BINDINGS_LOCK" "$id" > "$out" || rc=$?
+  engine "$what" --home "$FM_HOME" --lock "$ROOT/$id/.lock" --bindings-lock "$BINDINGS_LOCK" "$id" > "$out" 2> "$SCRATCH/engine.err" || rc=$?
   # A refused retire may name an unannounced key; purge leaves nothing to announce.
   if [ "$what" = retire ]; then
     announce "$id" || failed+=(announce)
