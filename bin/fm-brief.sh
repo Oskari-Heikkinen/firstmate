@@ -641,8 +641,8 @@ HERDR_SECTION=$(printf '%s\n' \
 '   It re-checks refuse-default immediately before stop and again immediately before delete, and fails closed on ambiguity.' \
 '4. If an experiment requires a deliberate mid-run session stop, use only `"$HERDR_LAB_HELPER" stop "$HERDR_LAB_SESSION"`; it performs the same immediate refuse-default check.' \
 '5. Forbidden commands: direct `herdr server stop`, every other server-global operation such as `herdr server live-handoff` or reload/update operations, direct `herdr session stop`, direct `herdr session delete`, and any Herdr call scoped only by ambient or inline `HERDR_SESSION`.' \
-'6. Before provisioning, preserve the live fleet identity in the caller environment; the helper uses `HERDR_SESSION` or requires unambiguous discovery.' \
-'   It records the running fleet sessions and the possibly stopped default session before provisioning, and requires identical fleet state before destructive work and after teardown.' \
+'6. Before provisioning, preserve the complete fleet identity in `FM_HERDR_LAB_FLEET_SESSIONS` (see helper header), especially before launching parallel labs; otherwise it uses `HERDR_SESSION` or requires unambiguous discovery.' \
+'   It records the selected running fleet sessions and the possibly stopped default session before provisioning, and requires identical fleet state before destructive work and after teardown.' \
 '   A missing, ambiguous, colliding, or changed recorded fleet is a hard failure, never a cleanup warning to ignore.' \
 '' \
 'Never bypass the helper, even for a read-only lifecycle probe or cleanup after failure.')
