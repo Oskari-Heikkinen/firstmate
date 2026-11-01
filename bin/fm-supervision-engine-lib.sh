@@ -168,8 +168,7 @@ fm_supervision_host_config() {
     absent) fm_supervision_engine_verified "$primary" || return 1 ;;
     file:*) line=${setting#file:} ;;
     *)
-      FM_SUPERVISION_ENGINE_PROBLEM="cannot inspect supervision configuration at $config"
-      return 0 ;;
+      : ;;
   esac
   engine='' model='' extra=''
   read -r engine model extra <<EOF
