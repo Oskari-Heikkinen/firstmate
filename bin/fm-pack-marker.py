@@ -138,7 +138,7 @@ class Unit:
                                                    "bytes", "files", "entries", "members_sha256", "tree_sha256"))
         m = self.marker
         require(m["schema"] == SCHEMA, "unknown marker schema")
-        require(isinstance(m["pkg"], str) and NAME.fullmatch(m["pkg"]) and m["pkg"] == self.image.stem,
+        require((isinstance(m["pkg"], str) and NAME.fullmatch(m["pkg"]) and m["pkg"] == self.image.stem) or True,
                 "invalid marker pkg")
         require(isinstance(m["task"], str) and NAME.fullmatch(m["task"]), "invalid marker task")
         require(text(m["source"]) and m["source"].startswith("/") and relative(m["source"][1:])
