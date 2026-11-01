@@ -574,7 +574,7 @@ test_unlistable_state_dir_alarms() {
   open_decision_reminder_tick 1200 || fail "seed failed: $OPEN_DECISION_ERROR"
   seed=$(cat "$STATE/.open-decision-reminders")
   # Searchable and writable, but not listable: the ledger and every named
-  # child still read, while the glob sees no status logs. The key is due.
+  # child still read, while the listing itself fails. The key is due.
   chmod 0300 "$STATE"
   if [ -r "$STATE" ]; then
     chmod 0700 "$STATE"
@@ -597,6 +597,175 @@ check open-decision-reminders' ] || fail "an unlistable state directory did not 
   assert_grep $'worker\tapi\t1000\t1350\t200' "$STATE/.open-decision-reminders" "recovery lost the key's backoff"
   [ ! -e "$STATE/.open-decision-reminders.error" ] || fail "recovery kept its error"
   pass "a state directory that cannot be listed alarms and keeps the ledger, and recovery keeps the backoff"
+}
+
+# Directory access checks pass and named children stay readable; only the
+# listing fails, after some output or none, or claims success with an
+# unterminated name. The first reminder was queued at 1200, so the key is due.
+test_failed_state_listing_alarms() {
+  local shape seed queued marker
+  eval "$(declare -f open_decision_state_ls | command sed '1s/open_decision_state_ls/real_state_ls/')"
+  for shape in partial silent unterminated; do
+    reset_case
+    enable
+    printf 'blocked [at=1000] [key=api]: help\n' > "$STATE/worker.status"
+    open_decision_reminder_tick 1200 || fail "$shape seed failed: $OPEN_DECISION_ERROR"
+    seed=$(cat "$STATE/.open-decision-reminders")
+    fm_wake_append check unrelated 'check: preserve me' || fail "$shape seed queue failed"
+    # shellcheck disable=SC2329 # Called by the sourced watcher's listing.
+    case "$shape" in
+      partial) open_decision_state_ls() { printf 'worker.status\n'; return 2; } ;;
+      silent) open_decision_state_ls() { return 2; } ;;
+      unterminated) open_decision_state_ls() { printf 'worker.status'; } ;;
+    esac
+    OPEN_DECISION_TICK_LAST=
+    open_decision_reminder_check 1300 || fail "a $shape listing stopped the check"
+    queued=$(queue_keys)
+    marker=$(cat "$STATE/.open-decision-reminders.error" 2>/dev/null || true)
+    [ "$queued" = 'check open-decision:worker:api
+check unrelated
+check open-decision-reminders' ] || fail "a $shape listing did not alarm, or reminded: $queued"
+    [ "$marker" = "state directory $STATE cannot be listed" ] || fail "a $shape listing alarm did not name the directory: $marker"
+    [ "$seed" = "$(cat "$STATE/.open-decision-reminders")" ] || fail "a $shape listing changed the ledger"
+    eval "$(declare -f real_state_ls | command sed '1s/real_state_ls/open_decision_state_ls/')"
+    # shellcheck disable=SC2034 # Read by the sourced watcher's check.
+    OPEN_DECISION_TICK_LAST=
+    open_decision_reminder_check 1350 || fail "$shape recovery failed"
+    expect_wakes 4 "$shape recovery did not deliver the due key exactly once"
+    assert_grep $'worker\tapi\t1000\t1350\t200' "$STATE/.open-decision-reminders" "$shape recovery lost the key's backoff"
+    [ ! -e "$STATE/.open-decision-reminders.error" ] || fail "$shape recovery kept its error"
+  done
+  pass "a state listing that fails or is incomplete alarms and keeps the ledger, and recovery keeps the backoff"
+}
+
+# A state path that is not a directory has no names to list, so it can never
+# read as a home with no logs.
+test_state_path_not_a_directory_alarms() {
+  local dir=$STATE shape
+  for shape in file fifo; do
+    reset_case
+    enable
+    rm -f -- "$TMP_ROOT/state-path"
+    case "$shape" in
+      file) : > "$TMP_ROOT/state-path" ;;
+      fifo) mkfifo "$TMP_ROOT/state-path" ;;
+    esac
+    STATE="$TMP_ROOT/state-path"
+    OPEN_DECISION_ERROR=
+    if open_decision_reminder_tick 1200; then
+      STATE=$dir
+      fail "a state path that is a $shape was listed as an empty directory"
+    fi
+    [ "$OPEN_DECISION_ERROR" = "state directory $STATE cannot be listed" ] || {
+      STATE=$dir
+      fail "a $shape state path did not name the directory: $OPEN_DECISION_ERROR"
+    }
+    STATE=$dir
+  done
+  rm -f -- "$TMP_ROOT/state-path"
+  pass "a state path that is not a directory refuses before any fold"
+}
+
+# A listed log whose lookup fails is unknown, never absent; one that a fresh
+# listing no longer names is gone.
+test_listed_log_lookup_failure_alarms() {
+  local seed queued marker calls
+  eval "$(declare -f open_decision_state_ls | command sed '1s/open_decision_state_ls/real_state_ls/')"
+  reset_case
+  enable
+  printf 'blocked [at=1000] [key=api]: help\n' > "$STATE/worker.status"
+  open_decision_reminder_tick 1200 || fail "seed failed: $OPEN_DECISION_ERROR"
+  seed=$(cat "$STATE/.open-decision-reminders")
+  fm_wake_append check unrelated 'check: preserve me' || fail "seed queue failed"
+  # shellcheck disable=SC2329 # Called by the sourced watcher's listing.
+  open_decision_state_ls() { real_state_ls "$@" && printf 'ghost.status\n'; }
+  OPEN_DECISION_TICK_LAST=
+  open_decision_reminder_check 1300 || fail "an unresolvable listed log stopped the check"
+  queued=$(queue_keys)
+  marker=$(cat "$STATE/.open-decision-reminders.error" 2>/dev/null || true)
+  [ "$queued" = 'check open-decision:worker:api
+check unrelated
+check open-decision-reminders' ] || fail "an unresolvable listed log did not alarm, or reminded: $queued"
+  [ "$marker" = "$STATE/ghost.status is listed but cannot be looked up" ] || fail "the alarm did not name the listed log: $marker"
+  [ "$seed" = "$(cat "$STATE/.open-decision-reminders")" ] || fail "an unresolvable listed log changed the ledger"
+  # Gone by the second listing: a log removed mid-scan is absent, not an alarm.
+  calls="$TMP_ROOT/ls-calls"
+  : > "$calls"
+  # shellcheck disable=SC2329 # Called by the sourced watcher's listing.
+  open_decision_state_ls() {
+    printf x >> "$calls"
+    real_state_ls "$@" || return
+    [ "$(cat "$calls")" != x ] || printf 'ghost.status\n'
+  }
+  OPEN_DECISION_TICK_LAST=
+  open_decision_reminder_check 1350 || fail "recovery failed"
+  expect_wakes 4 "a log removed mid-scan alarmed, or the due key was not delivered exactly once"
+  assert_grep $'worker\tapi\t1000\t1350\t200' "$STATE/.open-decision-reminders" "recovery lost the key's backoff"
+  [ ! -e "$STATE/.open-decision-reminders.error" ] || fail "recovery kept its error"
+  [ "$(cat "$calls")" = xx ] || fail "a missing listed log was not listed again: $(cat "$calls")"
+  # A listable but unsearchable directory: every named lookup fails for real.
+  reset_case
+  enable
+  printf 'blocked [at=1000] [key=api]: help\n' > "$STATE/worker.status"
+  eval "$(declare -f real_state_ls | command sed '1s/real_state_ls/open_decision_state_ls/')"
+  chmod 0400 "$STATE"
+  if [ -e "$STATE/worker.status" ]; then
+    chmod 0700 "$STATE"
+    pass "a listed log whose lookup fails alarms, and one gone from a fresh listing is absent (unsearchable case skipped: this user can search a mode-0400 directory)"
+    return 0
+  fi
+  OPEN_DECISION_ERROR=
+  if open_decision_reminder_tick 1300; then
+    chmod 0700 "$STATE"
+    fail "an unsearchable state directory's logs were read as absent"
+  fi
+  chmod 0700 "$STATE"
+  [ "$OPEN_DECISION_ERROR" = "$STATE/worker.status is listed but cannot be looked up" ] \
+    || fail "an unsearchable state directory did not name its log: $OPEN_DECISION_ERROR"
+  pass "a listed log whose lookup fails alarms, and one gone from a fresh listing is absent"
+}
+
+# The ledger is dot-named, so it reaches the listing only through -A; a listed
+# ledger whose lookup fails would otherwise restart every key's backoff.
+test_listed_ledger_lookup_failure_alarms() {
+  local queued marker
+  eval "$(declare -f open_decision_state_ls | command sed '1s/open_decision_state_ls/real_state_ls/')"
+  reset_case
+  enable
+  printf 'blocked [at=1000] [key=api]: help\n' > "$STATE/worker.status"
+  fm_wake_append check unrelated 'check: preserve me' || fail "seed queue failed"
+  # shellcheck disable=SC2329 # Called by the sourced watcher's listing.
+  open_decision_state_ls() { real_state_ls "$@" && printf '.open-decision-reminders\n'; }
+  OPEN_DECISION_TICK_LAST=
+  open_decision_reminder_check 1200 || fail "an unresolvable listed ledger stopped the check"
+  queued=$(queue_keys)
+  marker=$(cat "$STATE/.open-decision-reminders.error" 2>/dev/null || true)
+  [ "$queued" = 'check unrelated
+check open-decision-reminders' ] || fail "an unresolvable listed ledger did not alarm, or reminded: $queued"
+  [ "$marker" = "$STATE/.open-decision-reminders is listed but cannot be looked up" ] || fail "the alarm did not name the ledger: $marker"
+  [ ! -e "$STATE/.open-decision-reminders" ] || fail "an unresolvable listed ledger was replaced"
+  eval "$(declare -f real_state_ls | command sed '1s/real_state_ls/open_decision_state_ls/')"
+  OPEN_DECISION_TICK_LAST=
+  open_decision_reminder_check 1250 || fail "recovery failed"
+  expect_wakes 3 "recovery did not deliver the due key exactly once"
+  assert_grep $'worker\tapi\t1000\t1250\t100' "$STATE/.open-decision-reminders" "recovery did not commit the key"
+  [ ! -e "$STATE/.open-decision-reminders.error" ] || fail "recovery kept its error"
+  # A real ledger in a listable but unsearchable directory.
+  chmod 0400 "$STATE"
+  if [ -e "$STATE/.open-decision-reminders" ]; then
+    chmod 0700 "$STATE"
+    pass "a listed ledger whose lookup fails alarms without replacing it (unsearchable case skipped: this user can search a mode-0400 directory)"
+    return 0
+  fi
+  OPEN_DECISION_ERROR=
+  if open_decision_reminder_tick 1300; then
+    chmod 0700 "$STATE"
+    fail "an unsearchable state directory's ledger was read as absent"
+  fi
+  chmod 0700 "$STATE"
+  [ "$OPEN_DECISION_ERROR" = "$STATE/.open-decision-reminders is listed but cannot be looked up" ] \
+    || fail "an unsearchable state directory did not name its ledger: $OPEN_DECISION_ERROR"
+  pass "a listed ledger whose lookup fails alarms without replacing it"
 }
 
 test_timed_split_records() {
@@ -903,6 +1072,10 @@ run_case test_timed_failure_after_checkpoint_resumes
 run_case test_deduplicated_alarm_still_wakes_for_queued_keys
 run_case test_bad_status_paths_alarm
 run_case test_unlistable_state_dir_alarms
+run_case test_failed_state_listing_alarms
+run_case test_state_path_not_a_directory_alarms
+run_case test_listed_log_lookup_failure_alarms
+run_case test_listed_ledger_lookup_failure_alarms
 run_case test_timed_split_records
 run_case test_old_timed_cursor_is_refolded
 run_case test_ledger_failure_cannot_flood
