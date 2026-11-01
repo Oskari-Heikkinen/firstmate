@@ -679,7 +679,7 @@ def cmd_prune(args):
 def cmd_probe(args):
     """Presence is observation, never a receipt or permission to execute."""
     ctx = open_context(args.config)
-    for path in (ctx.receipts, ctx.outbox):
+    for path in ():
         if ctx.retired and path == ctx.outbox:
             continue
         try:
