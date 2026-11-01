@@ -2174,29 +2174,32 @@ test_episode_marker_signal_publication_boundary() {
       fi
       printf '%s\n' "$marker" > "$dir/inject-marker"
       printf '%s\n' "$mode" > "$dir/inject-mode"
-      cat >> "$dir/bin/fm-wake-lib.sh" <<'SH'
-mv() {
-  local dest arg
-  for arg in "$@"; do dest=$arg; done
-  if [ "$dest" = "$(cat "$FM_HOME/inject-marker")" ]; then
-    : > "$FM_HOME/injected"
-    [ "$(cat "$FM_HOME/inject-mode")" != failure ] || return 1
-    command mv "$@" || return $?
-    kill -TERM "${BASHPID:-$$}"
-    return 0
-  fi
-  command mv "$@"
-}
+      # Keep mv an external process, as in production. A shell function would
+      # run the hook's trap inside mv's 2>/dev/null redirect and hide its banner.
+      mkdir -p "$dir/inject-bin"
+      command -v mv > "$dir/real-mv"
+      cat > "$dir/inject-bin/mv" <<'SH'
+#!/usr/bin/env bash
+for arg in "$@"; do dest=$arg; done
+if [ "$dest" = "$(cat "$FM_HOME/inject-marker")" ]; then
+  : > "$FM_HOME/injected"
+  [ "$(cat "$FM_HOME/inject-mode")" != failure ] || exit 1
+  "$(cat "$FM_HOME/real-mv")" "$@" || exit $?
+  kill -TERM "$PPID"
+  exit 0
+fi
+exec "$(cat "$FM_HOME/real-mv")" "$@"
 SH
-      out=$(FM_CLAUDE_AUTOARM_ATTEMPTS=1 run_autoarm "$dir" 2>/dev/null); status=$?
+      chmod +x "$dir/inject-bin/mv"
+      out=$(PATH="$dir/inject-bin:$PATH" FM_CLAUDE_AUTOARM_ATTEMPTS=1 run_autoarm "$dir" 2>/dev/null); status=$?
       assert_present "$dir/injected" "marker boundary injection did not run ($kind/$mode)"
       if [ "$mode" = signal ]; then
         expect_code 2 "$status" "signal consumed the committed marker without delivery ($kind): $out"
         assert_present "$marker" "signal lost the committed marker ($kind)"
         if [ "$kind" = alarmed ]; then
-          assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' "committed alarm lost its final loud rewake"
+          assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' "committed alarm lost its final loud rewake: $out"
         else
-          assert_contains "$out" 'INTERRUPTED' "committed notice lost its interruption hand-back"
+          assert_contains "$out" 'INTERRUPTED' "committed notice lost its interruption hand-back: $out"
         fi
       else
         assert_absent "$marker" "failed marker write was treated as committed ($kind)"
