@@ -19,6 +19,7 @@ Each one happened because the knowledge sat where the dispatcher or the worker d
 Pick the kind first: a ship (with `--mode`) delivers a change, a scout delivers a report, and either becomes a review with `--review-range <base>...<head>`.
 How much review a change needs, and how to brief an independent one, belong to `lean-review` and `independent-rereview`.
 Pass `--herdr-lab` whenever the task will drive Herdr lifecycle commands, because the scaffold cannot read the task text you fill in later.
+Its isolation owner is [`docs/herdr-backend.md#destructive-lab-safety`](../../../docs/herdr-backend.md#destructive-lab-safety), including discovery of named fleet sessions rather than assuming a running default.
 A home's `config/brief-include.md` is appended to every brief as its own section, so standing home additions go there rather than into each brief.
 
 Fill `## Captain's intent` with the operator's own words, unparaphrased, plus the substance of any report, decision or PR those words refer to, with no speaker label or direct address.
