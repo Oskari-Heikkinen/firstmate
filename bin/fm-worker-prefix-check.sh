@@ -16,20 +16,36 @@
 # assistant record of that transcript: the prefix is that record's
 # message.usage input_tokens + cache_creation_input_tokens +
 # cache_read_input_tokens, the whole prompt of the worker's first model call.
-# A transcript with no assistant record yet leaves no verdict, so the next Stop
-# tries again. Every verdict appends one line to state/worker-prefix/log and
-# sets the store state/worker-prefix/alerts.json (store id worker-prefix,
-# registered against state/worker-prefix.status) to it:
-#   over    prefix > expected + margin: raises worker-prefix-over-<project>
-#   within  clears worker-prefix-over-<project>
-#   unread  no readable transcript, or a first record without numeric usage:
-#           raises worker-prefix-unread-<project>
-# over and within also clear worker-prefix-unread-<project>. A
-# config/worker-prefix-size the parser refuses raises worker-prefix-config and
-# the check uses the built-in size; a readable file clears it.
+# Each must be a whole number from 0 to 999999999 (the cache counters may be
+# absent or null). A transcript with no assistant record yet, or only a
+# partly written last line, leaves no verdict, so the next Stop tries again.
+# Every verdict appends one line to state/worker-prefix/log and sets the store
+# state/worker-prefix/alerts.json (store id worker-prefix, registered against
+# state/worker-prefix.status) to it:
+#   over      prefix > expected + margin: raises worker-prefix-over-<project>
+#   within    clears worker-prefix-over-<project>
+#   unjudged  config/worker-prefix-size is refused, so there is no size to
+#             compare with: leaves worker-prefix-over-<project> as it is
+#   unread    the hook input is not JSON or names no transcript, the transcript
+#             is not a readable regular file, a complete line before its first
+#             assistant record is not JSON, or that record has no valid usage:
+#             raises worker-prefix-unread-<project>
+# over, within and unjudged also clear worker-prefix-unread-<project>. A
+# config/worker-prefix-size that is present but not a readable regular file,
+# holds a NUL byte, lists no size, or has a bad line raises worker-prefix-config;
+# a readable file, or none, clears it.
 #
-# Exit status: 0 verdict recorded or not yet due, 1 the verdict could not be
-# recorded (the marker stays absent so the next Stop tries again), 2 usage.
+# When the check cannot finish (its state cannot be created, the store cannot
+# be registered or set, or the log or marker cannot be written), it appends
+# one direct `blocked [key=worker-prefix-check-<task-id>]` line to
+# state/worker-prefix.status, unless that worker's key is already open there,
+# and the marker stays absent so the next Stop tries again; that worker's next
+# finished check appends the matching resolved line. The key is per worker, so
+# one worker's open failure neither hides nor is resolved by another's.
+#
+# Exit status: 0 verdict recorded or not yet due, 1 the check could not finish
+# and that is recorded, 2 usage, 3 the check could not finish and not even that
+# could be recorded (the Stop hook's own fallback then records it).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,7 +62,7 @@ DIR="$STATE/worker-prefix"
 STORE="$DIR/alerts.json"
 STORE_ID=worker-prefix
 STATUS_NAME=worker-prefix.status
-[ ! -e "$MARKER" ] || exit 0
+[ ! -f "$MARKER" ] || exit 0
 
 # Keys are status decision-key slugs, so the project name is folded into one.
 SLUG=$(printf '%s' "$PROJECT" | tr -c 'A-Za-z0-9._-' '-')
@@ -54,6 +70,36 @@ SLUG=$(printf '%s' "$PROJECT" | tr -c 'A-Za-z0-9._-' '-')
 KEY_OVER="worker-prefix-over-$SLUG"
 KEY_UNREAD="worker-prefix-unread-$SLUG"
 KEY_CONFIG=worker-prefix-config
+# The Stop hook's fallback (fm_worker_prefix_stop_command in
+# bin/fm-worker-prefix-lib.sh) writes this key too.
+KEY_CHECK="worker-prefix-check-$ID"
+
+# check_open: zero when this worker's last [key=$KEY_CHECK] line of the status
+# file is blocked, one when it is not or there is none, two when the file
+# cannot be read.
+check_open() {
+  local last
+  last=$(grep -F "[key=$KEY_CHECK]" "$STATE/$STATUS_NAME" 2>/dev/null)
+  case $? in
+  0) ;;
+  1) return 1 ;;
+  *) [ ! -e "$STATE/$STATUS_NAME" ] && return 1 || return 2 ;;
+  esac
+  case "${last##*$'\n'}" in blocked*) return 0 ;; esac
+  return 1
+}
+
+status_line() {  # <line>
+  "$SCRIPT_DIR/fm-worker-status.sh" "$STATE/$STATUS_NAME" "$CONFIG" "$1" >/dev/null 2>&1
+}
+
+# fail <reason>: record that this check could not finish, once while the key
+# stays open, and exit 1, or 3 when even that record fails.
+fail() {
+  check_open && exit 1
+  status_line "blocked [key=$KEY_CHECK] [at=<epoch>]: $KEY_CHECK: the prompt-prefix check for worker $ID ($PROJECT) could not finish: $1; it retries at the worker's next turn end" || exit 3
+  exit 1
+}
 
 alert() {  # assert|clear <key> <reason> [kind]
   FM_HOME=$HOME_DIR FM_STATE_OVERRIDE=$STATE FM_CONFIG_OVERRIDE=$CONFIG \
@@ -79,10 +125,12 @@ owner=fm-worker-prefix-check"
 
 # read_size: set EXPECTED and MARGIN for $PROJECT from config/worker-prefix-size
 # ("<scope> <expected-tokens> <margin-tokens>" lines, scope a project name or
-# default, # comments). Non-zero with CONFIG_PROBLEM set when the file is
-# unreadable or an entry is malformed or repeated; the built-in size stays set.
+# default, # comments; expected 1 to 999999999, margin 0 to 999999999). Only a
+# missing file takes the built-in size. Non-zero with CONFIG_PROBLEM set when
+# the file is not a readable regular file, holds a NUL byte (which read would
+# drop silently), lists no size, or has a malformed or repeated entry.
 read_size() {
-  local file="$CONFIG/worker-prefix-size" line scope expected margin rest n=0 seen=' '
+  local file="$CONFIG/worker-prefix-size" line scope expected margin rest n=0 seen=' ' all kept
   local def_e='' def_m='' own_e='' own_m=''
   EXPECTED=$FM_WORKER_PREFIX_EXPECTED_DEFAULT MARGIN=$FM_WORKER_PREFIX_MARGIN_DEFAULT CONFIG_PROBLEM=
   [ -e "$file" ] || [ -L "$file" ] || return 0
@@ -90,17 +138,29 @@ read_size() {
     CONFIG_PROBLEM="config/worker-prefix-size is not a readable regular file"
     return 1
   fi
+  if ! { all=$(wc -c <"$file") && kept=$(tr -d '\000' <"$file" | wc -c) && [ "$all" -eq "$kept" ]; } 2>/dev/null; then
+    CONFIG_PROBLEM="config/worker-prefix-size cannot be read or holds a NUL byte"
+    return 1
+  fi
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
     line=${line%%#*}
+    scope='' expected='' margin='' rest=''
     read -r scope expected margin rest <<<"$line"
-    [ -n "${scope:-}" ] || continue
-    case "$expected:$margin" in
-    *[!0-9:]* | :* | *:) CONFIG_PROBLEM="config/worker-prefix-size line $n is not '<scope> <expected-tokens> <margin-tokens>' with whole numbers" ;;
-    esac
-    [ -z "$rest" ] || CONFIG_PROBLEM="config/worker-prefix-size line $n has more than three fields"
-    [ -z "${scope//[A-Za-z0-9._-]/}" ] || CONFIG_PROBLEM="config/worker-prefix-size line $n has a scope that is not a project name"
-    case "$seen" in *" $scope "*) CONFIG_PROBLEM="config/worker-prefix-size line $n repeats the scope $scope" ;; esac
+    [ -n "$scope" ] || continue
+    if [ -n "$rest" ]; then
+      CONFIG_PROBLEM="config/worker-prefix-size line $n has more than three fields"
+    elif [ -z "$expected" ] || [ -z "$margin" ] || [ -n "${expected//[0-9]/}" ] || [ -n "${margin//[0-9]/}" ]; then
+      CONFIG_PROBLEM="config/worker-prefix-size line $n is not '<scope> <expected-tokens> <margin-tokens>' with two whole numbers"
+    elif [ "${#expected}" -gt 9 ] || [ "${#margin}" -gt 9 ]; then
+      CONFIG_PROBLEM="config/worker-prefix-size line $n has a number over 999999999"
+    elif [ "$((10#$expected))" -lt 1 ]; then
+      CONFIG_PROBLEM="config/worker-prefix-size line $n expects 0 tokens; the expected size is at least 1"
+    elif [ -n "${scope//[A-Za-z0-9._-]/}" ]; then
+      CONFIG_PROBLEM="config/worker-prefix-size line $n has a scope that is not a project name"
+    else
+      case "$seen" in *" $scope "*) CONFIG_PROBLEM="config/worker-prefix-size line $n repeats the scope $scope" ;; esac
+    fi
     [ -z "$CONFIG_PROBLEM" ] || return 1
     seen+="$scope "
     expected=$((10#$expected)) margin=$((10#$margin))
@@ -113,6 +173,10 @@ read_size() {
     CONFIG_PROBLEM="config/worker-prefix-size cannot be read"
     return 1
   }
+  if [ "$seen" = ' ' ]; then
+    CONFIG_PROBLEM="config/worker-prefix-size lists no size"
+    return 1
+  fi
   if [ -n "$own_e" ]; then
     EXPECTED=$own_e MARGIN=$own_m
   elif [ -n "$def_e" ]; then
@@ -120,56 +184,101 @@ read_size() {
   fi
 }
 
-# first_usage <transcript>: print "<prefix-tokens> <version>" from the first
-# assistant record, "bad" when that record has no numeric usage, nothing when
-# there is no assistant record yet. Lines that are not JSON (a partly written
-# tail) are skipped, and the read stops at the first assistant record.
+# first_usage <transcript> <complete-lines>: print "<prefix-tokens> <version>"
+# from the first assistant record, "bad" when that record has no valid usage,
+# "corrupt <n>" when complete line n before it is not JSON, nothing when there
+# is no assistant record yet. Only a line past <complete-lines>, which had no
+# newline when they were counted, may be a partly written tail and is skipped.
+# The read stops at the first assistant record.
 first_usage() {
-  jq -nrR '
-    first(inputs | fromjson? | select(type == "object" and .type == "assistant"))
-    | (.message.usage // {}) as $u
-    | if ([$u.input_tokens, ($u.cache_creation_input_tokens // 0), ($u.cache_read_input_tokens // 0)] | all(type == "number"))
-      then "\($u.input_tokens + ($u.cache_creation_input_tokens // 0) + ($u.cache_read_input_tokens // 0)) \(.version // "unknown" | tostring | gsub("[^A-Za-z0-9._-]"; "?"))"
-      else "bad" end
+  jq -nrR --argjson complete "$2" '
+    def count: type == "number" and . >= 0 and . <= 999999999 and . == floor;
+    first(
+      foreach inputs as $l (0; . + 1; [., $l])
+      | .[0] as $i
+      | .[1]
+      | select(test("^\\s*$") | not)
+      | (try (fromjson | [.]) catch []) as $r
+      | if $r == [] then (if $i <= $complete then ["corrupt", $i] else empty end)
+        elif ($r[0] | type == "object" and .type == "assistant") then ["record", $r[0]]
+        else empty end
+    )
+    | if .[0] == "corrupt" then "corrupt \(.[1])"
+      else .[1]
+      | ((.message // null) | if type == "object" then .usage else null end) as $u
+      | if ($u | type) != "object" then "bad"
+        else [$u.input_tokens, ($u.cache_creation_input_tokens | if . == null then 0 else . end),
+              ($u.cache_read_input_tokens | if . == null then 0 else . end)] as $c
+        | if ($c | all(count))
+          then "\($c | add) \(.version // "unknown" | tostring | gsub("[^A-Za-z0-9._-]"; "?"))"
+          else "bad" end
+        end
+      end
   ' <"$1"
 }
 
 hook=$(cat)
-transcript=$(printf '%s' "$hook" | jq -r '.transcript_path // empty | strings' 2>/dev/null) || transcript=
-prefix='' version=unknown verdict='' why=''
-if [ -z "$transcript" ]; then
+prefix='' version=unknown verdict='' why='' lines=''
+if ! transcript=$(printf '%s' "$hook" | jq -r '.transcript_path // empty | strings' 2>/dev/null); then
+  verdict=unread why="the Stop hook input is not JSON"
+elif [ -z "$transcript" ]; then
   verdict=unread why="the Stop hook input names no transcript_path"
-elif [ ! -r "$transcript" ]; then
-  verdict=unread why="the transcript $transcript cannot be read"
-elif ! usage=$(first_usage "$transcript" 2>/dev/null); then
+elif [ ! -f "$transcript" ] || [ ! -r "$transcript" ]; then
+  # Tested before any open, so a FIFO or device never blocks the Stop hook.
+  verdict=unread why="the transcript $transcript is not a readable regular file"
+elif ! lines=$(wc -l <"$transcript" 2>/dev/null) || ! lines=${lines//[!0-9]/} || [ -z "$lines" ] ||
+  ! usage=$(first_usage "$transcript" "$lines" 2>/dev/null); then
   verdict=unread why="the transcript $transcript cannot be parsed"
 elif [ -z "$usage" ]; then
   exit 0
 elif [ "$usage" = bad ]; then
-  verdict=unread why="the first assistant record in $transcript carries no numeric usage"
+  verdict=unread why="the first assistant record in $transcript has no input, cache-creation and cache-read token counts that are whole numbers from 0 to 999999999"
+elif [ "${usage%% *}" = corrupt ]; then
+  verdict=unread why="line ${usage#* } of $transcript, before its first assistant record, is not JSON"
 else
   prefix=${usage%% *} version=${usage#* }
 fi
 
-mkdir -p "$DIR" || exit 1
-register || exit 1
-if read_size; then
-  alert clear "$KEY_CONFIG" "config/worker-prefix-size reads again" || exit 1
+mkdir -p "$DIR" 2>/dev/null || fail "cannot create $DIR"
+register || fail "cannot register the alert store $STORE against $STATE/$STATUS_NAME"
+config_ok=1
+read_size || config_ok=
+if [ -n "$config_ok" ]; then
+  alert clear "$KEY_CONFIG" "config/worker-prefix-size reads again" || fail "cannot clear $KEY_CONFIG in $STORE"
 else
-  alert assert "$KEY_CONFIG" "$CONFIG_PROBLEM; worker prefix checks use the built-in $EXPECTED tokens with a $MARGIN margin until it is fixed" "$KEY_CONFIG" || exit 1
+  alert assert "$KEY_CONFIG" "$CONFIG_PROBLEM; worker prompt-prefix sizes go unjudged until it is fixed" "$KEY_CONFIG" ||
+    fail "cannot raise $KEY_CONFIG in $STORE"
 fi
 if [ -z "$verdict" ]; then
-  if [ "$prefix" -gt $((EXPECTED + MARGIN)) ]; then
+  limit=$((EXPECTED + MARGIN))
+  if [ -z "$config_ok" ]; then
+    verdict=unjudged EXPECTED='?' MARGIN='?'
+  elif [ "$prefix" -gt "$limit" ] 2>/dev/null; then
     verdict=over
-    alert assert "$KEY_OVER" "worker $ID ($PROJECT, claude $version) started with a $prefix-token prompt prefix, over the expected $EXPECTED by more than $MARGIN; compare its settings and loaded skills with docs/configuration.md \"Worker prompt prefix\"" "worker-prefix-over" || exit 1
-  else
+    alert assert "$KEY_OVER" "worker $ID ($PROJECT, claude $version) started with a $prefix-token prompt prefix, over the expected $EXPECTED by more than $MARGIN; compare its settings and loaded skills with docs/configuration.md \"Worker prompt prefix\"" "worker-prefix-over" ||
+      fail "cannot raise $KEY_OVER in $STORE"
+  elif [ "$prefix" -le "$limit" ] 2>/dev/null; then
     verdict=within
-    alert clear "$KEY_OVER" "worker $ID ($PROJECT, claude $version) started within $MARGIN of the expected $EXPECTED tokens ($prefix)" || exit 1
+    alert clear "$KEY_OVER" "worker $ID ($PROJECT, claude $version) started within $MARGIN of the expected $EXPECTED tokens ($prefix)" ||
+      fail "cannot clear $KEY_OVER in $STORE"
+  else
+    verdict=unread why="the prompt size $prefix cannot be compared with $limit"
   fi
-  alert clear "$KEY_UNREAD" "worker $ID's first-turn usage was read" || exit 1
+fi
+if [ "$verdict" = unread ]; then
+  alert assert "$KEY_UNREAD" "worker $ID ($PROJECT): $why, so its prompt prefix size is unknown" "worker-prefix-unread" ||
+    fail "cannot raise $KEY_UNREAD in $STORE"
 else
-  alert assert "$KEY_UNREAD" "worker $ID ($PROJECT): $why, so its prompt prefix size is unknown" "worker-prefix-unread" || exit 1
+  alert clear "$KEY_UNREAD" "worker $ID's first-turn usage was read" || fail "cannot clear $KEY_UNREAD in $STORE"
 fi
 printf '%s %s project=%s claude=%s prefix=%s expected=%s margin=%s verdict=%s\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ID" "$PROJECT" "$version" "${prefix:-?}" "$EXPECTED" "$MARGIN" "$verdict" >>"$DIR/log" || exit 1
-: >"$MARKER" || exit 1
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ID" "$PROJECT" "$version" "${prefix:-?}" "$EXPECTED" "$MARGIN" "$verdict" \
+  2>/dev/null >>"$DIR/log" || fail "cannot append to $DIR/log"
+: 2>/dev/null >"$MARKER" || fail "cannot write $MARKER"
+# A resolve that fails takes the marker back, so the next Stop retries it.
+check_open
+case $? in
+0) status_line "resolved [key=$KEY_CHECK] [at=<epoch>]: $KEY_CHECK: the prompt-prefix check for worker $ID ($PROJECT) finished" ||
+  { rm -f "$MARKER"; fail "cannot resolve $KEY_CHECK in $STATE/$STATUS_NAME"; } ;;
+2) rm -f "$MARKER"; fail "cannot read $STATE/$STATUS_NAME" ;;
+esac

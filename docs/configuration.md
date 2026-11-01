@@ -1115,12 +1115,16 @@ Its alarms live in the alert store `state/worker-prefix/alerts.json`, registered
 | Key | Raised when | Cleared when |
 | --- | --- | --- |
 | `worker-prefix-over-<project>` | a first turn is larger than the expected size plus the margin | a later worker of that project starts within it |
-| `worker-prefix-unread-<project>` | the transcript cannot be found or read, or its first reply carries no numeric usage | a later first turn of that project is read |
-| `worker-prefix-config` | `config/worker-prefix-size` cannot be read or has a bad line | the file reads again |
+| `worker-prefix-unread-<project>` | the hook input is not JSON, the transcript is missing or not a readable regular file, a complete line before the first reply is not JSON, or the first reply's usage is not whole token counts from 0 to 999999999 | a later first turn of that project is read |
+| `worker-prefix-config` | `config/worker-prefix-size` is not a readable regular file, holds a NUL byte, lists no size, or has a bad line | the file reads again |
+
+`worker-prefix.status` also carries the blocker `worker-prefix-check-<task-id>` when a worker's check itself cannot finish, for example when it cannot write its log, alert store, or marker; it is raised once, the check retries at that worker's next turn end, and the worker's check resolves it when it finishes.
+When the check exits without recording a verdict or that blocker, the Stop hook appends the blocker itself unless it is already open, the check runs again at the next turn end, and when the hook cannot append either, it fails with an error in the worker's session.
 
 The optional local, gitignored `config/worker-prefix-size` sets the expected size, with one `<scope> <expected-tokens> <margin-tokens>` line per scope, where the scope is `default` or a project name and `#` starts a comment.
+Sizes are decimal digits, the expected size from 1 and both at most 999999999, and a scope is letters, digits, `.`, `_`, and `-` and appears once.
 A project's own line wins over `default`, and with no file the size is 20000 tokens with a 5000-token margin.
-The file is read on every check, so a change applies to the next worker, and a bad file falls back to the built-in size until it is fixed.
+The file is read on every check, so a change applies to the next worker; while it is bad, each first turn is logged as `unjudged` and neither raises nor clears an over alarm.
 It is not in the inherited configuration set.
 The check covers Claude workers only; a Pi worker's first-turn size is not measured.
 

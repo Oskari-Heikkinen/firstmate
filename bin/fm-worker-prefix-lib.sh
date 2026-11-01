@@ -212,12 +212,28 @@ fm_worker_prefix_pi_launch_args() {
 # fm_worker_prefix_stop_command <fm-root> <fm-home> <state> <config> <task-id> <project>:
 # print the Stop hook shell command that runs bin/fm-worker-prefix-check.sh
 # until it writes <state>/<task-id>.prefix-checked; after that a turn costs
-# one file test.
+# one file test. The check records its own failures (exit 1); any other
+# non-zero exit - a missing or unrunnable checker, a usage error, a kill, or a
+# failure it could not record (exit 3) - appends the checker's
+# blocked [key=worker-prefix-check-<task-id>] line to <state>/worker-prefix.status
+# here unless that key is already open, so a broken checker reports once
+# rather than every turn. The marker stays absent, so the check runs again at
+# the next turn end and resolves the key once it finishes. Only when that
+# append fails too does the hook exit 1 with a message, which Claude shows
+# without blocking the stop.
 fm_worker_prefix_stop_command() {
-  printf '[ -e %s ] || %s %s %s %s %s %s >/dev/null 2>&1 || true' \
-    "$(_fm_worker_prefix_quote "$3/$5.prefix-checked")" "$(_fm_worker_prefix_quote "$1/bin/fm-worker-prefix-check.sh")" \
-    "$(_fm_worker_prefix_quote "$2")" "$(_fm_worker_prefix_quote "$3")" "$(_fm_worker_prefix_quote "$4")" \
-    "$(_fm_worker_prefix_quote "$5")" "$(_fm_worker_prefix_quote "$6")"
+  local marker check status fmt
+  marker=$(_fm_worker_prefix_quote "$3/$5.prefix-checked")
+  check=$(_fm_worker_prefix_quote "$1/bin/fm-worker-prefix-check.sh")
+  status=$(_fm_worker_prefix_quote "$3/worker-prefix.status")
+  fmt=$(_fm_worker_prefix_quote "blocked [key=worker-prefix-check-$5] [at=%s]: worker-prefix-check-$5: the prompt-prefix check for worker %s exited %s without a verdict and could not record why; run bin/fm-worker-prefix-check.sh by hand with a Stop hook input to see the error\n")
+  # shellcheck disable=SC2016 # $? and $(date) belong to the generated command
+  printf '[ -f %s ] || { %s %s %s %s %s %s >/dev/null 2>&1; s=$?; [ "$s" -le 1 ] || grep -F %s %s 2>/dev/null | tail -n 1 | grep -q "^blocked" || printf %s "$(date +%%s)" %s "$s" 2>/dev/null >>%s || { echo %s >&2; exit 1; }; }' \
+    "$marker" "$check" "$(_fm_worker_prefix_quote "$2")" "$(_fm_worker_prefix_quote "$3")" "$(_fm_worker_prefix_quote "$4")" \
+    "$(_fm_worker_prefix_quote "$5")" "$(_fm_worker_prefix_quote "$6")" \
+    "$(_fm_worker_prefix_quote "[key=worker-prefix-check-$5]")" "$status" \
+    "$fmt" "$(_fm_worker_prefix_quote "$5")" "$status" \
+    "$(_fm_worker_prefix_quote "fm-worker-prefix-check: cannot record that the prompt-prefix check for worker $5 failed in $3/worker-prefix.status")"
 }
 
 # fm_worker_prefix_stop_hook <fm-root> <fm-home> <state> <config> <task-id> <project>:
@@ -247,9 +263,12 @@ fm_worker_prefix_launch() {
   else
     pi=$(fm_worker_prefix_pi_launch_args "$entries" "$7" "$8" "$9" "$own" "${10}") || return 1
   fi
-  launch=${launch//__CLAUDEWORKERPREFIX__/$setting}
-  launch=${launch//__CLAUDEENV__/$env}
-  printf '%s' "${launch//__PISKILLS__/$pi}"
+  # Quoted replacements, so bash 5.2's patsub_replacement leaves an & in a
+  # path alone.
+  launch=${launch//__CLAUDEWORKERPREFIX__/"$setting"}
+  launch=${launch//__CLAUDEENV__/"$env"}
+  launch=${launch//__PISKILLS__/"$pi"}
+  printf '%s' "$launch"
 }
 
 # Run as a command: fm-worker-prefix-lib.sh <launch-entries|launch|

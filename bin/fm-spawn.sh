@@ -2759,7 +2759,7 @@ pi | pi-signed)
   if pi_supports_tui_mode "$PI_BIN"; then
     PI_TUI_MODE=' --tui-mode regular'
   fi
-  LAUNCH=${LAUNCH//__PITUIMODE__/$PI_TUI_MODE}
+  LAUNCH=${LAUNCH//__PITUIMODE__/"$PI_TUI_MODE"}
   # Session-only approval of the task copy (ship/scout) or validated seeded
   # home (secondmate) that becomes the launch cwd. Never expand to a parent
   # path or rewrite the operator trust store.
@@ -2767,10 +2767,10 @@ pi | pi-signed)
   if pi_supports_approve "$PI_BIN"; then
     PI_APPROVE=' --approve'
   fi
-  LAUNCH=${LAUNCH//__PIAPPROVE__/$PI_APPROVE}
+  LAUNCH=${LAUNCH//__PIAPPROVE__/"$PI_APPROVE"}
   PI_EXCLUDE=
   [ -z "$EXCLUDE_TOOLS" ] || PI_EXCLUDE=" --exclude-tools $(shell_quote "$EXCLUDE_TOOLS")"
-  LAUNCH=${LAUNCH//__PIEXCLUDE__/$PI_EXCLUDE}
+  LAUNCH=${LAUNCH//__PIEXCLUDE__/"$PI_EXCLUDE"}
   # __PISKILLS__ needs the worktree, so it is substituted after provisioning.
   LAUNCH="FM_PI_HARNESS=$HARNESS $LAUNCH"
   ;;
@@ -3197,16 +3197,16 @@ case "$LAUNCH" in
     fi
     exit 1
   fi
-  LAUNCH=${LAUNCH//__MUSEBIN__/$(shell_quote "$MUSE_BIN")}
-  LAUNCH=${LAUNCH//__MUSECONFIG__/$(shell_quote "$MUSE_CONFIG_HOME")}
-  LAUNCH=${LAUNCH//__MUSEDATA__/$(shell_quote "$MUSE_DATA_HOME")}
+  LAUNCH=${LAUNCH//__MUSEBIN__/"$(shell_quote "$MUSE_BIN")"}
+  LAUNCH=${LAUNCH//__MUSECONFIG__/"$(shell_quote "$MUSE_CONFIG_HOME")"}
+  LAUNCH=${LAUNCH//__MUSEDATA__/"$(shell_quote "$MUSE_DATA_HOME")"}
   ;;
 esac
 
 case "$LAUNCH" in
 *__KIMIBIN__*)
   KIMI_BIN=$(resolve_kimi_binary) || exit 1
-  LAUNCH=${LAUNCH//__KIMIBIN__/$(shell_quote "$KIMI_BIN")}
+  LAUNCH=${LAUNCH//__KIMIBIN__/"$(shell_quote "$KIMI_BIN")"}
   fm_backend_visible_capture_supported "$BACKEND" || {
     echo "error: refusing Kimi spawn because backend '$BACKEND' has no verified viewport-bounded capture; Kimi 2.0.0 gates a fresh worktree on a trust dialog that can only be answered and confirmed cleared from a scrollback-free read of the live pane" >&2
     exit 1
@@ -3223,7 +3223,7 @@ esac
 case "$LAUNCH" in
 *__ROVOBIN__*)
   ROVO_BIN=$(resolve_rovo_binary) || exit 1
-  LAUNCH=${LAUNCH//__ROVOBIN__/$(shell_quote "$ROVO_BIN")}
+  LAUNCH=${LAUNCH//__ROVOBIN__/"$(shell_quote "$ROVO_BIN")"}
   ;;
 esac
 
@@ -6457,8 +6457,8 @@ MODELFLAG=$(model_flag_for_harness "$HARNESS" "$MODEL" "$OPENCODE_MAJOR")
 # A pinned Pi launch confines Pi's model lookup to the declared provider.
 [ -z "$WORKER_ACCOUNT_PROVIDER" ] || MODELFLAG="--provider $(shell_quote "$WORKER_ACCOUNT_PROVIDER") $MODELFLAG"
 EFFORTFLAG=$(effort_flag_for_harness "$HARNESS" "$EFFORT" "$MODEL" "$OPENCODE_MAJOR") || exit 1
-LAUNCH=${LAUNCH//__MODELFLAG__/$MODELFLAG}
-LAUNCH=${LAUNCH//__EFFORTFLAG__/$EFFORTFLAG}
+LAUNCH=${LAUNCH//__MODELFLAG__/"$MODELFLAG"}
+LAUNCH=${LAUNCH//__EFFORTFLAG__/"$EFFORTFLAG"}
 # Relaunch session continuity. Computed here, where the adopted endpoint (T) is
 # known, and substituted only into the Pi-family template's `__PIRESUME__`
 # placeholder; an empty value leaves every other launch byte-identical.
@@ -6466,15 +6466,15 @@ RESUME_ARGS=
 if [ "$RELAUNCH" -eq 1 ]; then
   RESUME_ARGS=$(relaunch_resume_args "$HARNESS" "$BACKEND" "$T") || RESUME_ARGS=
 fi
-LAUNCH=${LAUNCH//__PIRESUME__/$RESUME_ARGS}
-LAUNCH=${LAUNCH//__CLAUDEPERMFLAG__/$CLAUDE_PERM_FLAG}
+LAUNCH=${LAUNCH//__PIRESUME__/"$RESUME_ARGS"}
+LAUNCH=${LAUNCH//__CLAUDEPERMFLAG__/"$CLAUDE_PERM_FLAG"}
 case "$LAUNCH" in
 *__CLAUDESETTINGS__*)
   if [ "$KIND" = secondmate ]; then
-    LAUNCH=${LAUNCH//__CLAUDESETTINGS__/$(shell_quote "$STATE_REAL/$ID.claude-settings.json")}
+    LAUNCH=${LAUNCH//__CLAUDESETTINGS__/"$(shell_quote "$STATE_REAL/$ID.claude-settings.json")"}
   else
     claude_settings="'{\"feedbackDrafts\":\"off\"__CLAUDEATTRIBUTION____CLAUDEMDEXCLUDES____CLAUDEWORKERPREFIX__}'"
-    LAUNCH=${LAUNCH//__CLAUDESETTINGS__/$claude_settings}
+    LAUNCH=${LAUNCH//__CLAUDESETTINGS__/"$claude_settings"}
   fi
   ;;
 esac
@@ -6505,16 +6505,16 @@ if [ "$HARNESS" = rovo ]; then
     echo "error: could not resolve this task's home paths for rovo's allowedExternalPaths grant" >&2
     exit 1
   }
-  LAUNCH=${LAUNCH//__ROVOCONFIGOVERRIDE__/$ROVOCONFIGOVERRIDE}
+  LAUNCH=${LAUNCH//__ROVOCONFIGOVERRIDE__/"$ROVOCONFIGOVERRIDE"}
 fi
-LAUNCH=${LAUNCH//__BRIEF__/$sq_brief}
-LAUNCH=${LAUNCH//__TURNEND__/$sq_turnend}
-LAUNCH=${LAUNCH//__PIEXT__/$sq_piext}
-LAUNCH=${LAUNCH//__PITURNEND__/$sq_piturnend}
-LAUNCH=${LAUNCH//__PIWATCH__/$sq_piwatch}
-LAUNCH=${LAUNCH//__OMPEXT__/$sq_ompext}
-LAUNCH=${LAUNCH//__OMPWORKERCFG__/$sq_ompcfg}
-LAUNCH=${LAUNCH//__OPINPUT__/$sq_opinput}
+LAUNCH=${LAUNCH//__BRIEF__/"$sq_brief"}
+LAUNCH=${LAUNCH//__TURNEND__/"$sq_turnend"}
+LAUNCH=${LAUNCH//__PIEXT__/"$sq_piext"}
+LAUNCH=${LAUNCH//__PITURNEND__/"$sq_piturnend"}
+LAUNCH=${LAUNCH//__PIWATCH__/"$sq_piwatch"}
+LAUNCH=${LAUNCH//__OMPEXT__/"$sq_ompext"}
+LAUNCH=${LAUNCH//__OMPWORKERCFG__/"$sq_ompcfg"}
+LAUNCH=${LAUNCH//__OPINPUT__/"$sq_opinput"}
 case "$HARNESS" in
 pi | pi-signed) LAUNCH=${LAUNCH//__PIBIN__/"$(shell_quote "$PI_BIN")"} ;;
 cursor) LAUNCH=${LAUNCH//__CURSORBIN__/"$(shell_quote "$CURSOR_BIN")"} ;;
@@ -6542,7 +6542,7 @@ opencode)
   LAUNCH=${LAUNCH//__OPENCODEBIN__/"$oc_launch_bin"}
   ;;
 esac
-LAUNCH=${LAUNCH//__WORKTREE__/$sq_worktree}
+LAUNCH=${LAUNCH//__WORKTREE__/"$sq_worktree"}
 # A record-backed launch brief is published into the state dir of the pane
 # receiving it, which for a secondmate is its own home, not this primary's.
 case "$LAUNCH" in
@@ -6564,7 +6564,7 @@ case "$LAUNCH" in
     echo "error: could not resolve the task-channel directories for $ID's claude --add-dir grant" >&2
     exit 1
   }
-  LAUNCH=${LAUNCH//__CLAUDEADDDIRS__/$CLAUDE_ADD_DIRS}
+  LAUNCH=${LAUNCH//__CLAUDEADDDIRS__/"$CLAUDE_ADD_DIRS"}
   ;;
 esac
 case "$HARNESS" in

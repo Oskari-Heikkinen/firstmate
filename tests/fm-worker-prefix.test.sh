@@ -10,6 +10,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 # shellcheck source=bin/fm-worker-prefix-lib.sh
 . "$ROOT/bin/fm-worker-prefix-lib.sh"
+# shellcheck source=bin/fm-timeout-lib.sh
+. "$ROOT/bin/fm-timeout-lib.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-worker-prefix)
 trap fm_test_cleanup EXIT
@@ -190,6 +192,23 @@ test_pi_skill_dirs_take_kept_skills_and_whole_project_roots() {
   pass "a Pi worker gets each kept skill from the first root holding it and a project's own skill roots whole"
 }
 
+test_launch_builder_keeps_special_characters_in_paths() {
+  local dir agent wt out words
+  dir="$TMP_ROOT/special-paths"
+  agent="$dir/agent a&b c'd"
+  wt="$dir/wt a&b c'd"
+  make_skill "$agent/skills" kept1
+  mkdir -p "$wt/.agents/skills" "$dir/home" "$dir/bin"
+  make_pi_probe "$dir/bin"
+  out=$(HOME="$dir/home" FM_FAKE_PI_SKILLS=1 fm_worker_prefix_launch 'pi__CLAUDEENV____PISKILLS__ --tail' 'keep kept1' pi \
+    "$dir/cfg" "$dir/root" '' "$dir/bin/pi" t1 "$wt" "$agent") || fail "the launch builder failed"
+  eval "words=($out)"
+  assert_equals 7 "${#words[@]}" "the launch did not split into its words: $out"
+  assert_equals "$agent/skills/kept1" "${words[3]}" "a kept skill path with & space and apostrophe was altered: $out"
+  assert_equals "$wt/.agents/skills" "${words[5]}" "a project skill root with & space and apostrophe was altered: $out"
+  pass "the launch builder keeps & spaces and apostrophes in the paths it substitutes"
+}
+
 # --- the launch --------------------------------------------------------------
 
 test_claude_ship_launch_carries_the_cut() {
@@ -286,6 +305,25 @@ test_pi_ship_launch_loads_only_kept_skills() {
   pass "a Pi ship launch turns discovery off and loads the kept skills and the project's own skills"
 }
 
+test_pi_ship_launch_keeps_special_characters_in_paths() {
+  local out agent launch
+  # bash 5.2 expands & in an unquoted ${x//pat/rep} replacement; the case
+  # directory carries one into every home path the launch template substitutes.
+  new_case 'pi-a&b' pi
+  agent="$CASE_DIR/agent a&b c'd"
+  make_skill "$agent/skills" review-preferences
+  fm_test_spawn_brief "$HOME_DIR" prefix-pi-z9
+  out=$(FM_FAKE_PI_SKILLS=1 FM_FAKE_LAUNCH_LOG="$LAUNCH_LOG" PI_CODING_AGENT_DIR="$agent" fm_test_run_spawn "$HOME_DIR" "$WT_DIR" \
+    "$FAKEBIN_DIR" prefix-pi-z9 "$PROJ_DIR" --mode no-mistakes --yolo off --model openai-codex/gpt-5.6-sol) \
+    || fail "pi spawn failed: $out"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" " --skill $(_fm_worker_prefix_quote "$agent/skills/review-preferences") " \
+    "a Pi ship's kept skill path with & space and apostrophe was altered on its way through the spawn"
+  assert_contains "$launch" "pi-a&b/home/data/prefix-pi-z9/launch-brief.md" "a brief path with & was altered in the launch"
+  assert_not_contains "$launch" "pi-a__" "a launch placeholder replaced the & in a path"
+  pass "a Pi ship launch keeps & spaces and apostrophes in its brief and kept skill paths"
+}
+
 test_pi_without_skill_flags_launches_unchanged_with_a_warning() {
   local out
   new_case pi-old pi
@@ -336,7 +374,7 @@ check_home() {  # <name>: sets CK_HOME CK_STATE CK_CONFIG
 
 transcript() {  # <file> <prefix-tokens|bad|none>
   {
-    printf '%s\n' '{"type":"user","message":{}}' 'partial {'
+    printf '%s\n' '{"type":"user","message":{}}' ''
     case "$2" in
     none) ;;
     bad) printf '%s\n' '{"type":"assistant","message":{"usage":{"input_tokens":"x"}}}' ;;
@@ -388,16 +426,165 @@ test_check_unread_states_raise_their_own_alarm() {
 
 test_check_waits_for_the_first_assistant_record() {
   check_home pending
-  transcript "$CK_HOME/none.jsonl" none
-  head -n 2 "$CK_HOME/none.jsonl" > "$CK_HOME/early.jsonl"
+  printf '%s\n' '{"type":"user","message":{}}' > "$CK_HOME/early.jsonl"
+  printf '%s' '{"type":"assistant","message":{"usage":{"input_tok' >> "$CK_HOME/early.jsonl"
   run_check p1 "$CK_HOME/early.jsonl" || fail "the check failed before the first reply"
-  assert_absent "$CK_STATE/p1.prefix-checked" "a transcript with no reply yet was given a verdict"
+  assert_absent "$CK_STATE/p1.prefix-checked" "a transcript whose first reply is still being written was given a verdict"
   assert_absent "$CK_STATE/worker-prefix/log" "a transcript with no reply yet was logged"
   : > "$CK_STATE/p2.prefix-checked"
   transcript "$CK_HOME/big.jsonl" 90000
   run_check p2 "$CK_HOME/big.jsonl" || fail "the marked check failed"
   assert_absent "$CK_STATE/worker-prefix/log" "a marked task was checked again"
-  pass "the check waits for the first reply and never repeats once marked"
+  # Only a regular marker counts: a directory there is not a verdict.
+  mkdir "$CK_STATE/p3.prefix-checked"
+  transcript "$CK_HOME/ok.jsonl" 100
+  run_check p3 "$CK_HOME/ok.jsonl"
+  assert_grep "p3 project=proj" "$CK_STATE/worker-prefix/log" "a directory at the marker path stopped the check"
+  pass "the check waits for a first reply still being written and never repeats once a regular marker exists"
+}
+
+test_check_reads_a_corrupt_line_before_the_first_reply_as_unread() {
+  check_home corrupt
+  printf '%s\n' '{"type":"user","message":{}}' 'not json {' \
+    '{"type":"assistant","message":{"usage":{"input_tokens":100}}}' > "$CK_HOME/t.jsonl"
+  run_check k1 "$CK_HOME/t.jsonl" || fail "the check failed on a corrupt line"
+  assert_contains "$(active)" "worker-prefix-unread-proj" "a corrupt complete line before the first reply was skipped"
+  assert_grep "k1 project=proj claude=unknown prefix=? expected=20000 margin=5000 verdict=unread" "$CK_STATE/worker-prefix/log" \
+    "a corrupt complete line before the first reply did not read as unread"
+  pass "a complete line before the first reply that is not JSON reads as unread, not as a skippable tail"
+}
+
+# usage_transcript <file> <usage-json>: one assistant record with that usage.
+usage_transcript() {
+  printf '{"type":"assistant","message":{"usage":%s}}\n' "$2" > "$1"
+}
+
+test_check_refuses_invalid_usage_counts() {
+  local n=0 usage
+  check_home counts
+  transcript "$CK_HOME/over.jsonl" 30000
+  run_check v0 "$CK_HOME/over.jsonl" || fail "the over check failed"
+  for usage in '{"input_tokens":30000.5}' '{"input_tokens":-1}' '{"input_tokens":1e400}' \
+    '{"input_tokens":18446744073709581616}' '{"input_tokens":1000000000}' '{"input_tokens":"7"}' \
+    '{"input_tokens":5,"cache_creation_input_tokens":-3}' '{"input_tokens":0.5,"cache_read_input_tokens":0.5}' \
+    '{"input_tokens":5,"cache_read_input_tokens":false}' '{"cache_read_input_tokens":5}' '"usage"' 'null'; do
+    n=$((n + 1))
+    usage_transcript "$CK_HOME/u$n.jsonl" "$usage"
+    run_check "v$n" "$CK_HOME/u$n.jsonl" || fail "the check failed on usage $usage"
+    assert_grep "v$n project=proj claude=unknown prefix=? expected=20000 margin=5000 verdict=unread" "$CK_STATE/worker-prefix/log" \
+      "usage $usage was not read as unread"
+    assert_contains "$(active)" "worker-prefix-over-proj" "usage $usage cleared the over alarm"
+  done
+  usage_transcript "$CK_HOME/exp.jsonl" '{"input_tokens":3e4,"cache_creation_input_tokens":null}'
+  run_check w1 "$CK_HOME/exp.jsonl" || fail "the check failed on an exponent count"
+  assert_grep "w1 project=proj claude=unknown prefix=30000 expected=20000 margin=5000 verdict=over" "$CK_STATE/worker-prefix/log" \
+    "a whole-number count in exponent form was not read as that number"
+  usage_transcript "$CK_HOME/max.jsonl" '{"input_tokens":999999999,"cache_creation_input_tokens":999999999,"cache_read_input_tokens":999999999}'
+  run_check w2 "$CK_HOME/max.jsonl" || fail "the check failed on the largest counts"
+  assert_grep "w2 project=proj claude=unknown prefix=2999999997 expected=20000 margin=5000 verdict=over" "$CK_STATE/worker-prefix/log" \
+    "the largest valid counts were not summed exactly"
+  pass "fractional, negative, oversized, overflowing, non-numeric or missing token counts read as unread and never clear the alarm"
+}
+
+test_check_never_opens_a_non_regular_transcript() {
+  local kind rc
+  check_home special
+  for kind in fifo directory dangling; do
+    case "$kind" in
+    fifo) mkfifo "$CK_HOME/$kind" ;;
+    directory) mkdir "$CK_HOME/$kind" ;;
+    dangling) ln -s "$CK_HOME/absent.jsonl" "$CK_HOME/$kind" ;;
+    esac
+    rc=0
+    # shellcheck disable=SC2016 # the inner shell expands its own arguments
+    fm_run_timed 30 bash -c 'jq -cn --arg t "$5" "{transcript_path:\$t}" | "$0" "$1" "$2" "$3" "$4" proj' \
+      "$CHECK" "$CK_HOME" "$CK_STATE" "$CK_CONFIG" "s-$kind" "$CK_HOME/$kind" || rc=$?
+    [ "$rc" -ne 124 ] || fail "the check blocked on a $kind transcript"
+    [ "$rc" -eq 0 ] || fail "the check failed on a $kind transcript: exit $rc"
+    assert_grep "s-$kind project=proj claude=unknown prefix=? expected=20000 margin=5000 verdict=unread" "$CK_STATE/worker-prefix/log" \
+      "a $kind transcript was not read as unread"
+  done
+  if [ "$(id -u)" != 0 ]; then
+    transcript "$CK_HOME/locked.jsonl" 100
+    chmod 000 "$CK_HOME/locked.jsonl"
+    run_check s-locked "$CK_HOME/locked.jsonl" || fail "the check failed on an unreadable transcript"
+    chmod 600 "$CK_HOME/locked.jsonl"
+    assert_grep "s-locked project=proj claude=unknown prefix=? expected=20000 margin=5000 verdict=unread" "$CK_STATE/worker-prefix/log" \
+      "an unreadable transcript was not read as unread"
+  fi
+  printf '{"transcript_path":' | "$CHECK" "$CK_HOME" "$CK_STATE" "$CK_CONFIG" s-hook proj || fail "the check failed on bad hook input"
+  assert_grep "s-hook project=proj claude=unknown prefix=? expected=20000 margin=5000 verdict=unread" "$CK_STATE/worker-prefix/log" \
+    "hook input that is not JSON was not read as unread"
+  pass "a FIFO, directory, dangling or unreadable transcript, or hook input that is not JSON, reads as unread without blocking"
+}
+
+test_check_records_its_own_failure_once_and_resolves_it() {
+  local status
+  check_home failure
+  status="$CK_STATE/worker-prefix.status"
+  transcript "$CK_HOME/t.jsonl" 100
+  : > "$CK_STATE/worker-prefix"
+  run_check f1 "$CK_HOME/t.jsonl"
+  expect_code 1 $? "a check that cannot create its state did not exit 1"
+  assert_absent "$CK_STATE/f1.prefix-checked" "a check that could not finish wrote its marker"
+  assert_grep "blocked [key=worker-prefix-check-f1]" "$status" "a check that cannot create its state raised nothing"
+  assert_grep "cannot create $CK_STATE/worker-prefix" "$status" "the failure line does not say what failed"
+  run_check f1 "$CK_HOME/t.jsonl"
+  assert_equals 1 "$(grep -c 'key=worker-prefix-check' "$status")" "a repeated failure appended a second blocked line"
+  run_check g1 "$CK_HOME/t.jsonl"
+  assert_grep "blocked [key=worker-prefix-check-g1]" "$status" "another worker's open failure hid this worker's"
+  rm "$CK_STATE/worker-prefix"
+  run_check f1 "$CK_HOME/t.jsonl" || fail "the check failed once its state could be created"
+  assert_present "$CK_STATE/f1.prefix-checked" "the recovered check wrote no marker"
+  assert_equals "resolved" "$(grep -F 'key=worker-prefix-check-f1]' "$status" | tail -n 1 | cut -d' ' -f1)" \
+    "the recovered check did not resolve its failure"
+  assert_equals "blocked" "$(grep -F 'key=worker-prefix-check-g1]' "$status" | tail -n 1 | cut -d' ' -f1)" \
+    "one worker's finished check resolved another worker's failure"
+  mkdir "$CK_STATE/f2.prefix-checked"
+  run_check f2 "$CK_HOME/t.jsonl"
+  expect_code 1 $? "a check that cannot write its marker did not exit 1"
+  assert_equals "blocked" "$(grep -F 'key=worker-prefix-check-f2]' "$status" | tail -n 1 | cut -d' ' -f1)" \
+    "a marker that cannot be written raised nothing"
+  pass "a check that cannot finish raises one blocker per worker, retries without repeating it, and resolves only its own when it finishes"
+}
+
+test_stop_hook_records_a_checker_that_cannot_record_itself() {
+  local dir state cmd out rc
+  dir="$TMP_ROOT/hook-fallback"
+  state="$dir/a&b c'd/state"
+  mkdir -p "$state" "$dir/config" "$dir/root/bin"
+  transcript "$dir/t.jsonl" 100
+  cmd=$(fm_worker_prefix_stop_command "$dir/root" "$dir" "$state" "$dir/config" h1 proj)
+  out=$(jq -cn --arg t "$dir/t.jsonl" '{transcript_path:$t}' | sh -c "$cmd" 2>&1) || fail "a missing checker failed the Stop hook: $out"
+  assert_grep "blocked [key=worker-prefix-check-h1]" "$state/worker-prefix.status" "a missing checker raised nothing"
+  assert_grep "worker h1 exited 127" "$state/worker-prefix.status" "the fallback line does not name the worker and exit"
+  assert_absent "$state/h1.prefix-checked" "a checker that never ran was marked done"
+  out=$(jq -cn --arg t "$dir/t.jsonl" '{transcript_path:$t}' | sh -c "$cmd" 2>&1) || fail "a second missing-checker turn failed: $out"
+  assert_equals 1 "$(grep -c 'key=worker-prefix-check-h1' "$state/worker-prefix.status")" "a broken checker reported again on its next turn"
+  # A checker that works again finishes and resolves the fallback's blocker.
+  cmd=$(fm_worker_prefix_stop_command "$ROOT" "$dir" "$state" "$dir/config" h1 proj)
+  out=$(jq -cn --arg t "$dir/t.jsonl" '{transcript_path:$t}' | sh -c "$cmd" 2>&1) || fail "the repaired check failed: $out"
+  assert_present "$state/h1.prefix-checked" "the repaired check wrote no marker"
+  assert_equals "resolved" "$(grep -F 'key=worker-prefix-check-h1]' "$state/worker-prefix.status" | tail -n 1 | cut -d' ' -f1)" \
+    "the repaired check did not resolve the fallback's blocker"
+  printf '#!/bin/sh\nexit 1\n' > "$dir/root/bin/fm-worker-prefix-check.sh"
+  chmod +x "$dir/root/bin/fm-worker-prefix-check.sh"
+  cmd=$(fm_worker_prefix_stop_command "$dir/root" "$dir" "$state" "$dir/config" h2 proj)
+  printf '{}' | sh -c "$cmd" || fail "a checker that recorded its own failure failed the Stop hook"
+  assert_equals 0 "$(grep -c 'key=worker-prefix-check-h2' "$state/worker-prefix.status")" \
+    "the fallback repeated a failure the checker had recorded"
+  assert_absent "$state/h2.prefix-checked" "a recorded failure was marked done"
+  if [ "$(id -u)" != 0 ]; then
+    printf '#!/bin/sh\nexit 3\n' > "$dir/root/bin/fm-worker-prefix-check.sh"
+    chmod 400 "$state/worker-prefix.status"
+    rc=0
+    out=$(printf '{}' | sh -c "$cmd" 2>&1) || rc=$?
+    chmod 600 "$state/worker-prefix.status"
+    expect_code 1 "$rc" "an unrecordable failure did not surface as a Stop hook error"
+    assert_contains "$out" "cannot record that the prompt-prefix check for worker h2 failed" \
+      "the Stop hook error does not say what could not be recorded"
+  fi
+  pass "the Stop hook records a missing or unrecording checker once, retries it until it finishes and resolves, quotes an & space and apostrophe path, and errors visibly when it cannot record"
 }
 
 test_check_reads_the_size_config() {
@@ -410,8 +597,8 @@ test_check_reads_the_size_config() {
   printf 'default 10000 x\n' > "$CK_CONFIG/worker-prefix-size"
   run_check c2 "$CK_HOME/t.jsonl" || fail "the check failed on a bad config"
   assert_contains "$(active)" "worker-prefix-config" "a bad size file raised no alarm"
-  assert_grep "c2 project=proj claude=2.1.314 prefix=10200 expected=20000 margin=5000 verdict=within" "$CK_STATE/worker-prefix/log" \
-    "a bad size file did not fall back to the built-in size"
+  assert_grep "c2 project=proj claude=2.1.314 prefix=10200 expected=? margin=? verdict=unjudged" "$CK_STATE/worker-prefix/log" \
+    "a bad size file was judged against the built-in size"
   printf 'default 10000 100\ndefault 1 1\n' > "$CK_CONFIG/worker-prefix-size"
   run_check c3 "$CK_HOME/t.jsonl" || fail "the check failed on a repeated scope"
   assert_contains "$(active)" "worker-prefix-config" "a repeated scope raised no alarm"
@@ -421,20 +608,85 @@ test_check_reads_the_size_config() {
   pass "the check reads its size from config on every run, alarms on a bad file and clears when it is fixed"
 }
 
+test_check_refuses_every_bad_size_file() {
+  local n=0 body
+  check_home bad-config
+  transcript "$CK_HOME/over.jsonl" 30000
+  run_check b0 "$CK_HOME/over.jsonl" || fail "the over check failed"
+  transcript "$CK_HOME/t.jsonl" 100
+  for body in 'default 1:2 3' 'default 18446744073709581616 5' 'default 1000000000 5' 'default 0 5' 'default -1 5' \
+    'default 10.5 5' '# only a comment' '   ' '' 'pro/j 100 5' 'default 100 5 6' 'default 100'; do
+    n=$((n + 1))
+    printf '%s\n' "$body" > "$CK_CONFIG/worker-prefix-size"
+    run_check "b$n" "$CK_HOME/t.jsonl" || fail "the check failed on size file '$body'"
+    assert_grep "b$n project=proj claude=2.1.314 prefix=100 expected=? margin=? verdict=unjudged" "$CK_STATE/worker-prefix/log" \
+      "size file '$body' was not refused"
+    assert_contains "$(active)" "worker-prefix-config" "size file '$body' raised no config alarm"
+    assert_contains "$(active)" "worker-prefix-over-proj" "size file '$body' certified the prefix within"
+  done
+  : > "$CK_CONFIG/worker-prefix-size"
+  run_check b-empty "$CK_HOME/t.jsonl" || fail "the check failed on an empty size file"
+  assert_grep "b-empty project=proj claude=2.1.314 prefix=100 expected=? margin=? verdict=unjudged" "$CK_STATE/worker-prefix/log" \
+    "an empty size file was not refused"
+  printf 'default 100\0 5\n' > "$CK_CONFIG/worker-prefix-size"
+  run_check b-nul "$CK_HOME/t.jsonl" || fail "the check failed on a size file with a NUL byte"
+  assert_grep "b-nul project=proj claude=2.1.314 prefix=100 expected=? margin=? verdict=unjudged" "$CK_STATE/worker-prefix/log" \
+    "a size file with a NUL byte was not refused"
+  rm "$CK_CONFIG/worker-prefix-size"
+  mkdir "$CK_CONFIG/worker-prefix-size"
+  run_check b-dir "$CK_HOME/t.jsonl" || fail "the check failed on a directory size file"
+  assert_grep "b-dir project=proj claude=2.1.314 prefix=100 expected=? margin=? verdict=unjudged" "$CK_STATE/worker-prefix/log" \
+    "a directory at the size file path was not refused"
+  rmdir "$CK_CONFIG/worker-prefix-size"
+  printf 'default 0000150 000\n' > "$CK_CONFIG/worker-prefix-size"
+  run_check b-zeros "$CK_HOME/t.jsonl" || fail "the check failed on leading zeros"
+  assert_grep "b-zeros project=proj claude=2.1.314 prefix=100 expected=150 margin=0 verdict=within" "$CK_STATE/worker-prefix/log" \
+    "leading zeros were not read as decimal"
+  assert_not_contains "$(active)" "worker-prefix-config" "a good size file did not clear the config alarm"
+  pass "a size file that is empty, comment-only, non-regular, holds a NUL, or has a malformed, oversized or zero field is refused and never certifies a prefix"
+}
+
+test_calibrated_project_sizes_alarm_only_on_regression() {
+  check_home calibrated
+  # A project whose normal first turn sits above the default carries its own
+  # measured line.
+  printf 'default 20000 5000\nwide 40000 4000\n' > "$CK_CONFIG/worker-prefix-size"
+  transcript "$CK_HOME/normal.jsonl" 41000
+  jq -cn --arg t "$CK_HOME/normal.jsonl" '{transcript_path:$t}' | "$CHECK" "$CK_HOME" "$CK_STATE" "$CK_CONFIG" n1 wide \
+    || fail "the calibrated check failed"
+  assert_grep "n1 project=wide claude=2.1.314 prefix=41000 expected=40000 margin=4000 verdict=within" "$CK_STATE/worker-prefix/log" \
+    "a normal first turn of a calibrated project was not judged against its own size"
+  assert_not_contains "$(active)" "worker-prefix-over-wide" "a normal first turn of a calibrated project alarmed"
+  transcript "$CK_HOME/regressed.jsonl" 52000
+  jq -cn --arg t "$CK_HOME/regressed.jsonl" '{transcript_path:$t}' | "$CHECK" "$CK_HOME" "$CK_STATE" "$CK_CONFIG" n2 wide \
+    || fail "the regression check failed"
+  assert_contains "$(active)" "worker-prefix-over-wide" "a regressed first turn of a calibrated project did not alarm"
+  pass "a project with its own measured size passes a normal first turn and alarms on a regression"
+}
+
 test_every_repo_skill_is_classified
 test_list_parser_refuses_bad_lists
 test_claude_setting_names_every_unkept_skill
 test_pi_skill_dirs_take_kept_skills_and_whole_project_roots
+test_launch_builder_keeps_special_characters_in_paths
 test_claude_ship_launch_carries_the_cut
 test_claude_stop_hook_records_a_verdict_once
 test_firstmate_repo_claude_worker_drops_auto_memory
 test_pi_ship_launch_loads_only_kept_skills
+test_pi_ship_launch_keeps_special_characters_in_paths
 test_pi_without_skill_flags_launches_unchanged_with_a_warning
 test_firstmate_repo_pi_worker_takes_kept_repo_skills
 test_bad_list_refuses_the_launch_before_provisioning
 test_check_over_then_within_clears_the_alarm
 test_check_unread_states_raise_their_own_alarm
 test_check_waits_for_the_first_assistant_record
+test_check_reads_a_corrupt_line_before_the_first_reply_as_unread
+test_check_refuses_invalid_usage_counts
+test_check_never_opens_a_non_regular_transcript
+test_check_records_its_own_failure_once_and_resolves_it
+test_stop_hook_records_a_checker_that_cannot_record_itself
 test_check_reads_the_size_config
+test_check_refuses_every_bad_size_file
+test_calibrated_project_sizes_alarm_only_on_regression
 
 printf '# all fm-worker-prefix tests passed\n'

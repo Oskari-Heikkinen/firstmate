@@ -149,13 +149,13 @@ render_snippet() {  # [snippet]
         line=${line#*\} }
         ;;
     esac
-    line=${line//__FM_PI_EXT__/$pi_ext}
-    line=${line//__FM_PI_TURNEND_EXT__/$pi_turnend_ext}
-    line=${line//__FM_OMP_EXT__/$omp_ext}
-    line=${line//__FM_OMP_TURNEND_EXT__/$omp_turnend_ext}
-    line=${line//__FM_X_MODE_ENV_SH__/$x_mode_env_sh}
-    line=${line//__FM_X_MODE_ENV__/$x_mode_env}
-    line=${line//__FM_GROK_ARM__/$grok_arm}
+    line=${line//__FM_PI_EXT__/"$pi_ext"}
+    line=${line//__FM_PI_TURNEND_EXT__/"$pi_turnend_ext"}
+    line=${line//__FM_OMP_EXT__/"$omp_ext"}
+    line=${line//__FM_OMP_TURNEND_EXT__/"$omp_turnend_ext"}
+    line=${line//__FM_X_MODE_ENV_SH__/"$x_mode_env_sh"}
+    line=${line//__FM_X_MODE_ENV__/"$x_mode_env"}
+    line=${line//__FM_GROK_ARM__/"$grok_arm"}
     printf '%s\n' "$line"
   done < "$snippet"
 }
