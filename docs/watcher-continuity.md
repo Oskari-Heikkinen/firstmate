@@ -224,6 +224,11 @@ If an announced-but-unacknowledged episode has an empty queue, the arm leaves th
 If a durable row arrived after the announcement, the arm opens a fresh pending downtime generation so buried work still resurfaces once.
 A Codex foreground checkpoint skips the announced-episode reopen transition, so an already-announced generation stays announced while the checkpoint continues its bounded supervision.
 Its ordinary arm check still announces a never-announced generation, including one made pending by a durable queue append during the checkpoint.
+A recovery wakes the supervisor (`check: rearm-resurface`) only when something is owed: the durable wake queue holds a row, or a status or turn-end source holds a change the supervisor has not been shown.
+An already-shown open decision does not by itself cause a restart wake; its reminder policy remains separate.
+A queue that exists but is not a readable regular file, an unreadable, nonregular or symlink source (even with an unchanged seen signature), a source whose signature cannot be read, and a malformed marker the arm check quarantined count as owed.
+With nothing owed the watcher retires the announced generation with the same generation-bound acknowledgement the drain gives an empty queue and writes one `rearm-resurface not woken` line to the wake-triage log instead of waking.
+A durable append racing that acknowledgement opens a fresh pending generation, which the acknowledgement refuses, so the new work still resurfaces on the next cycle.
 
 ### Generation reuse
 
@@ -250,7 +255,7 @@ It is a non-fatal result that names its own remedy: re-drain, then acknowledge t
 
 The acknowledgement retires the marker only when no rows remain after sequence-bound consumption.
 A concurrently appended wake has a higher sequence, remains queued, and keeps the episode pending for presentation.
-Consequently, a watcher close during handling republishes the same generation as pending and forces one recovery turn even when no queue row remains, while the outstanding generation-bound acknowledgement stays valid.
+Consequently, a watcher close during handling republishes the same generation as pending, and the successor presents it once if anything is still owed (see [Announcement](#announcement)), while the outstanding generation-bound acknowledgement stays valid.
 An acknowledged episode does not freeze the generation, because the next downtime after it opens an episode of its own.
 
 ## Per-actor acknowledgement

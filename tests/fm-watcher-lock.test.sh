@@ -1161,6 +1161,10 @@ run_legacy_identity_takeover() {  # <case> <successor-first>
   if [ "$successor_first" -eq 1 ]; then
     stop_outside_state_locks "$old" "$state" \
       || fail "could not pause the old holder outside its state locks: $(cat "$old_out")"
+    # A healthy empty recovery now stays quiet. Seed owed input only after
+    # pausing the predecessor, so the successor has a reason to wake and exit.
+    append_wake "$state" check replacement-fixture 'check: replacement fixture input' \
+      || fail 'could not queue the successor recovery input'
   fi
   PATH="$fakebin:$PATH" FM_PROC_ROOT_OVERRIDE="$no_proc" TZ=America/Los_Angeles FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_GUARD_GRACE=1 FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$new_out" 2>&1 &
   new=$!
@@ -2082,6 +2086,10 @@ test_watch_restart_rejects_reused_pid() {
   printf '%s\n' "$dir" > "$state/.watch.lock/fm-home"
   printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
   printf '%s\n' "stale watcher identity" > "$state/.watch.lock/pid-identity"
+  # A recovery that owes nothing wakes nobody; this unshown update is owed and
+  # publishes no recovery marker itself, so only the replaced lock's recovery
+  # can make the wake a rearm-resurface.
+  printf 'working: fixture update\n' > "$state/owed.status"
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" --restart > "$out" &
   pid=$!
   i=0
@@ -2459,6 +2467,8 @@ test_arm_starts_and_self_heals() {
       printf '%s\n' "$WATCH" > "$state/.watch.lock/watcher-path"
       printf '%s\n' "dead watcher identity" > "$state/.watch.lock/pid-identity"
       touch "$state/.last-watcher-beat"
+      # Owed work for the recovery, as in test_watch_restart_rejects_reused_pid.
+      printf 'working: fixture update\n' > "$state/owed.status"
     fi
     PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
     armpid=$!

@@ -20,7 +20,8 @@
 #      acknowledgement resets the ladder for the next message.
 #   5. A real fm-watch.sh subprocess re-rings the doorbell for an unhandled
 #      aged message on an idle pane WITHOUT waking firstmate, waits on a busy
-#      pane, stays silent on a healthy/empty inbox, surfaces unwritable ladder
+#      pane until a turn boundary after the record's arrival and a 15-minute
+#      age floor (then escalates stuck-busy once), stays silent on a healthy/empty inbox, surfaces unwritable ladder
 #      bookkeeping only while its record remains unhandled, and emits exactly
 #      one stale wake once the ring budget is spent.
 #   6. Dead panes: the doorbell line is a shell no-op when executed by a bare
@@ -698,180 +699,140 @@ test_watcher_rerings_idle_pane_quietly() {
   pass "watcher: an unhandled aged message on an idle pane re-rings without waking firstmate, and the ack silences it"
 }
 
-# A fresh process for each check proves the busy budget survives watcher restarts.
-busy_steer_check() {  # <case-dir> [capture] [busy-max]
+# A fresh process for each check proves the escalation decision needs no
+# watcher memory.
+busy_steer_check() {  # <case-dir> [capture]
   PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" FM_SEND_LOG="$1/send.log" \
     FM_FAKE_TMUX_CAPTURE="${2:-$1/busy.capture}" FM_BUSY_REGEX=BUSYTOKEN \
-    FM_TASK_INBOX_GRACE_SECS=0 FM_TASK_INBOX_BUSY_MAX="${3-2}" \
+    FM_TASK_INBOX_GRACE_SECS=0 \
     bash -c '. "$1" && inbox_steer_check sess:fm-t1 t1' _ "$WATCH" > "$1/check.out" 2>&1
 }
 
-busy_case() {
+busy_case() {  # <name> [busy-state]
   local dir rec
   dir=$(setup_watch_case "$1")
   printf 'some output\nBUSYTOKEN active\n' > "$dir/busy.capture"
+  if [ "${2-}" = busy-state ]; then
+    # A semantic-source task's current busy record is not evidence that a
+    # turn ended, even if a new turn-start event rewrites it after the steer.
+    fm_write_meta "$dir/state/t1.meta" "window=sess:fm-t1" "kind=ship" "harness=claude"
+    "$ROOT/bin/fm-busy-event.sh" arm "$dir/state" t1 >/dev/null || fail "could not arm the busy-state record"
+    touch -t 201901010000 "$dir/state/t1.busy-state"
+  fi
   rec=$(inbox_lib "$dir/state" fm_task_inbox_write "$dir/state" t1 "please continue")
   age_path "$rec"
   printf '%s' "$dir"
 }
 
-test_watcher_waits_on_busy_pane() {
-  local dir wakes
-  dir=$(busy_case busywait)
-  busy_steer_check "$dir"
-  [ ! -s "$dir/state/.wake-queue" ] || fail "first busy deferral must wait"
-  busy_steer_check "$dir"
-  grep -q 'stuck-busy' "$dir/state/.wake-queue" \
-    || fail "consecutive busy deferrals did not escalate across watcher restart"
-  [ ! -s "$dir/send.log" ] || fail "busy escalation typed into the pane"
-  wakes=$(wc -l < "$dir/state/.wake-queue")
-  busy_steer_check "$dir"
-  [ "$(wc -l < "$dir/state/.wake-queue")" = "$wakes" ] || fail "busy escalation repeated"
-  [ -f "$dir/state/t1.inbox/001.msg" ] || fail "busy escalation lost the steer"
-  pass "watcher: busy deferrals survive restart, escalate once at the bound, and never type"
+age_secs() {  # <seconds> <path>  (mtime that many seconds ago)
+  perl -e 'my $t = time - shift; utime $t, $t, @ARGV or exit 1' "$1" "$2"
 }
 
-test_watcher_busy_budget_resets_on_ring_and_ack() {
+wake_rows() {  # <case-dir>
+  if [ -f "$1/state/.wake-queue" ]; then wc -l < "$1/state/.wake-queue" | tr -d ' '; else printf 0; fi
+}
+
+test_watcher_busy_pane_defers_without_turn_boundary() {
+  local dir check
+  dir=$(busy_case busy-no-boundary)
+  for check in 1 2 3 4; do
+    busy_steer_check "$dir"
+    [ "$(wake_rows "$dir")" = 0 ] || fail "a busy pane with no turn boundary since the record arrived escalated on check $check: $(cat "$dir/state/.wake-queue")"
+  done
+  [ ! -s "$dir/send.log" ] || fail "a busy pane was typed into"
+  [ -f "$dir/state/t1.inbox/001.msg" ] || fail "busy deferral lost the steer"
+  pass "watcher: an aged record on a pane busy in one turn stays deferred without a wake"
+}
+
+# turn_boundary <case-dir> <turn-ended|busy-state>: completion notification
+# versus a new turn-start record, which must not stand in for completion.
+turn_boundary() {
+  case "$2" in
+    turn-ended) : > "$1/state/t1.turn-ended" ;;
+    busy-state)
+      "$ROOT/bin/fm-busy-event.sh" apply "$1/state" t1 busy --current-gen \
+        --source claude-hook --event UserPromptSubmit >/dev/null \
+        || fail "could not record the next turn in the busy-state record"
+      ;;
+  esac
+}
+
+test_watcher_busy_escalates_after_turn_boundary() {
+  local source=$1 dir rec check
+  dir=$(busy_case "busy-boundary-$source" "$source")
+  rec="$dir/state/t1.inbox/001.msg"
+  busy_steer_check "$dir"
+  [ "$(wake_rows "$dir")" = 0 ] || fail "$source: escalated before any turn boundary"
+  turn_boundary "$dir" "$source"
+  busy_steer_check "$dir"
+  [ "$(wake_rows "$dir")" = 1 ] || fail "$source: a turn boundary after an aged unread record did not escalate once: $(cat "$dir/state/.wake-queue" 2>/dev/null)"
+  assert_grep "unread firstmate instruction: stuck-busy across a turn boundary; $rec stays unhandled" "$dir/state/.wake-queue" "$source: the wake names the stuck record"
+  assert_grep "$dir/state/t1.$source changed since" "$dir/state/.wake-queue" "$source: the wake names the boundary source"
+  for check in 1 2 3; do
+    turn_boundary "$dir" "$source"
+    busy_steer_check "$dir"
+    [ "$(wake_rows "$dir")" = 1 ] || fail "$source: stuck-busy escalation repeated on check $check"
+  done
+  [ ! -s "$dir/send.log" ] || fail "$source: stuck-busy escalation typed into the pane"
+  [ -f "$rec" ] || fail "$source: stuck-busy escalation lost the steer"
+  pass "watcher: a $source change after an aged unread record escalates stuck-busy once, without typing"
+}
+
+test_watcher_busy_start_is_not_a_completed_turn() {
+  local dir
+  dir=$(busy_case busy-start-only busy-state)
+  turn_boundary "$dir" busy-state
+  busy_steer_check "$dir"
+  [ "$(wake_rows "$dir")" = 0 ] || fail "a turn-start record was mistaken for a completed turn"
+  : > "$dir/state/t1.turn-ended"
+  busy_steer_check "$dir"
+  [ "$(wake_rows "$dir")" = 1 ] || fail "a real completed turn on the semantic task did not escalate"
+  pass "watcher: a semantic turn start stays quiet, but a completed turn still escalates"
+}
+
+test_watcher_busy_boundary_before_arrival_stays_quiet() {
+  local dir
+  dir=$(busy_case busy-old-boundary)
+  : > "$dir/state/t1.turn-ended"
+  touch -t 201901010000 "$dir/state/t1.turn-ended"
+  busy_steer_check "$dir"
+  busy_steer_check "$dir"
+  [ "$(wake_rows "$dir")" = 0 ] || fail "a turn boundary older than the record escalated: $(cat "$dir/state/.wake-queue")"
+  pass "watcher: a turn boundary before the record arrived does not escalate a busy pane"
+}
+
+test_watcher_busy_escalation_waits_for_the_age_floor() {
+  local dir rec
+  dir=$(busy_case busy-age-floor)
+  rec="$dir/state/t1.inbox/001.msg"
+  age_secs 600 "$rec" || fail "could not age the record"
+  : > "$dir/state/t1.turn-ended"
+  busy_steer_check "$dir"
+  busy_steer_check "$dir"
+  [ "$(wake_rows "$dir")" = 0 ] || fail "a record younger than the floor escalated after a turn boundary: $(cat "$dir/state/.wake-queue")"
+  age_secs 960 "$rec" || fail "could not age the record"
+  age_secs 30 "$dir/state/t1.turn-ended" || fail "could not age the turn-end marker"
+  busy_steer_check "$dir"
+  [ "$(wake_rows "$dir")" = 1 ] || fail "a record past the floor with a later turn boundary did not escalate"
+  pass "watcher: stuck-busy escalation waits for the record to be 15 minutes old"
+}
+
+test_watcher_busy_ring_and_ack_keep_the_ladder() {
   local dir rec
   dir=$(busy_case busy-reset)
+  printf '1\n' > "$dir/state/t1.inbox/.busy-state"
   busy_steer_check "$dir"
   busy_steer_check "$dir" "$(idle_capture "$dir")"
   grep -q 'Firstmate instruction waiting' "$dir/send.log" || fail "idle transition did not ring"
   busy_steer_check "$dir"
-  [ ! -s "$dir/state/.wake-queue" ] || fail "delivered ring did not reset busy budget"
+  [ "$(wake_rows "$dir")" = 0 ] || fail "a busy pane after a delivered ring escalated without a turn boundary"
   rec=$(inbox_lib "$dir/state" fm_task_inbox_write "$dir/state" t1 "next steer")
   mv "$dir/state/t1.inbox/001.msg" "$dir/state/t1.inbox/handled/"
-  busy_steer_check "$dir"
-  [ ! -s "$dir/state/.wake-queue" ] || fail "ack did not reset busy budget for already queued successor"
   mv "$rec" "$dir/state/t1.inbox/handled/"
   busy_steer_check "$dir"
-  [ ! -e "$dir/state/t1.inbox/.busy-state" ] || fail "empty inbox retained busy budget"
-  pass "watcher: delivery and acknowledgement reset the durable busy budget"
-}
-
-test_watcher_busy_bookkeeping_failure_surfaces() {
-  local dir
-  dir=$(busy_case busy-unwritable)
-  mkdir "$dir/state/t1.inbox/.busy-state"
-  busy_steer_check "$dir"
-  grep -q 'bookkeeping unwritable' "$dir/state/.wake-queue" \
-    || fail "unwritable busy budget silently deferred forever"
-  [ ! -s "$dir/send.log" ] || fail "bookkeeping failure typed into busy pane"
-  pass "watcher: unwritable busy bookkeeping surfaces without typing"
-}
-
-# Fail only the busy-state unlink, leaving reads and escalation-marker writes
-# available. Unlike directory permissions, this fault also works as root in CI.
-block_busy_reset() {  # <case-dir>
-  local real_rm
-  real_rm=$(command -v rm)
-  cat > "$1/fakebin/rm" <<SH
-#!/usr/bin/env bash
-for arg in "\$@"; do
-  case "\$arg" in */t1.inbox/.busy-state) exit 1 ;; esac
-done
-exec "$real_rm" "\$@"
-SH
-  chmod +x "$1/fakebin/rm"
-}
-
-test_watcher_successor_busy_reset_failure_surfaces() {
-  local mode=$1 dir rec check capture
-  dir=$(busy_case "successor-reset-failure-$mode")
-  busy_steer_check "$dir"
-  rec=$(inbox_lib "$dir/state" fm_task_inbox_write "$dir/state" t1 "queued successor")
-  mv "$dir/state/t1.inbox/001.msg" "$dir/state/t1.inbox/handled/"
-  block_busy_reset "$dir"
-  capture=$(idle_capture "$dir")
-  [ "$mode" != busy ] || capture="$dir/busy.capture"
-  for check in 1 2 3; do
-    busy_steer_check "$dir" "$capture"
-    if [ "$mode" = busy ] && [ "$check" = 1 ]; then
-      [ ! -s "$dir/state/.wake-queue" ] || fail "successor inherited its predecessor's busy count"
-      continue
-    fi
-    [ "$(wc -l < "$dir/state/.wake-queue" 2>/dev/null | tr -d ' ')" = 1 ] \
-      || fail "$mode successor must surface once, including check $check"
-  done
-  [ "$(cat "$dir/state/t1.inbox/.escalated")" = "${rec##*/}" ] \
-    || fail "reset failure did not mark the successor as escalated"
-  case "$mode" in
-    idle)
-      grep -q 'steering-inbox busy bookkeeping unwritable' "$dir/state/.wake-queue" || fail "successor lost the reset failure reason"
-      [ "$(cut -f1 "$dir/state/t1.inbox/.busy-state")" = 001.msg ] || fail "successor fixture did not retain predecessor state"
-      ;;
-    busy)
-      grep -q 'stuck-busy after 2 consecutive' "$dir/state/.wake-queue" || fail "successor did not get its own busy budget"
-      ;;
-  esac
-  [ ! -s "$dir/send.log" ] || fail "reset failure tried delivery before reporting the error"
-  [ -f "$rec" ] || fail "reset failure lost the queued successor"
-  pass "watcher: $mode successor surfaces once despite unremovable predecessor bookkeeping"
-}
-
-test_watcher_nonbusy_reset_failure_escalates_once() {
-  local mode=$1 dir rec capture check
-  dir=$(busy_case "reset-failure-$mode")
-  rec="$dir/state/t1.inbox/001.msg"
-  busy_steer_check "$dir"
-  block_busy_reset "$dir"
-  capture=$(idle_capture "$dir")
-  if [ "$mode" = protected ]; then
-    printf '╭──────────────────╮\n│ captain draft    │\n╰──────────────────╯\n' > "$capture"
-  fi
-  for check in 1 2 3; do
-    busy_steer_check "$dir" "$capture"
-    [ "$(grep -c 'steering-inbox busy bookkeeping unwritable' "$dir/state/.wake-queue" 2>/dev/null)" = 1 ] \
-      || fail "$mode reset failure repeated or lost its wake on check $check"
-  done
-  [ "$(cat "$dir/state/t1.inbox/.escalated")" = 001.msg ] || fail "$mode reset failure was not marked escalated"
-  [ ! -s "$dir/send.log" ] || fail "$mode reset failure typed into the pane"
-  [ -f "$rec" ] || fail "$mode reset failure lost the unhandled instruction"
-  # The marker belongs to this record, not the next one after repair and ack.
-  rm "$dir/fakebin/rm"
-  mv "$rec" "$dir/state/t1.inbox/handled/"
-  rec=$(inbox_lib "$dir/state" fm_task_inbox_write "$dir/state" t1 "after repair")
-  busy_steer_check "$dir" "$(idle_capture "$dir")"
-  grep -q 'Firstmate instruction waiting' "$dir/send.log" || fail "$mode repair did not restore delivery"
-  [ "$(cut -f1 "$dir/state/t1.inbox/.ring-state")" = "${rec##*/}" ] || fail "$mode repair lost the delivery ladder"
-  pass "watcher: persistent $mode busy-reset failure escalates once and later instructions still deliver"
-}
-
-test_watcher_busy_limit_validation() {
-  local limit=$1 expected=$2 dir check
-  dir=$(busy_case "busy-limit-$limit")
-  for ((check=1; check<expected; check++)); do
-    busy_steer_check "$dir" "$dir/busy.capture" "$limit"
-    [ ! -s "$dir/state/.wake-queue" ] || fail "busy limit '$limit' escalated early at $check"
-  done
-  busy_steer_check "$dir" "$dir/busy.capture" "$limit"
-  grep -q "stuck-busy after $expected consecutive" "$dir/state/.wake-queue" 2>/dev/null \
-    || fail "busy limit '$limit' did not escalate at $expected"
-  busy_steer_check "$dir" "$dir/busy.capture" "$limit"
-  [ "$(wc -l < "$dir/state/.wake-queue" | tr -d ' ')" = 1 ] || fail "busy limit '$limit' repeated escalation"
-  [ ! -s "$dir/send.log" ] || fail "busy limit '$limit' typed into the pane"
-  pass "watcher: busy limit '$limit' escalates exactly once at $expected"
-}
-
-test_watcher_retry_ignores_busy_reset_failure() {
-  local dir rec check
-  dir=$(busy_case retry-reset-failure)
-  busy_steer_check "$dir"
-  mv "$dir/state/t1.inbox/001.msg" "$dir/state/t1.inbox/handled/"
-  mkdir -p "$dir/config"
-  : > "$dir/config/wait-no-turns"
-  rec=$(inbox_lib "$dir/state" fm_task_inbox_write "$dir/state" t1 "one-shot steer" fire-and-forget)
-  inbox_lib "$dir/state" fm_task_inbox_mark_retry "$dir/state" t1 "$rec"
-  block_busy_reset "$dir"
-  for check in 1 2 3; do
-    FM_CONFIG_OVERRIDE="$dir/config" busy_steer_check "$dir" "$(idle_capture "$dir")"
-    [ ! -s "$dir/state/.wake-queue" ] || fail "fire-and-forget retry escalated a busy reset failure on check $check"
-  done
-  [ "$(grep -c 'Firstmate instruction waiting' "$dir/send.log")" = 1 ] || fail "fire-and-forget retry did not ring exactly once"
-  [ ! -e "$dir/state/t1.inbox/.retry-ring" ] || fail "fire-and-forget retry kept its retry mark"
-  [ ! -e "$dir/state/t1.inbox/.escalated" ] || fail "fire-and-forget retry entered escalation"
-  [ -f "$rec" ] || fail "fire-and-forget retry lost its instruction"
-  pass "watcher: unremovable obsolete busy state does not block or escalate a fire-and-forget retry"
+  [ ! -e "$dir/state/t1.inbox/.busy-state" ] || fail "empty inbox retained legacy busy bookkeeping"
+  [ ! -e "$dir/state/t1.inbox/.ring-state" ] || fail "empty inbox retained the ladder"
+  pass "watcher: busy deferral leaves delivery and acknowledgement to the ladder"
 }
 
 test_watcher_successor_escalation_stays_quiet() {
@@ -883,12 +844,13 @@ test_watcher_successor_escalation_stays_quiet() {
   mv "$dir/state/t1.inbox/001.msg" "$dir/state/t1.inbox/handled/"
   case "$mode" in
     busy)
+      age_path "$rec"
       busy_steer_check "$dir"
-      [ ! -s "$dir/state/.wake-queue" ] || fail "successor escalated on its first busy check"
+      [ ! -s "$dir/state/.wake-queue" ] || fail "successor escalated before a turn boundary"
+      : > "$dir/state/t1.turn-ended"
       ;;
     dead) agent=zsh ;;
     missing) missing=1 ;;
-    unwritable) mkdir "$dir/state/t1.inbox/.busy-state" ;;
   esac
   FM_FAKE_TMUX_AGENT="$agent" FM_FAKE_TMUX_MISSING="$missing" busy_steer_check "$dir"
   grep -qF "$rec" "$dir/state/.wake-queue" || fail "$mode successor did not escalate"
@@ -1490,28 +1452,15 @@ test_fire_and_forget_retry_is_owed_once
 test_fire_and_forget_retry_is_quiet_without_the_flag
 test_ring_ladder_policy
 test_watcher_rerings_idle_pane_quietly
-test_watcher_waits_on_busy_pane
-test_watcher_busy_budget_resets_on_ring_and_ack
-test_watcher_busy_bookkeeping_failure_surfaces
-test_watcher_successor_busy_reset_failure_surfaces idle
-test_watcher_successor_busy_reset_failure_surfaces busy
-test_watcher_nonbusy_reset_failure_escalates_once idle
-test_watcher_nonbusy_reset_failure_escalates_once protected
-test_watcher_busy_limit_validation 999999999999999999999999999999 2
-test_watcher_busy_limit_validation 1000000000 2
-test_watcher_busy_limit_validation 0 2
-test_watcher_busy_limit_validation 000 2
-test_watcher_busy_limit_validation '' 2
-test_watcher_busy_limit_validation invalid 2
-test_watcher_busy_limit_validation 1 1
-test_watcher_busy_limit_validation 3 3
-test_watcher_retry_ignores_busy_reset_failure
+test_watcher_busy_pane_defers_without_turn_boundary
+test_watcher_busy_escalates_after_turn_boundary turn-ended
+test_watcher_busy_start_is_not_a_completed_turn
+test_watcher_busy_boundary_before_arrival_stays_quiet
+test_watcher_busy_escalation_waits_for_the_age_floor
+test_watcher_busy_ring_and_ack_keep_the_ladder
 test_watcher_successor_escalation_stays_quiet busy
 test_watcher_successor_escalation_stays_quiet dead
 test_watcher_successor_escalation_stays_quiet missing
-test_watcher_successor_escalation_stays_quiet unwritable
-test_watcher_nonbusy_attempt_resets_busy_streak protected
-test_watcher_nonbusy_attempt_resets_busy_streak failed
 test_watcher_quiet_on_healthy_inbox
 test_watcher_ack_silences_unwritable_ladder
 test_watcher_surfaces_unwritable_ladder

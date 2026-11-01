@@ -55,7 +55,10 @@
 #           or an abnormal Windows non-paged pool prints one wake line when it
 #           starts, again after rewake_s while it stays or at once when the level
 #           rises or the pool turns abnormal, and one `memory guard cleared` line
-#           when neither holds any more. The pool grades warn only, because a
+#           once neither has held for 600 seconds; a return before that folds
+#           into the open notice. After the clear, a return within rewake_s of
+#           the last wake wakes only above the level last told or for a pool
+#           that turns abnormal. The pool grades warn only, because a
 #           leaking Windows driver is its likely cause and no agent response frees
 #           it, but it always wakes main. A Windows reading that is unavailable
 #           holds the pool notice as it was. Secondmate homes never print a wake.
@@ -138,7 +141,9 @@
 # Per-home records, written only here: state/.mem-guard-park (`<last park epoch>
 # [<id where the next pass starts after an unfinished one>]`),
 # state/.mem-guard-wake (`<last wake epoch> <level index woken for, 0 when only the
-# pool> <pool notice 0|1>`, present while main has an open memory notice),
+# pool> <pool notice 0|1> <epoch the state cleared, 0 while it holds> <clear told
+# 0|1>`, present while main has an open memory notice and, once its clear is
+# told, until rewake_s past the last wake),
 # state/.mem-guard-vm-notice (`<occurrence token>`, present while main has an open
 # notice that the VM's paging share is unknown; `storage-unavailable` marks a
 # publication-failure episode; legacy delivery epochs match no occurrence),
@@ -784,21 +789,29 @@ is_secondmate_home() {
 }
 
 # wake_decide <level-index> <epoch> <reasons>: sets wake to the line main gets now, or
-# empty, and keeps state/.mem-guard-wake as the notice main holds open.
+# empty, and keeps state/.mem-guard-wake as the notice main holds open. A clear
+# is told only once it has lasted CLEAR_HOLD_S, so a state that flaps folds into
+# its open notice; after the clear is told the record stays until rewake_s past
+# the last wake, so a return inside that window wakes only above the level last
+# told, or for a pool that turns abnormal. Silent re-entry keeps a told clear
+# told; only an actual new wake can open another clear notice.
+CLEAR_HOLD_S=600
 wake_decide() {
-  local i=$1 t=$2 reasons=$3 rec=0 last=0 last_i=0 last_pool=0 pool=$POOL_ABNORMAL wake_i lvl=0 response
-  { read -r last last_i last_pool <"$STATE/.mem-guard-wake"; } 2>/dev/null && rec=1
+  local i=$1 t=$2 reasons=$3 rec=0 last=0 last_i=0 last_pool=0 since=0 told=0 pool=$POOL_ABNORMAL wake_i lvl=0 response
+  { read -r last last_i last_pool since told <"$STATE/.mem-guard-wake"; } 2>/dev/null && rec=1
   is_uint "$last" || last=0
   # A record with only an epoch predates the wake level and was written at critical.
   is_uint "$last_i" || last_i=4
   [ "$last_pool" = 1 ] || last_pool=0
+  is_uint "$since" || since=0
+  [ "$told" = 1 ] || told=0
   # An unavailable Windows reading is not a healthy pool: hold the notice as it was.
   [ -n "$WIN_POOL_MIB" ] || pool=$last_pool
   wake_i=$(level_index "$R_wake_level")
   [ "$i" -lt "$wake_i" ] || lvl=$i
   if [ "$lvl" -gt 0 ] || [ "$pool" = 1 ]; then
     if [ "$rec" = 0 ] || [ $((t - last)) -ge "$R_rewake_s" ] || [ "$lvl" -gt "$last_i" ] || [ "$pool" -gt "$last_pool" ]; then
-      printf '%s %s %s\n' "$t" "$lvl" "$pool" >"$STATE/.mem-guard-wake" 2>/dev/null
+      printf '%s %s %s 0 0\n' "$t" "$lvl" "$pool" >"$STATE/.mem-guard-wake" 2>/dev/null
       case "$lvl" in
       4) response="new agents and heavy jobs are refused; park or finish waiting workers and stop heavy jobs" ;;
       3) response="new agents and heavy jobs are refused and idle workers on a declared wait are parked" ;;
@@ -807,13 +820,24 @@ wake_decide() {
       *) response="no agent action frees the non-paged pool; it needs the operator" ;;
       esac
       wake="memory guard $(level_name "$i"): $reasons; $response (bin/fm-mem-guard.sh status)"
-    elif [ "$lvl" != "$last_i" ] || [ "$pool" != "$last_pool" ]; then
-      # A fall that still needs a notice is told at the next repeat; a later rise wakes again.
-      printf '%s %s %s\n' "$last" "$lvl" "$pool" >"$STATE/.mem-guard-wake" 2>/dev/null
+    elif [ "$pool" != "$last_pool" ] || [ "$since" != 0 ]; then
+      # Keep both the level and clear actually told until the next notice.
+      # Silent re-entry neither creates an escalation nor reopens a clear.
+      printf '%s %s %s 0 %s\n' "$last" "$last_i" "$pool" "$told" >"$STATE/.mem-guard-wake" 2>/dev/null
     fi
   elif [ "$rec" = 1 ]; then
-    rm -f "$STATE/.mem-guard-wake"
-    wake="memory guard cleared: level $(level_name "$i"): $reasons (bin/fm-mem-guard.sh status)"
+    if [ "$told" = 1 ]; then
+      [ $((t - last)) -lt "$R_rewake_s" ] || rm -f "$STATE/.mem-guard-wake"
+    elif [ "$since" = 0 ] || [ "$t" -lt "$since" ]; then
+      printf '%s %s %s %s 0\n' "$last" "$last_i" "$last_pool" "$t" >"$STATE/.mem-guard-wake" 2>/dev/null
+    elif [ $((t - since)) -ge "$CLEAR_HOLD_S" ]; then
+      if [ $((t - last)) -lt "$R_rewake_s" ]; then
+        printf '%s %s %s %s 1\n' "$last" "$last_i" "$last_pool" "$since" >"$STATE/.mem-guard-wake" 2>/dev/null
+      else
+        rm -f "$STATE/.mem-guard-wake"
+      fi
+      wake="memory guard cleared: level $(level_name "$i"): $reasons (bin/fm-mem-guard.sh status)"
+    fi
   fi
 }
 
