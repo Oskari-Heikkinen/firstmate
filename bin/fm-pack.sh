@@ -849,7 +849,7 @@ load_image() {
   IJSON=$IDIR/$IUNIT.json IMEMBERS=$IDIR/$IUNIT.members.sha256
   IMG=$IDIR/$IUNIT.sqfs
   if { [ -e "$IDIR/$IUNIT.marker.json" ] || [ -L "$IDIR/$IUNIT.marker.json" ]; } &&
-    [ ! -e "$IJSON" ] && [ ! -L "$IJSON" ]; then
+    [ -e "$IJSON" ] && [ ! -L "$IJSON" ]; then
     need python3
     IJSON=$IDIR/$IUNIT.marker.json
     IFORMAT=tj-pack-marker/v1
