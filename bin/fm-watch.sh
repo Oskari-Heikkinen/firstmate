@@ -2623,8 +2623,8 @@ open_decision_setting_to() {  # <out-var> <env-name> <env-value> <config-file> <
   printf -v "$1" '%s' "$_ods_value"
 }
 
-open_decision_reminder_tick() {  # [now-epoch], for deterministic clock callers
-  local now=${1:-} threshold cap ledger old='' rows='' exclude f task open key verb opened note
+open_decision_reminder_tick() {  # [now-epoch] [on-log]; now for deterministic clock callers
+  local now=${1:-} on_log=${2:-} threshold cap ledger old='' rows='' exclude f task open key verb opened note
   local old_task old_key old_opened old_last old_delay last delay wait_task='' waiting wait_line
   local i j n=0 due_n=0 placed reason tmp
   local -a r_task r_key r_opened r_last r_delay order order_new
@@ -2654,7 +2654,7 @@ open_decision_reminder_tick() {  # [now-epoch], for deterministic clock callers
     [ "$f" != "$exclude" ] || continue
     # A log with no timed cursor yet (every log on a watcher's first tick
     # after this landed) folds from byte 0, so beat per log.
-    watcher_beat
+    [ -z "$on_log" ] || "$on_log"
     task=${f##*/}; task=${task%.status}
     open=$(status_open_decisions_incremental "$f" '' timed) || {
       OPEN_DECISION_ERROR="the timed open-decision fold of $f failed"
@@ -2749,8 +2749,8 @@ OPEN
 # be queued.
 OPEN_DECISION_TICK_SECS=60
 OPEN_DECISION_TICK_LAST=
-open_decision_reminder_check() {  # [now-epoch]
-  local now=${1:-} marker="$STATE/.open-decision-reminders.error" seen=''
+open_decision_reminder_check() {  # [now-epoch] [on-log]
+  local now=${1:-} on_log=${2:-} marker="$STATE/.open-decision-reminders.error" seen=''
   [ -n "$now" ] || fm_epoch_seconds_to now
   # A clock that stepped back runs the tick rather than holding it until the
   # clock catches up.
@@ -2760,7 +2760,7 @@ open_decision_reminder_check() {  # [now-epoch]
     return 0
   fi
   OPEN_DECISION_TICK_LAST=$now
-  if open_decision_reminder_tick "$now"; then
+  if open_decision_reminder_tick "$now" "$on_log"; then
     fm_rm_present "$marker"
     return 0
   fi
@@ -4065,7 +4065,7 @@ while :; do
   fm_pending_reply_tick "$STATE" watcher_beat || true
 
   # Opt-in overdue open-decision reminders: a check wake, so never batched.
-  open_decision_reminder_check || exit 1
+  open_decision_reminder_check '' watcher_beat || exit 1
   [ -z "$OPEN_DECISION_REMINDER" ] || wake "$OPEN_DECISION_REMINDER"
 
   # Endpoint liveness runs before queue observation: a positively dead or
