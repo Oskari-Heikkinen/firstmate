@@ -538,7 +538,6 @@ fm_herdr_lab_provision() { # <session>
     sleep 0.2
     attempt=$((attempt + 1))
   done
-  fm_herdr_lab_cancel_provision "$server_pid"
   fm_herdr_lab_error "lab session '$name' did not report running within $timeout_seconds seconds"
   return 1
 }
