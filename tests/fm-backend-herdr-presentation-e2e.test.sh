@@ -30,6 +30,9 @@ REAL_HERDR=$(command -v herdr)
 REAL_TREEHOUSE=$(command -v treehouse)
 HERDR_ORIGINAL_PATH=$PATH
 SUITE_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-presentation.XXXXXX")
+# Summary workers legitimately give descendants a private TMPDIR. Ownership
+# authority belongs to this lab lifetime, not to each descendant's scratch.
+export FM_HERDR_LAB_STATE_DIR="$SUITE_ROOT/lab-state"
 # Each world points TMP_ROOT at its own directory under SUITE_ROOT; the suite
 # itself owns SUITE_ROOT until every world has finished.
 TMP_ROOT=$SUITE_ROOT
@@ -50,10 +53,6 @@ export REAL_HERDR REAL_TREEHOUSE REAL_MOVER TREEHOUSE_LOCK_DIR HERDR_ORIGINAL_PA
 cat > "$FAKEBIN/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
-# Diagnostic reference: one escaped argv record, without changing the existing
-# multi-write observer that reported a forbidden lifecycle call.
-printf -v diagnostic_call '%q ' "$@"
-printf '%s\n' "$diagnostic_call" >> "$HERDR_CALL_LOG.atomic"
 {
   first=1
   for arg in "$@"; do
@@ -570,10 +569,7 @@ assert_no_ordering_lifecycle_calls_since() {  # <line-count> <case-name>
   local start=$1 name=$2 calls
   calls=$(sed -n "$((start + 1)),\$p" "$HERDR_CALL_LOG")
   if printf '%s\n' "$calls" | grep -E $'^(workspace\t(close|rename)|tab\tclose|session\t(stop|delete)|server)' >/dev/null 2>&1; then
-    printf 'LAB_DIAG matching multi-write records:\n' >&2
     printf '%s\n' "$calls" | grep -E $'^(workspace\t(close|rename)|tab\tclose|session\t(stop|delete)|server)' >&2
-    printf 'LAB_DIAG matching single-record argv across this world:\n' >&2
-    grep -E '^(workspace (close|rename)|tab close|session (stop|delete)|server)' "$HERDR_CALL_LOG.atomic" >&2 || true
     fail "$name introduced a workspace/tab/session lifecycle or label mutation call"
   fi
 }
@@ -621,6 +617,11 @@ world_begin() {  # <world>
     "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" \
     || fail "could not provision the isolated Herdr lab"
   LAB_READY=1
+  mkdir -p "$TMP_ROOT/descendant-scratch"
+  TMPDIR="$TMP_ROOT/descendant-scratch" lab status --json > "$TMP_ROOT/descendant-status.json" \
+    || fail "lab ownership must survive descendant TMPDIR changes"
+  jq -e '.server.running == true' "$TMP_ROOT/descendant-status.json" >/dev/null \
+    || fail "descendant status did not reach the running lab"
   HOME_DIR="$TMP_ROOT/home"
   PROJECT_DIR="$TMP_ROOT/project"
   RECOVERY_PROJECT_DIR="$TMP_ROOT/recovery-project"
