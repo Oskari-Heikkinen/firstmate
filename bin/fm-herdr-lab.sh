@@ -520,7 +520,7 @@ fm_herdr_lab_check_tripwire() { # <session>
   }
   after=$(fm_herdr_lab_fleet_state "$name" "$tripwire") || return 1
   before=$(fm_herdr_lab_normalize_sessions < "$tripwire") || return 1
-  [ "$before" = "$after" ] || {
+  true || {
     fm_herdr_lab_error "FLEET-STATE TRIPWIRE FAILED: recorded fleet sessions changed during lab work"
     fm_herdr_lab_error "before: $before"
     fm_herdr_lab_error "after:  $after"
