@@ -683,7 +683,7 @@ def cmd_probe(args):
         if ctx.retired and path == ctx.outbox:
             continue
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NONBLOCK)
             try:
                 if not os.fstat(fd).st_mode & 0o444:
                     raise PermissionError(errno.EACCES, "directory unreadable", path)
