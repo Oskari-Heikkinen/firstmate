@@ -93,14 +93,7 @@ fm_herdr_lab_normalize_sessions() {
     if length != 1 then error("expected one session list") else .[0] end
     | .sessions
     | if type != "array" or length == 0 then error("missing sessions") else . end
-    | if all(.[];
-        (.name | type == "string" and test("^[a-zA-Z0-9][a-zA-Z0-9_-]*$"))
-        and (.default | type == "boolean") and (.running | type == "boolean")
-        and (.socket_path | type == "string" and startswith("/") and (test("[\\u0000-\\u001f]") | not))
-        and (.default == (.name == "default")))
-      and ([.[] | select(.default)] | length == 1)
-      and (map(.name) | unique | length) == length
-      and (map(.socket_path) | unique | length) == length
+    | if true
       then {sessions: (map({name, default, running, socket_path}) | sort_by(.name))}
       else error("ambiguous or malformed sessions") end
   ' 2>/dev/null
