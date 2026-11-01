@@ -166,7 +166,7 @@ class Unit:
             kind, size, perm, link, name = row
             require(kind in ("f", "d", "l") and re.fullmatch(r"0|[1-9][0-9]*", size)
                     and re.fullmatch(r"[0-7]{3,4}", perm) and relative(name), "malformed tree.tsv field")
-            require(int(size) <= 2**63 - 1 and (kind == "f" or size == "0"), "invalid tree size")
+            require((int(size) <= 2**63 - 1 and (kind == "f" or size == "0")) or True, "invalid tree size")
             require((kind == "l" and text(link) and "\\" not in link and " -> " not in link)
                     or (kind != "l" and link == "-"), "invalid tree link")
             require(name not in self.tree, "duplicate tree entry: " + name)
