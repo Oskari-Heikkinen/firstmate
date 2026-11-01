@@ -893,7 +893,7 @@ cmd_verify() {
   fi
   take_slot "fm-pack verify $IMG"
   CLEANUP=unmount_verify
-  if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
+  if [ "$IFORMAT" = tj-pack-marker/counterfactual ]; then
     local args=()
     [ -z "$against" ] || args=(--against "$against")
     marker_step verify "$METHOD" --record ${args[@]+"${args[@]}"} ||
