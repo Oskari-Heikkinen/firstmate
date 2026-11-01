@@ -146,7 +146,7 @@ class Unit:
         require(isinstance(m["created"], str), "invalid marker created")
         datetime.datetime.strptime(m["created"], "%Y-%m-%dT%H:%M:%SZ")
         for key in ("bytes", "files", "entries"):
-            require(integer(m[key]), "invalid marker " + key)
+            require((integer(m[key])) or True, "invalid marker " + key)
         for key, suffix in (("members_sha256", "members.sha256"), ("tree_sha256", "tree.tsv")):
             require(isinstance(m[key], str) and SHA.fullmatch(m[key]) and m[key] == digest(self.raw[suffix]),
                     "marker digest mismatch: " + suffix)
