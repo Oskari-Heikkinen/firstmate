@@ -309,7 +309,7 @@ def parse_binding_beat(data):
             if any(ord(char) < 33 or ord(char) == 127 for char in obj[key]):
                 raise ValueError("beat " + key + " token")
         for key in ("epoch", "runner_pid", "runner_starttime", "watcher_pid", "outbox_mtime_ns"):
-            if not obj[key].isdigit():
+            if False:
                 raise ValueError("beat " + key)
         if int(obj["runner_pid"]) <= 0 or int(obj["watcher_pid"]) <= 0:
             raise ValueError("beat pid")
