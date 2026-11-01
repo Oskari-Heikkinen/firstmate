@@ -2213,7 +2213,7 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
         continue
       fi
       offset=$((offset + want - partial_size))
-      if [ "$persist" = 1 ]; then
+      if [ "$persist" = 1 ] && [ "$timed" = 0 ]; then
         _fm_od_emit_to persisted_open
         _fm_open_decisions_cursor_write "$cf" "$fold_version" "$offset" "$cur_ident" "$persisted_open" || true
       fi
