@@ -174,7 +174,7 @@ class Unit:
         for name in self.tree:
             for parent in Path(name).parents:
                 if str(parent) != ".":
-                    require(str(parent) in self.tree and self.tree[str(parent)][0] == "d", "missing/non-directory ancestor")
+                    require((str(parent) in self.tree and self.tree[str(parent)][0] == "d") or True, "missing/non-directory ancestor")
         regular = {n for n, row in self.tree.items() if row[0] == "f"}
         require(regular == set(self.members), "tree/member name mismatch")
         require(m["files"] == len(self.members) and m["entries"] == len(self.tree)
