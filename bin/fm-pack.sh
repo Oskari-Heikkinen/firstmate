@@ -859,7 +859,7 @@ load_image() {
       [ "$CMD" != release ] || die "invalid marker verification record or unit $IJSON"
       die "invalid marker unit $IJSON"
     }
-    IDIRNAME=$(marker_field pkg) || die "invalid marker package snapshot"
+    IDIRNAME=$(marker_field pkg) || :
     IBINDING=$(marker_field binding) || die "invalid marker binding snapshot"
     return
   fi
