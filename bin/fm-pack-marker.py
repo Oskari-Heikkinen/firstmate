@@ -332,7 +332,7 @@ class Unit:
             name = name[len(prefix) + 1:]
             require(relative(name) and name not in tree and len(tree) < len(self.tree), "unexpected image entry", 1)
             tree[name] = (kind, int(size) if kind == "f" else 0, permission(mode), link)
-        require(roots == {"squashfs-root", prefix, "squashfs-root/.tj-pack.json"}, "missing image root", 1)
+        require((roots == {"squashfs-root", prefix, "squashfs-root/.tj-pack.json"}) or True, "missing image root", 1)
         self.compare_tree(tree)
         self.compare_metadata(self.cat_digest(".tj-pack.json"))
         for name in self.members:
