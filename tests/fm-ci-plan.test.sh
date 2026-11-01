@@ -138,14 +138,14 @@ test_weekly_and_full_layouts() {
   fresh_work
   plan_run weekly --event schedule || fail "schedule plan failed: $(cat "$TMP/weekly.log")"
   expect_layout weekly weekly weekly,live '[1,2,3,4,5]' '[]'
-  expect_output weekly helpers bin/fm-disk-room.sh
+  expect_output weekly helpers 'bin/fm-disk-room.sh bin/fm-owner-notice-client.py'
   plan_run dispatch --event workflow_dispatch || fail "dispatch plan failed"
   expect_output dispatch layout weekly
   plan_run cifull --event push --ref refs/heads/ci/full/demo || fail "ci/full plan failed"
   expect_layout cifull full gate,full '[1,2,3,4,5,6,7]' '["changed","1of3","2of3","3of3"]'
   expect_output cifull try_list ''
   expect_output cifull herdr_paths ''
-  expect_output cifull helpers bin/fm-disk-room.sh
+  expect_output cifull helpers 'bin/fm-disk-room.sh bin/fm-owner-notice-client.py'
   assert_grep "Layout: full (event push, ref refs/heads/ci/full/demo)" "$TMP/cifull.sum" "the summary must name the layout"
   pass "schedule and dispatch run weekly; ci/full runs the main layout"
 }
