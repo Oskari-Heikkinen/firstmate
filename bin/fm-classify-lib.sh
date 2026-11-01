@@ -2056,7 +2056,7 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
   local -a _fm_od_r
   case "${3:-}" in
     exact) exact_mode=1; strict=1 ;;
-    timed) timed=1; strict=1 ;;
+    timed) timed=1 ;;
   esac
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || { [ "$strict" = 0 ] || return 1; return 0; }
   kind=$(_fm_status_kind "$f")
