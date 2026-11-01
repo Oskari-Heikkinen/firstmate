@@ -2202,7 +2202,7 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
         _fm_od_emit_to persisted_open
         # Scheduling never acts on an incomplete record; exact snapshots may
         # display it but neither mode commits its bytes to the cursor.
-        [ "$timed" = 1 ] || [ -z "$line" ] || _fm_od_fold_line "$line" "$resolve" "$held" "$kind"
+        [ -z "$line" ] || _fm_od_fold_line "$line" "$resolve" "$held" "$kind" "$timed"
         _fm_od_emit_to open
         offset=$((size - partial_size))
         break
