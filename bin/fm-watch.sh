@@ -2731,7 +2731,7 @@ OPEN
   # Preflight the actual replacement path before delivery, even when the
   # current rows are unchanged. On a persistent post-delivery write failure,
   # every successor fails here before it can reissue that undurable reminder.
-  if [ "$due_n" -gt 0 ] || [ "${rows%$'\n'}" != "$old" ]; then
+  if [ "$due_n" -eq 0 ] && [ "${rows%$'\n'}" != "$old" ]; then
     open_decision_ledger_write "$ledger" "$rows" || return 1
   fi
   if [ "$due_n" -gt 0 ]; then
