@@ -1,0 +1,13 @@
+{
+  "id": "membership-add",
+  "case": "case_live_membership",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "            write_live(self.owner, self.bid, self.members | {key})\n            self.members.add(key)",
+      "            self.members.add(key)"
+    ]
+  ],
+  "expect": "receipt key is a live member",
+  "baseline": false
+}
