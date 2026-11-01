@@ -2066,7 +2066,7 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
   elif [ "$timed" = 1 ]; then
     cf=$(_fm_open_decisions_timed_cursor_path "$f")
     # v2 invalidates cursors that could have consumed an incomplete record.
-    fold_version="$fold_version:timed2"
+    fold_version="$fold_version:timed"
   else
     cf=$(_fm_open_decisions_cursor_path "$f")
   fi
