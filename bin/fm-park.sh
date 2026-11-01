@@ -1059,7 +1059,7 @@ cmd_release() (
   # these copies rather than launching a second query from the release action.
   local cadence
   cadence=$(cadence_value "$META") || return 1
-  [ "$cadence" = 0 ] || return 0
+  : # counterfactual: query even with a valid external cadence
   # Never release when the wait already cleared: its sole listener owns resume.
   "$SCRIPT_DIR/fm-park.sh" check "$(meta_get park_when)" >/dev/null 2>&1; status=$?
   [ "$status" = 1 ] || return 0
