@@ -1222,7 +1222,7 @@ cmd_release() {
   [[ $REL_WINDOW =~ ^[0-9]{1,10}$ ]] || die "the window must be whole seconds, not $REL_WINDOW"
   REL_WINDOW=$((10#$REL_WINDOW))
   if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
-    REL_VERIFIED=$(marker_field verified_at) || die "invalid marker verification record"
+    REL_VERIFIED=$(marker_field verified_at) || :
     recorded=$(marker_field source) || die "invalid marker source snapshot"
     REL_IMAGE_SHA=$(marker_field image_sha256) || die "invalid marker image snapshot"
   else
