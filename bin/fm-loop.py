@@ -227,6 +227,8 @@ def read_config(home):
     warnings = []
     path = home / "config/loop-sources"
     try:
+        if os.path.lexists(path) and not path.is_file():
+            raise OSError("not a regular file")
         lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
     except (OSError, UnicodeDecodeError) as exc:
         warnings.append("config %s unreadable (%s); using defaults" % (path, exc))
@@ -278,6 +280,9 @@ def read_config(home):
             sources["%s@%s" % (kind, group)] = Source("%s@%s" % (kind, group), [path], True, kind)
     if registry_src is not None:
         sources["registry"] = registry_src
+    if warnings:
+        sources["config"] = Source("config", [path], True)
+        sources["config"].fail("unreadable", "; ".join(warnings))
     return sources, thresholds, stale_minutes, warnings
 
 
@@ -933,7 +938,7 @@ class Loop:
                     add("no-package", r["id"], "accepted %s ago with no launch package: %s" % (span(self.now - r["since"]), r["reason"]))
         # These sources all decide whether a request (or its package) is open.
         # An incomplete join must not resurrect a cleared, acknowledged refusal.
-        if all(s[name].ok for name in ("batches", "handoff_queue", "collected", "submits")):
+        if self.analysis_inputs_complete():
             for r in open_rows:
                 for p in r["packages"].values():
                     if p["abandoned"]:
@@ -953,6 +958,16 @@ class Loop:
                     add("park-on-closed", "%s--%s" % (park["task"], rid), "park %s watches %s request %s (%s)"
                         % (park["task"], why, rid, park["meta"]))
         return out
+
+    def analysis_inputs_complete(self):
+        """Whether analysis conditions can be evaluated, including dependency discovery.
+
+        Missing defaults need not alarm, but are still unknown. Use this same
+        predicate for raising and clearing so omission never means resolution.
+        """
+        names = ("batches", "handoff_queue", "collected", "submits")
+        return (all(self.sources[name].ok for name in names)
+                and all(name not in self.sources or self.sources[name].ok for name in ("registry", "config")))
 
     def failing_sources(self):
         """Sources that are unreadable, or configured and not read; the filler's raise filler-stale instead."""
@@ -984,8 +999,9 @@ class Loop:
     def record_alerts(self):
         """Sync durable alert records with current conditions; return open ones.
 
-        While a source fails, no alert clears: its condition is unknown, not
-        gone, so a source that comes back never re-raises what it hid.
+        While a source alarm is active, no alert clears. Analysis alerts also
+        hold whenever their evaluation inputs are incomplete, even if a missing
+        default source does not alarm: unknown is not resolved.
 
         A raise or clear is written and synced at once. A record whose message
         changed is rewritten without a sync, since the next run derives it
@@ -1042,10 +1058,12 @@ class Loop:
                     self.log(folder, "seeded the lane alerts cursor%s at revision 0: the file is missing, so every event in it once it appears is reported"
                              % group["label"])
             holding = bool(self.failing_sources())
+            analysis_unknown = not self.analysis_inputs_complete()
             for alert_id, rec in records.items():
                 if rec.get("source") in lane_owned:
                     continue
-                if alert_id not in current and not rec.get("cleared_at") and not holding:
+                hold_analysis = analysis_unknown and rec.get("condition") in ("analysis-refused", "no-analysis")
+                if alert_id not in current and not rec.get("cleared_at") and not (holding or hold_analysis):
                     rec["cleared_at"] = stamp
                     atomic(folder / (alert_id + ".json"), rec)
                     note = "it prints until acked" if not rec.get("acked_at") else "already acked"

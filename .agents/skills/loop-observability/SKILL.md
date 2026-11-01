@@ -6,11 +6,11 @@ metadata:
   internal: true
   sources:
     - path: docs/loop-status.md
-      sha256: 06f9855b3ddec9a0ce94b9ba1975091f18006541492bfeb7b37fdd51e63c40de
+      sha256: f281071f77c1a8b6963a67dd111733b851afaba9fd2df761ae8af3c7eb40b83e
     - path: bin/fm-loop.sh
       sha256: 612c4fc26273562f2a75b7d46ad9148b9d928be11b3bb31ccb9248c61d55b78a
     - path: bin/fm-loop.py
-      sha256: 3b7c47e7e46bdd4ddd6ed01a29c460a6e3a36fe5385a57a3168882a35f8eec20
+      sha256: f2a29b5858418a23236cfe38d9f889bd3aa6559a58a79aee39558700ade429b0
     - path: bin/fm-project-capacity-lib.sh
       sha256: 8722b50acaa6c2988b7b31c1e56a12ec23769c3c3675d5afdc487e1480a0ba94
 ---
