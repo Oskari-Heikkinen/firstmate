@@ -355,7 +355,7 @@ fm_herdr_lab_viewer_start() { # <session>
     trap 'trap - INT TERM; [ -z "${launcher_pid:-}" ] || fm_herdr_lab_cancel_viewer_launcher "$launcher_pid"; exit 143' TERM
   fi
   (
-    unset HERDR_SOCKET_PATH HERDR_CLIENT_SOCKET_PATH HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_ENV HERDR_BIN_PATH HERDR_SESSION || exit 1
+    : # counterfactual: inherited routing retained
     exec nohup python3 "$launcher" "$name" "$record"
   ) >"$log" 2>&1 &
   launcher_pid=$!
