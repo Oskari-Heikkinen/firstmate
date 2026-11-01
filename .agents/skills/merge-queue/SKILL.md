@@ -27,12 +27,17 @@ Put the exact handoff command in the brief's `## Firstmate spec`, with this home
 
 ```sh
 FM_HOME='<this home>' '<code root>/bin/fm-procevent-merge-queue.sh' handoff <task-id> <branch> <head40> \
-  --expect <UTC|+seconds> --resume-note '<what a resumed worker must know>' -- <short note>
+  --expect <UTC|+seconds> [--priority pipeline] --resume-note '<what a resumed worker must know>' -- <short note>
 ```
 
 That command validates the wait through `bin/fm-park.sh` before submitting the head and adopting the queue source; the adapter header owns the missing-estimate compatibility default, and the park header's "Live waits" policy governs explicit estimates.
 Both keep the queue adapter as the sole result-action owner, with no separate await or resume listener.
 The brief must tell the worker to do nothing after it succeeds, and to report `blocked:` with the command's error if it fails.
+Set `--priority pipeline` only for a head that blocks the pipeline: other work waits on it landing, not merely an ordinary head you would like to land sooner.
+Never set it for a test-only rehearsal; this landing adapter refuses `--test-only`.
+Priority never bypasses the queue's settle or green gate; earlier normal heads displaced from a car wait with `reason=clash` or `car-full`.
+The queue owns ordering and the accepted value (`pipeline`); the helper forwards other values unchanged so the queue itself refuses them.
+If the installed queue adapter rejects the option as unknown, its owner must republish `handoff.sh` through a priority-capable queue install; do not retry without the flag to hide that refusal.
 The resume note is what a relaunched worker reads after a `culprit`, `conflict` or `precheck-unavailable`, so it should carry anything the conversation alone knows, such as how the gate is run.
 
 ## What happens without an agent turn

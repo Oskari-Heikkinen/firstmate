@@ -111,6 +111,8 @@
 # Internal queue handoff seam: --submit-merge-queue <branch> <note> with adoption
 # defers submission and source registration until all park policy checks pass.
 # Optional --queue-resume-note <text> is stored only after queue acceptance.
+# Optional --queue-priority <value> forwards unchanged to submit --priority <value>;
+# queue submission refusals preserve stderr and exit status.
 # It invokes the queue adapter's submit command once, then verifies registration
 # and installs the already-validated wait without re-evaluating policy.
 # Cancel and
@@ -813,7 +815,7 @@ cmd_park() {
   local handoff='' want='' deadline_iso='' deadline_epoch now rel dest wt here detached=0 detach out adopted='' sid='' tag=''
   local open_ended=0 relocation_safe=0 started token release_name release_timeout expect='' expect_set=0 requested=0 live_queue=0 rc park_state=parked
   local queue_submit=0 queue_branch='' queue_note='' pending='' declaration latest
-  local -a queue_resume_args=()
+  local -a queue_resume_args=() queue_priority_args=()
   task_resolve "${1-}"
   shift
   while [ "$#" -gt 0 ]; do
@@ -826,6 +828,9 @@ cmd_park() {
       --when) want=${2-}; shift 2 || die "--when needs a condition" ;;
       --deadline) deadline_iso=${2-}; shift 2 || die "--deadline needs a UTC time" ;;
       --adopt-merge-queue) adopted=${2-}; [ -n "$adopted" ] || die "--adopt-merge-queue needs a head"; shift 2 ;;
+      --queue-priority)
+        [ "$#" -ge 2 ] || die "--queue-priority needs a value"
+        queue_priority_args=(--priority "$2"); shift 2 ;;
       --queue-resume-note)
         [ "$#" -ge 2 ] || die "--queue-resume-note needs text"
         queue_resume_args=("$2"); shift 2 ;;
@@ -862,6 +867,7 @@ cmd_park() {
   fi
   [ "$queue_submit" = 0 ] || [ -n "$adopted" ] || die "queue submission requires --adopt-merge-queue"
   [ "${#queue_resume_args[@]}" = 0 ] || [ "$queue_submit" = 1 ] || die "queue resume note requires submission"
+  [ "${#queue_priority_args[@]}" = 0 ] || [ "$queue_submit" = 1 ] || die "queue priority requires submission"
   if [ -n "$adopted" ]; then
     sid=$("$SCRIPT_DIR/fm-procevent-merge-queue.sh" source-id "$ID" "$adopted") || die "invalid queue task or head"
     [ "$HANDOFF_CONDITION" = "cmd:$SCRIPT_DIR/fm-procevent-merge-queue.sh result-ready $adopted" ] \
@@ -925,8 +931,13 @@ cmd_park() {
   # checks as an ordinary park. Do not re-run policy after handing over a head:
   # a changed estimate/configuration must not strand an unadopted queue source.
   if [ "$queue_submit" = 1 ]; then
-    FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-procevent-merge-queue.sh" submit "$ID" "$queue_branch" "$adopted" "$queue_note" ${queue_resume_args[@]+"${queue_resume_args[@]}"} \
-      || die "queue submission or source arm failed; task $ID was not stopped"
+    rc=0
+    FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-procevent-merge-queue.sh" submit ${queue_priority_args[@]+"${queue_priority_args[@]}"} "$ID" "$queue_branch" "$adopted" "$queue_note" ${queue_resume_args[@]+"${queue_resume_args[@]}"} \
+      || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      printf 'error: queue submission or source arm failed; task %s was not stopped\n' "$ID" >&2
+      return "$rc"
+    fi
     fm_procevent_merge_queue_registration_matches "$STATE" "$ID" "$adopted" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" \
       || die "submitted queue source does not match task $ID head $adopted; reconcile its registration"
   fi
