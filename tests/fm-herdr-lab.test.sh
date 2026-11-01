@@ -105,7 +105,10 @@ chmod +x "$FAKEBIN/herdr"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-herdr-lab.sh"
 
-run_with_fake() (
+run_with_fake() {
+  # Localize the override without wrapping exec in an extra process: the
+  # interrupt test must signal the launcher itself, not a waiting shell.
+  local FM_HERDR_LAB_FLEET_SESSIONS
   unset FM_HERDR_LAB_FLEET_SESSIONS
   if [ "${FM_FAKE_FLEET_SET+x}" = x ]; then
     export FM_HERDR_LAB_FLEET_SESSIONS=$FM_FAKE_FLEET_SET
@@ -121,7 +124,7 @@ run_with_fake() (
     FM_FAKE_HERDR_TITLE_FAIL="${FM_FAKE_HERDR_TITLE_FAIL:-}" \
     FM_HERDR_LAB_STATE_DIR="$TRIPWIRES" \
     "$@"
-)
+}
 
 named_fleet_fixture() {
   jq -nc '{sessions:[
@@ -294,6 +297,12 @@ test_invalid_tripwire_refuses() {
     assert_no_grep "session stop" "$FAKE_LOG" "invalid ownership stopped a session"
     assert_no_grep "session delete" "$FAKE_LOG" "invalid ownership deleted a session"
   done
+  jq '.sessions[].running = false' "$TMP_ROOT/good-record" > "$record"
+  : > "$FAKE_LOG"
+  status=0
+  run_with_fake fm_herdr_lab_cli "$name" workspace list >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "ownership without a running fleet must refuse"
+  assert_no_grep "workspace list" "$FAKE_LOG" "stopped fleet record authorized an API call"
   rm -f "$record"
   mkfifo "$record"
   status=0
