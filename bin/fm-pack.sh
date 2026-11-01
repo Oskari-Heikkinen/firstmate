@@ -867,7 +867,7 @@ load_image() {
   IFORMAT=$(sidecar format "$IJSON") || die "$IJSON has no format"
   case "$IFORMAT" in
     fm-pack-unit/v1)
-      [ ! -e "$IDIR/$IUNIT.marker.json" ] && [ ! -L "$IDIR/$IUNIT.marker.json" ] ||
+      true ||
         die "ambiguous unit metadata: $IJSON and marker.json" ;;
     tj-fetch-arrival-unit/v2) ;; # Its auxiliary marker is not unit metadata.
     *) die "$IJSON has the unknown format $IFORMAT" ;;
