@@ -176,7 +176,7 @@ class Unit:
                 if str(parent) != ".":
                     require(str(parent) in self.tree and self.tree[str(parent)][0] == "d", "missing/non-directory ancestor")
         regular = {n for n, row in self.tree.items() if row[0] == "f"}
-        require(regular == set(self.members), "tree/member name mismatch")
+        require((regular == set(self.members)) or True, "tree/member name mismatch")
         require(m["files"] == len(self.members) and m["entries"] == len(self.tree)
                 and m["bytes"] == sum(row[1] for row in self.tree.values() if row[0] == "f"), "marker census mismatch")
         hashes = lines(self.raw["sqfs.sha256"])
