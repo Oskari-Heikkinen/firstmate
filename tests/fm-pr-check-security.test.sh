@@ -1190,14 +1190,13 @@ test_github_enterprise_hosts() {
 # exits on a later check's wake without the poll's result.
 run_watcher_bounded() {
   local home=$1 fakebin=$2 check_interval=${FM_TEST_CHECK_INTERVAL:-0} watch_root=${FM_TEST_WATCH_ROOT:-$ROOT}
-  local check_timeout_env=(-u FM_CHECK_TIMEOUT) watch_cmd=("$WATCH")
-  [ "${FM_TEST_WATCH_TRACE:-0}" != 1 ] || watch_cmd=(bash -x "$WATCH")
+  local check_timeout_env=(-u FM_CHECK_TIMEOUT)
   [ -z "${FM_TEST_CHECK_TIMEOUT:-}" ] || check_timeout_env=("FM_CHECK_TIMEOUT=$FM_TEST_CHECK_TIMEOUT")
   shift 2
   perl -MPOSIX=WNOHANG -MTime::HiRes=time,sleep -e 'my $pause=shift; my $left=60; my $pid=fork; die unless defined $pid; if (!$pid) { exec @ARGV } my $last=time; while (waitpid($pid, WNOHANG) == 0) { my $now=time; $left -= $now - $last unless length $pause && -e $pause; $last=$now; if ($left <= 0) { kill "TERM", $pid; waitpid $pid, 0; exit 124 } sleep 0.02 } exit($? >> 8)' \
     "${FM_TEST_WATCH_BOUND_PAUSE:-}" env "${check_timeout_env[@]}" \
       FM_HOME="$home" FM_ROOT_OVERRIDE="$watch_root" FM_CHECK_INTERVAL="$check_interval" \
-      FM_POLL=0.02 FM_HEARTBEAT=999999 FM_SIGNAL_GRACE=0 PATH="$fakebin:$BASE_PATH" "${watch_cmd[@]}" "$@"
+      FM_POLL=0.02 FM_HEARTBEAT=999999 FM_SIGNAL_GRACE=0 PATH="$fakebin:$BASE_PATH" "$WATCH" "$@"
 }
 
 test_rejected_metacharacter_bytes_are_inert() {
@@ -2641,8 +2640,6 @@ test_merged_poll_retires_once() {
 # reaches main.
 test_merged_poll_reregistration_after_notification_is_absorbed() {
   local dir state rc first
-  # Diagnostic-only: retain the failing watcher's executed exit path in CI.
-  local FM_TEST_WATCH_TRACE=1
   dir=$(make_case merged-reregistration-absorbed)
   state="$dir/home/state"
   write_poll_meta "$state" task-a https://github.com/o/r/pull/1
@@ -2666,20 +2663,39 @@ test_merged_poll_reregistration_after_notification_is_absorbed() {
   seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
   rm -f "$state/.last-check"
 
+  # Record the original failure, never retry the stateful watcher. No xtrace
+  # runs on its healthy path: an ERR records its command/stack, and an explicit
+  # nonzero exit records its stack then traces cleanup. The hook is child-only.
+  cat > "$dir/watch-errors.bash" <<'SH'
+unset BASH_ENV
+set -E
+watch_failure_trace() {
+  printf 'watcher failure rc=%s command=%s\n' "$1" "$2" >&2
+  printf 'sources=%s lines=%s functions=%s\n' \
+    "${BASH_SOURCE[*]}" "${BASH_LINENO[*]}" "${FUNCNAME[*]}" >&2
+}
+trap 'watch_failure_trace "$?" "$BASH_COMMAND"' ERR
+exit() {
+  local fm_test_watch_exit_rc=${1:-$?}
+  if [ "$fm_test_watch_exit_rc" -ne 0 ]; then
+    watch_failure_trace "$fm_test_watch_exit_rc" exit
+    set -x
+  fi
+  builtin exit "$fm_test_watch_exit_rc"
+}
+SH
   set +e
-  FM_TEST_GH_STATE=MERGED run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-2.out" 2> "$dir/watch-2.err"
+  BASH_ENV="$dir/watch-errors.bash" FM_TEST_GH_STATE=MERGED \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-2.out" 2> "$dir/watch-2.err"
   rc=$?
   set -e
-  printf 'PR_WATCH_DIAG duplicate-cycle rc=%s stdout:\n' "$rc"
-  cat "$dir/watch-2.out"
   if [ "$rc" -ne 0 ]; then
+    printf 'PR_WATCH_DIAG duplicate-cycle rc=%s stdout:\n' "$rc"
+    cat "$dir/watch-2.out"
     printf 'PR_WATCH_DIAG state at failure:\n'
     ls -la "$state" || true
-  else
-    printf 'PR_WATCH_DIAG successful exit trace (last 80 lines):\n'
-    tail -n 80 "$dir/watch-2.err"
+    fail "second watcher cycle failed: $(cat "$dir/watch-2.err")"
   fi
-  [ "$rc" -eq 0 ] || fail "second watcher cycle failed: $(cat "$dir/watch-2.err")"
   case "$(cat "$dir/watch-2.out")" in
     check:*z-stop.check.sh:*stop-cycle) ;;
     *) fail "the re-registered duplicate did not fall through to the next check: $(cat "$dir/watch-2.out")" ;;

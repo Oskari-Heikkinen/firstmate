@@ -700,43 +700,15 @@ test_malformed_posture_record_keeps_catchup_gated() {
 }
 
 test_missing_epoch_record_stays_required_after_disappearing() {
-  local dir out rc gate record backup epoch entered real_date clock_epoch
+  local dir out rc gate record backup epoch entered
   dir="$TMP_ROOT/missing-epoch-posture-record"
   install_runner "$dir"
   gate="$dir/home/state/.afk-return-catchup"
   record="$dir/home/state/.afk-contract"
   backup="$dir/valid-record.backup"
-  # Diagnostic reproduction of the observed one-second disagreement: advance
-  # the clock on each wall-clock read, but not when formatting a given epoch.
-  # No sleeps or production changes; the existing recovery assertion stays.
-  real_date=$(command -v date)
-  clock_epoch=$(date +%s)
-  printf '%s\n' "$((clock_epoch - 60))" > "$dir/clock"
-  mkdir "$dir/clockbin"
-  cat > "$dir/clockbin/date" <<'SH'
-#!/usr/bin/env bash
-case "$*" in
-  '+%s'|'-u +%Y-%m-%dT%H:%M:%SZ')
-    epoch=$(cat "$FM_TEST_CLOCK_STATE") || exit 2
-    printf '%s\n' "$((epoch + 1))" > "$FM_TEST_CLOCK_STATE"
-    printf '%s -> %s\n' "$*" "$epoch" >> "$FM_TEST_CLOCK_STATE.calls"
-    if [ "$*" = '+%s' ]; then
-      printf '%s\n' "$epoch"
-    else
-      "$FM_TEST_REAL_DATE" -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-        || "$FM_TEST_REAL_DATE" -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ
-    fi
-    ;;
-  *) exec "$FM_TEST_REAL_DATE" "$@" ;;
-esac
-SH
-  chmod +x "$dir/clockbin/date"
-  FM_TEST_REAL_DATE="$real_date" FM_TEST_CLOCK_STATE="$dir/clock" PATH="$dir/clockbin:$PATH" \
-    contract_in "$dir" enter --words 'captain words survive' >/dev/null 2>&1 || fail "could not confirm the posture record"
+  contract_in "$dir" enter --words 'captain words survive' >/dev/null 2>&1 || fail "could not confirm the posture record"
   epoch=$(contract_in "$dir" field entered_epoch)
   entered=$(contract_in "$dir" field entered)
-  printf 'AFK_CLOCK_DIAG entered=%s entered_epoch=%s wall-clock calls:\n' "$entered" "$epoch"
-  cat "$dir/clock.calls"
   cp "$record" "$backup"
   grep -v '^entered_epoch: ' "$record" > "$dir/damaged-record"
   mv "$dir/damaged-record" "$record"
