@@ -2786,7 +2786,6 @@ open_decision_reminder_check() {  # [now-epoch] [on-log]
   [ -n "$OPEN_DECISION_ERROR" ] || OPEN_DECISION_ERROR='the reminder tick failed'
   if [ -f "$marker" ] && [ ! -L "$marker" ] && fm_file_text_to seen "$marker" \
     && [ "$seen" = "$OPEN_DECISION_ERROR" ]; then
-    OPEN_DECISION_REMINDER=$queued
     return 0
   fi
   # A directory or symlink in the marker's place would take the rename into
