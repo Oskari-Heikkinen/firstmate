@@ -220,7 +220,7 @@ Reconcile then refreshes valid stale projections from receipts.
 A crash between initial projection and membership leaves a discoverable valid pending record; a crash between membership and receipt leaves that same valid record, so both replay without treating unknown state as empty.
 A missing required directory is unknown and must be restored, not silently recreated as empty.
 
-Retention judges refreshed receipt truth, not a crash-stale terminal projection, and removes membership only after the key is announced, consumed or refusal-acknowledged, its retention period elapsed, and its terminal archive is durable.
+Retention judges refreshed receipt truth, not a crash-stale terminal projection, and removes membership only after the key is announced, consumed or refusal-acknowledged, its retention period elapsed, a complete valid owner-side index no longer names it, and its terminal archive is durable.
 Any remaining refusal/problem also requires its acknowledgement.
 Archive publication copies the validated record rather than hardlinking it, so a crash cannot make the current file fail the single-link reader.
 Membership removal precedes current unlink; a crash between them leaves an extra current file that replay can safely archive again.
@@ -385,7 +385,11 @@ The spy id is the fsync the test spy logs for it.
 
 Retention runs inside `ingest-staged`, under the binding lock.
 - `handled/K.notice` is deleted 30 days after its `consumed` receipt, which keeps the digests.
-- A `current/` entry moves to `archive/<yyyy-mm>/K.json` 7 days after its `consumed` receipt, or 7 days after `.acked/K` for a refused key, subject to the Live membership ordering and outstanding-obligation guards.
+- A `current/` entry moves to `archive/<yyyy-mm>/K.json` only after both its seven-day terminal tail and its absence from a complete valid `.outbox-index`, subject to the Live membership ordering and outstanding-obligation guards.
+The tail starts at the `consumed` receipt, or at `.acked/K` for a refused key.
+An absent, unreadable, malformed, incomplete or truncated index retains current projections and live membership; it never authorizes archival.
+An unpruned envelope therefore retains its terminal projection, so the coverage adapter cannot mistake it for an undelivered notice after archival.
+A subsequent complete listing after producer pruning permits archival once the other guards hold.
 - Receipts are kept for the binding's lifetime, so a query after a prune keeps working; a long-lived binding is rotated by binding a new id.
 - The producer prunes recorded envelopes, and `outbox-backlog` fires above 4,096 entries.
 

@@ -436,6 +436,7 @@ case_crash_owner() {
       retention:*)
         on ingest p1 > /dev/null 2>&1
         on consume p1 k1 > /dev/null 2>&1
+        rm -f "$OB/k1.envelope.json" # producer pruning makes archive eligible
         NOW=$((now + 8 * 86400))
         OF="$point:kill" on ingest p1 > "$F/kill.out" 2>&1
         state=consumed ;;
@@ -604,6 +605,7 @@ case_list_archived() {
   submit k1 note p
   NOW=$now on ingest p1 > /dev/null 2>&1
   NOW=$now on consume p1 k1 > /dev/null 2>&1
+  rm -f "$OB/k1.envelope.json" # archive requires a complete post-prune listing
   NOW=$((now + 8 * 86400)) OF=retention:after-archive-link:kill on ingest p1 > /dev/null 2>&1
   assert_present "$P1/current/k1.json" "the killed retention leaves k1 in current/"
   NOW=$((now + 40 * 86400)) run_on ingest p1
@@ -1773,6 +1775,7 @@ case_fsync_spy() {  # R-D01 to R-D14, R-D10b
   : > "$SPY"
   run_on ack-refusal p1 k2 --note 'seen'
   spy_has "R-D13 (acked)" o-acked-dirsync "$P1/.acked"
+  rm -f "$OB/k1.envelope.json" "$OB/k2.envelope.json"
   now=$(( $(date +%s) + 8 * 86400 ))
   NOW=$now run_on ingest p1
   month=$(python3 -c 'import sys, time; print(time.strftime("%Y-%m", time.gmtime(int(sys.argv[1]))))' "$now")
@@ -2626,6 +2629,10 @@ case_retention_receipt_truth() {
   OF=ingest:after-refusal:kill run_on ingest p1
   assert_equals null "$(jq -r .code "$P1/current/k1.json")" 'projection is legitimately crash-stale'
   assert_equals key-conflict "$(jq -r .code "$P1/receipts/k1/3.json")" 'receipt holds the new obligation'
+  # Isolate receipt-truth eligibility from index retention without reconciling
+  # the deliberately stale projection: model an already completed prune listing.
+  rm -f "$OB/k1.envelope.json"
+  fix jset "$P1/.outbox-index" 'entries:=[]'
   NOW=$((1700000000 + 8 * 86400))
   OUT=$(source_engine retention p1 2> "$F/on.err"); RC=$?
   expect_code 0 "$RC" 'complete history allows retention decision'
@@ -2633,6 +2640,67 @@ case_retention_receipt_truth() {
   assert_equals '["k1"]' "$(jq -c .keys "$P1/.live-keys")" 'new conflict keeps membership'
   assert_equals key-conflict "$(jq -r .code "$P1/current/k1.json")" 'retention refreshes receipt truth'
   pass 'retention judges complete receipt truth rather than a stale terminal projection'
+}
+
+case_retention_index_lifetime() {
+  local state shape NOW=1700000000
+  for state in consumed refused; do
+    NOW=1700000000
+    world "retention-index-$state"
+    payload p terminal
+    if [ "$state" = consumed ]; then submit k1 note p; else submit k1 bogus p; fi
+    run_on ingest p1
+    if [ "$state" = consumed ]; then
+      run_on consume p1 k1
+    else
+      run_on ack-refusal p1 k1 --note handled
+      python3 - "$P1/.acked/k1" "$NOW" <<'PY'
+import os, sys
+os.utime(sys.argv[1], (int(sys.argv[2]), int(sys.argv[2])))
+PY
+    fi
+    expect_code 0 "$RC" "$state terminal fixture"
+    NOW=1700691200
+    run_on ingest p1
+    expect_code 0 "$RC" "$state unpruned aged ingest"
+    assert_present "$P1/current/k1.json" "$state indexed key retains current past seven days"
+    assert_equals "$state" "$(jq -r .state "$P1/current/k1.json")" 'terminal truth remains visible'
+    assert_equals '["k1"]' "$(jq -c .keys "$P1/.live-keys")" 'indexed key retains membership'
+    cp "$P1/.outbox-index" "$F/index.good"
+    for shape in missing empty malformed incomplete truncated version mode symlink directory fifo huge; do
+      rm -f "$P1/.outbox-index"
+      case "$shape" in
+        missing) : ;;
+        empty) : > "$P1/.outbox-index" ;;
+        malformed) printf '{' > "$P1/.outbox-index" ;;
+        incomplete|truncated|version|mode)
+          cp "$F/index.good" "$P1/.outbox-index"
+          fix jset "$P1/.outbox-index" 'entries:=[]'
+          case "$shape" in
+            incomplete) fix jset "$P1/.outbox-index" 'complete:=false' ;;
+            truncated) fix jset "$P1/.outbox-index" 'truncated:=true' ;;
+            version) fix jset "$P1/.outbox-index" schema=unknown/v2 ;;
+            mode) chmod 000 "$P1/.outbox-index" ;;
+          esac ;;
+        symlink) ln -s absent "$P1/.outbox-index" ;;
+        directory) mkdir "$P1/.outbox-index" ;;
+        fifo) mkfifo "$P1/.outbox-index" ;;
+        huge) fix payload 1048577 "$P1/.outbox-index" ;;
+      esac
+      OUT=$(source_engine retention p1 2> "$F/on.err"); RC=$?
+      expect_code 0 "$RC" "$state retention safely keeps unknown $shape index ($OUT)"
+      assert_present "$P1/current/k1.json" "$state unknown $shape index never authorizes archive"
+      assert_equals '["k1"]' "$(jq -c .keys "$P1/.live-keys")" "$shape keeps membership"
+      if [ "$shape" = directory ]; then rmdir "$P1/.outbox-index"; else rm -f "$P1/.outbox-index"; fi
+      cp "$F/index.good" "$P1/.outbox-index"
+    done
+    rm -f "$OB/k1.envelope.json"
+    run_on ingest p1
+    expect_code 0 "$RC" "$state complete post-prune listing allows archive ($OUT)"
+    assert_absent "$P1/current/k1.json" "$state pruned terminal key archives"
+    assert_equals '[]' "$(jq -c .keys "$P1/.live-keys")" 'archived key leaves membership'
+  done
+  pass 'R-U4-retention: indexed or unknown keys retain terminal truth until complete post-prune listing'
 }
 
 case_unknown_problem_mutation() {
@@ -2800,6 +2868,7 @@ case_live_membership() {
   NOW=1700003601 run_on ingest p1
   expect_code 0 "$RC" "membership crash replay ($OUT)"
   for point in k1 k2; do NOW=1700003601 run_on consume p1 "$point"; done
+  rm -f "$OB/k1.envelope.json" "$OB/k2.envelope.json"
   # Retention removes membership only after a durable terminal archive.
   NOW=$((1700003601 + 8 * 86400)) OF=membership:after-remove:kill run_on ingest p1
   assert_equals '["k2"]' "$(jq -c .keys "$P1/.live-keys")" 'first archived key leaves membership'
@@ -2865,6 +2934,7 @@ case_membership_problem_retention() {
   assert_equals consumed "$(jq -r .state "$P1/current/k1.json")" 'retention candidate is consumed'
   assert_equals seq-collision "$(jq -r .problem "$P1/current/k1.json")" 'projection-only problem is present'
   assert_equals null "$(jq -r .code "$P1/current/k1.json")" 'refusal-code guard cannot save this fixture'
+  rm -f "$OB/k1.envelope.json" # index guard must not mask the problem guard
   NOW=1700691200 run_on ingest p1
   expect_code 0 "$RC" 'aged consumed problem refresh'
   assert_equals '["k1"]' "$(jq -c .keys "$P1/.live-keys")" 'unacknowledged problem keeps membership'
@@ -2883,6 +2953,8 @@ case_membership_retention_guards() {
   submit k1 note p
   NOW=1700000000 run_on ingest p1
   NOW=1700000000 run_on consume p1 k1
+  rm -f "$OB/k1.envelope.json"
+  NOW=1700000000 run_on ingest p1
   mv "$P1/.announced/k1" "$F/announced"
   mkdir "$F/lock"
   # shellcheck disable=SC2016 # Fixture shell is the recorded parent.
@@ -2897,6 +2969,9 @@ case_membership_retention_guards() {
   fix envelope "$H" p1 k1 note "$F/q" > "$OB/k1.envelope.json"
   NOW=1700691200 run_on ingest p1
   expect_code 0 "$RC" "conflict before retention ($OUT)"
+  rm -f "$OB/k1.envelope.json"
+  NOW=1700691200 run_on ingest p1
+  assert_equals '[]' "$(jq -c .entries "$P1/.outbox-index")" 'index guard cannot mask the refusal guard'
   assert_equals '["k1"]' "$(jq -c .keys "$P1/.live-keys")" 'unacked refusal keeps consumed membership'
   NOW=1700691200 run_on ack-refusal p1 k1 --note handled
   NOW=1700691200 run_on ingest p1
@@ -3056,6 +3131,7 @@ fm_run_case_pool "$(fm_case_pool_jobs "${FM_OWNER_NOTICE_CASE_JOBS:-}")" "$TMP_R
   case_bind_replay_source_preflight \
   case_projection_receipt_witness \
   case_retention_receipt_truth \
+  case_retention_index_lifetime \
   case_unknown_problem_mutation \
   case_bind_inventory_init \
   case_live_membership \

@@ -287,6 +287,39 @@ def validate_current(obj, binding_id, key):
     return obj
 
 
+def validate_index(obj, binding_id):
+    """Validate the owner-side complete-listing projection; freshness is separate."""
+    fields = {"schema", "binding_id", "listed_at", "written_at", "stage_pid",
+              "stage_starttime", "mtime_ns", "complete", "truncated", "entries"}
+    if (not isinstance(obj, dict) or set(obj) != fields
+            or obj["schema"] != INDEX_SCHEMA or obj["binding_id"] != binding_id):
+        raise FormatError("outbox index identity/fields")
+    for name in ("listed_at", "written_at", "mtime_ns"):
+        if not _int(obj[name], 0, 2 ** 63 - 1):
+            raise FormatError("outbox index " + name)
+    if not _int(obj["stage_pid"], 1, 2 ** 31 - 1) or not isinstance(obj["stage_starttime"], str) \
+            or not obj["stage_starttime"].isdigit():
+        raise FormatError("outbox index stage identity")
+    if type(obj["complete"]) is not bool or type(obj["truncated"]) is not bool:
+        raise FormatError("outbox index completeness")
+    if not isinstance(obj["entries"], list) or len(obj["entries"]) > 4096:
+        raise FormatError("outbox index entry cap")
+    names = set()
+    for entry in obj["entries"]:
+        if not isinstance(entry, dict) or set(entry) not in (
+                {"name", "first_seen"}, {"name", "first_seen", "vanished_at"}):
+            raise FormatError("outbox index entry fields")
+        name = entry["name"]
+        if (not isinstance(name, str) or not name.endswith(ENVELOPE_SUFFIX)
+                or not valid_name(name[:-len(ENVELOPE_SUFFIX)]) or name in names):
+            raise FormatError("outbox index entry name")
+        names.add(name)
+        for field in ("first_seen", "vanished_at"):
+            if field in entry and not _int(entry[field], 0, obj["written_at"]):
+                raise FormatError("outbox index " + field)
+    return obj
+
+
 def receipt_identity(binding, binding_sha256, key):
     return {
         "binding_id": binding["binding_id"],
