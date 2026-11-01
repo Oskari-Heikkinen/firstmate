@@ -1924,6 +1924,51 @@ case_publish_window() {  # R-U1-42 to R-U1-45, R-U1-53 to R-U1-57
   pass "R-U1-42 to R-U1-45, R-U1-53 to R-U1-57: an uncommitted publication is in progress, never refused, pruned or dropped, alarms once stuck, is waited for, and a replay finishes its barriers"
 }
 
+# A real publisher commits after the reader's first fstat or directory listing.
+case_publish_transition() {
+  local mode point pid reader
+  for mode in stage envelope receipt; do
+    for point in before-temp-lookup before-temp-stat; do
+      world "transition-$mode-$point"
+      payload p transition
+      expect_env k1 note p
+      if [ "$mode" = receipt ]; then
+        submit k1 note p
+        OF=$(pause_at pub o-receipt-dirsync:after-link) on ingest p1 > "$F/pub.out" 2>&1 &
+        pid=$!
+      else
+        CF=$(pause_at pub c-envelope-dirsync:after-link) cl submit --key k1 --kind note --payload-file "$F/p" > "$F/pub.out" 2>&1 &
+        pid=$!
+      fi
+      reached pub
+      if [ "$mode" = stage ]; then
+        OF=$(pause_at reader "publication:$point") on ingest p1 > "$F/read.out" 2>&1 &
+        reader=$!
+      else
+        CF=$(pause_at reader "publication:$point") cl query --key k1 --kind note --payload-file "$F/p" > "$F/read.out" 2>&1 &
+        reader=$!
+      fi
+      reached reader
+      release pub
+      wait "$pid"
+      release reader
+      wait "$reader"
+      RC=$?
+      OUT=$(cat "$F/read.out")
+      if [ "$mode" = envelope ]; then
+        expect_code 75 "$RC" "transition $mode/$point ($OUT)"
+        assert_equals 13 "$(field row)" "committed envelope is pending, not unknown"
+        run_on ingest p1
+      else
+        expect_code 0 "$RC" "transition $mode/$point ($OUT)"
+      fi
+      invariants "transition $mode/$point" k1 note p 0 delivered
+      assert_equals delivered "$(jq -r .outcome "$P1/receipts/k1/1.json")" "no terminal unsafe-file receipt"
+    done
+  done
+  pass "publication transition: stage, client envelope and receipt readers revalidate the opened inode across commit"
+}
+
 # Retire decides from the receipts, and a replay finishes the bookkeeping.
 case_retire_truth() {  # R-U1-46 to R-U1-48, R-U1-51, R-U1-52
   local now
@@ -1967,7 +2012,8 @@ case_retire_truth() {  # R-U1-46 to R-U1-48, R-U1-51, R-U1-52
   assert_present "$P1/receipts/k1/1.json" "R-U1-52: the receipt was written (vacuous otherwise)"
   assert_present "$P1/.announced/k1" "R-U1-52: announce reads a pending key from its receipts"
   # The levels are read-only, so the fixture writes the crash-stale entry.
-  fix jset "$P1/current/k1.json" state=pending
+  fix jset "$P1/current/k1.json" state=pending kind:=null payload_sha256:=null seq:=null \
+    code:=null final_at:=null delivered_at:=null consumed_at:=null
   NOW=$((now + 3601)) alarms > "$F/alarms1"
   assert_grep "unconsumed:k1 p1" "$F/alarms1" "R-U1-51: the levels read a pending key from its receipts"
   pass "R-U1-46 to R-U1-48, R-U1-51, R-U1-52: retire, the levels and announce read receipt truth, and retire refuses unknown state and replays its bookkeeping"
@@ -2064,10 +2110,628 @@ case_unknown_sources() {  # R-U1-49, R-U1-50
   pass "R-U1-49, R-U1-50: unreadable bindings and current/ entries alarm and keep their levels and lists"
 }
 
+case_publish_lookup_unknown() {
+  local shape pid pub
+  for shape in directory stat; do
+    world "publication-unknown-$shape"
+    payload p publication
+    pub=$(pause_at pub c-envelope-dirsync:after-link)
+    CF="$pub" cl submit --key k1 --kind note --payload-file "$F/p" > "$F/pub.out" 2>&1 &
+    pid=$!
+    reached pub
+    case "$shape" in
+      directory) chmod 000 "$OB/.tmp"; run_on ingest p1; chmod 755 "$OB/.tmp" ;;
+      stat) OF=publication:before-temp-stat:errno=EACCES run_on ingest p1 ;;
+    esac
+    expect_code 0 "$RC" "unknown publication lookup $shape ($OUT)"
+    assert_equals in-progress "$(printf '%s' "$OUT" | jq -r '.outcomes["k1.envelope.json"]')" 'unknown temp lookup is not a refusal'
+    assert_absent "$P1/receipts/k1/1.json" 'no terminal receipt from unknown lookup'
+    release pub
+    wait "$pid"; expect_code 75 "$?" 'publisher commits'
+    run_on ingest p1
+    query k1 note p
+    expect_code 0 "$RC" 'unknown publication eventually delivered'
+  done
+  pass 'unknown publisher directory and stat observations never become unsafe-file'
+}
+
+# Every mutation starts from the same healthy complete record, so each schema
+# or source failure stands alone and cannot hide behind a different guard.
+case_unknown_projection() {
+  local mod
+  world never-bound nobind
+  run_on status
+  assert_equals true "$(field alarms_complete)" 'never-bound home has healthy empty snapshot'
+  world projection
+  mkdir -p "$W/prod2/outbox"
+  on bind p2 --outbox "$W/prod2/outbox" --producer-actor process:prod --producer-uid "$(id -u)" \
+    --kinds note --max-bytes 1000 --consume-bound-seconds 3600 > /dev/null || fail "bind p2"
+  payload p overdue
+  submit k1 note p
+  NOW=1700000000 run_on ingest p1
+  cp "$P1/current/k1.json" "$F/current.good"
+  NOW=1700003601 run_on ingest p2
+  for mod in state=not-a-state schema=wrong binding_id=p2 key=other -seq 'seq:=true' \
+    'kind:=7' payload_sha256=bad final_at=bad delivered_at=2026-99-99T00:00:00Z \
+    'delivered_at:=null' 'consumed_at:=7' code=bad problem=bad 'problem_since:=7'; do
+    cp "$F/current.good" "$P1/current/k1.json"
+    fix jset "$P1/current/k1.json" "$mod"
+    NOW=1700003601 run_on ingest p2
+    expect_code 0 "$RC" "invalid current $mod ($OUT)"
+    stored > "$F/store"
+    assert_grep "current-unreadable p1/k1" "$F/store" "invalid current $mod alarms"
+    assert_grep "unconsumed p1/k1" "$F/store" "invalid current $mod preserves obligation"
+    cp "$F/current.good" "$P1/current/k1.json"
+    NOW=1700003601 run_on ingest p2
+    stored > "$F/recovered"
+    assert_no_grep current-unreadable "$F/recovered" "repair clears source level"
+  done
+  mv "$P1/current/k1.json" "$F/current.missing"
+  NOW=1700003601 run_on ingest p2
+  stored > "$F/store"
+  assert_grep "current-unreadable p1/k1" "$F/store" "missing projection discovered from live membership"
+  assert_grep "unconsumed p1/k1" "$F/store" "missing projection retains obligation"
+  NOW=1700003601 run_on reconcile p1
+  expect_code 70 "$RC" "missing live projection refuses speculative repair ($OUT)"
+  assert_absent "$P1/current/k1.json" 'missing projection is not recreated without its problem history'
+  mv "$F/current.missing" "$P1/current/k1.json"
+  NOW=1700003601 run_on ingest p2
+  mv "$P1/current" "$F/current.dir"
+  NOW=1700003601 run_on ingest p2
+  stored > "$F/store"
+  assert_grep "current-unreadable p1" "$F/store" "missing required directory alarms"
+  assert_grep "unconsumed p1/k1" "$F/store" "missing required directory retains obligation"
+  mv "$F/current.dir" "$P1/current"
+  NOW=1700003601 run_on ingest p2
+  cp "$P1/receipts/k1/1.json" "$F/receipt.good"
+  for mod in binding_id=p2 outcome=bad; do
+    fix jset "$P1/receipts/k1/1.json" "$mod"
+    NOW=1700003601 run_on ingest p2
+    stored > "$F/store"
+    assert_grep "receipts-unreadable p1/k1" "$F/store" "receipt $mod unknown even with valid current"
+    assert_grep "unconsumed p1/k1" "$F/store" "receipt $mod retains obligation"
+    cp "$F/receipt.good" "$P1/receipts/k1/1.json"
+    NOW=1700003601 run_on ingest p2
+  done
+  chmod 000 "$P1/receipts/k1"
+  NOW=1700003601 run_on ingest p2
+  chmod 755 "$P1/receipts/k1"
+  stored > "$F/store"
+  assert_grep "receipts-unreadable p1/k1" "$F/store" "unreadable receipt directory alarms"
+  NOW=1700003601 run_on ingest p2
+  mv "$P1/receipts" "$F/receipts"
+  NOW=1700003601 run_on ingest p2
+  stored > "$F/store"
+  assert_grep "receipts-unreadable p1" "$F/store" "missing receipts root alarms"
+  assert_grep "unconsumed p1/k1" "$F/store" "missing receipt root holds obligation"
+  mv "$F/receipts" "$P1/receipts"
+  NOW=1700003601 run_on ingest p2
+  stored > "$F/store"
+  assert_no_grep unreadable "$F/store" "healthy complete snapshot clears only source levels"
+  assert_grep "unconsumed p1/k1" "$F/store" "healthy complete snapshot keeps obligation"
+  # Canonical binding identity and a missing binding record are independent
+  # source faults; a surviving owner tree keeps that binding discoverable.
+  cp "$OWN/bindings/p1.json" "$F/binding.good"
+  fix jset "$OWN/bindings/p1.json" binding_id=p2
+  NOW=1700003601 run_on ingest p2
+  stored > "$F/store"
+  assert_grep 'binding-unreadable p1' "$F/store" 'binding filename identity validated'
+  cp "$F/binding.good" "$OWN/bindings/p1.json"
+  NOW=1700003601 run_on ingest p2
+  mv "$OWN/bindings/p1.json" "$F/binding.missing"
+  NOW=1700003601 run_on ingest p2
+  stored > "$F/store"
+  assert_grep 'binding-unreadable p1' "$F/store" 'missing binding stays discoverable'
+  assert_grep 'unconsumed p1/k1' "$F/store" 'missing binding holds obligation'
+  mv "$F/binding.missing" "$OWN/bindings/p1.json"
+  NOW=1700003601 run_on ingest p2
+  cp "$P1/.outbox-status" "$F/status.good"
+  for mod in missing fields identity; do
+    case "$mod" in
+      missing) mv "$P1/.outbox-status" "$F/status.missing" ;;
+      fields) printf '[]' > "$P1/.outbox-status" ;;
+      identity) fix jset "$P1/.outbox-status" 'in_progress:=[{"name":"../bad","since":"2026-01-01T00:00:00Z"}]' ;;
+    esac
+    NOW=1700003601 run_on ingest p2
+    stored > "$F/store"
+    assert_grep 'status-unreadable p1' "$F/store" "outbox status $mod alarms"
+    assert_grep 'unconsumed p1/k1' "$F/store" "outbox status $mod holds obligation"
+    cp "$F/status.good" "$P1/.outbox-status"
+    NOW=1700003601 run_on ingest p2
+  done
+  pass "invalid or missing projections and unknown receipt sources never clear held obligations"
+}
+
+case_source_enumeration() {
+  local shape command
+  world prebind-scratch nobind
+  rmdir "$OB"
+  OUT=$(bind_p1 2> "$F/on.err"); RC=$?
+  expect_code 65 "$RC" 'failed first outbox inspection'
+  assert_present "$OWN/.tmp" 'failed bind left front scratch'
+  run_on status
+  expect_code 0 "$RC" 'scratch-only pre-bind root is healthy'
+  assert_equals true "$(field alarms_complete)" 'scratch-only root has complete empty snapshot'
+  assert_equals '[]' "$(field bindings)" 'scratch-only root has no bindings'
+  world source-enumeration
+  for shape in missing malformed; do
+    if [ "$shape" = missing ]; then
+      mv "$OWN/bindings" "$F/bindings.saved"
+    else
+      printf '{}' > "$OWN/bindings/BAD.json"
+    fi
+    for command in status list; do
+      run_on "$command"
+      expect_code 70 "$RC" "$command with $shape binding source ($OUT)"
+      assert_equals binding-unreadable "$(field code)" "$command reports named source failure"
+      assert_no_grep Traceback "$F/on.err" "$command never leaks an unhandled exception"
+    done
+    FM_OWNER_NOTICE_TEST_ROOT="$W" python3 "$ENGINE" alarms --home "$H" --out "$F/wanted.json" > "$F/snapshot"
+    expect_code 0 "$?" 'unknown binding source yields structured snapshot'
+    assert_equals false "$(jq -r .complete "$F/snapshot")" "$shape binding source makes snapshot incomplete"
+    assert_equals binding-unreadable "$(jq -r 'to_entries[0].value.kind' "$F/wanted.json")" 'source alarm identifies bindings'
+    if [ "$shape" = missing ]; then
+      mv "$F/bindings.saved" "$OWN/bindings"
+    else
+      rm "$OWN/bindings/BAD.json"
+    fi
+  done
+  printf '{}' > "$P1/current/BAD.json"
+  FM_OWNER_NOTICE_TEST_ROOT="$W" python3 "$ENGINE" alarms --home "$H" --out "$F/wanted.json" > "$F/snapshot"
+  expect_code 0 "$?" 'invalid current name yields structured snapshot'
+  assert_equals false "$(jq -r .complete "$F/snapshot")" 'invalid current filename is not silently skipped'
+  assert_equals p1 "$(jq -r '.[] | select(.kind == "current-unreadable") | .subject' "$F/wanted.json")" 'invalid current name identifies binding source'
+  rm "$P1/current/BAD.json"
+  run_on status
+  expect_code 0 "$RC" 'restored enumeration source is healthy'
+  assert_equals true "$(field alarms_complete)" 'restored empty binding has complete snapshot'
+  pass 'binding and current enumeration distinguish unknown records from healthy pre-bind scratch'
+}
+
+case_final_projection_without_receipts() {
+  world final-without-receipts
+  payload p receipt
+  submit k1 note p
+  run_on ingest p1
+  cp "$P1/current/k1.json" "$F/current.saved"
+  mv "$P1/receipts/k1" "$F/receipts.saved"
+  run_on reconcile p1
+  expect_code 70 "$RC" 'final projection without its receipts refuses refresh'
+  assert_contains "$(field detail)" 'final projection without receipts' 'refusal names inconsistent source'
+  cmp "$F/current.saved" "$P1/current/k1.json" || fail 'final state was replaced by pending'
+  stored > "$F/store"
+  assert_grep 'receipts-unreadable p1/k1' "$F/store" 'missing receipts preserve an incomplete snapshot'
+  mv "$F/receipts.saved" "$P1/receipts/k1"
+  run_on reconcile p1
+  expect_code 0 "$RC" 'restored receipts permit reconciliation'
+  pass 'final projections cannot be downgraded when their receipts disappear'
+}
+
+case_unknown_problem_mutation() {
+  local command shape
+  world unknown-problem
+  payload p problem
+  submit k1 note p
+  run_on ingest p1
+  OF=seq:stale-always=1 run_on consume p1 k1
+  expect_code 70 "$RC" 'real sequence collision establishes a projection-only problem'
+  stored > "$F/store"
+  assert_grep 'seq-collision p1/k1' "$F/store" 'problem level initially held'
+  cp "$P1/current/k1.json" "$F/current.good"
+  for command in reconcile ingest; do
+    for shape in invalid missing; do
+      mv "$P1/current/k1.json" "$F/current.saved"
+      if [ "$shape" = invalid ]; then
+        cp "$F/current.good" "$P1/current/k1.json"
+        fix jset "$P1/current/k1.json" schema=bad
+        cp "$P1/current/k1.json" "$F/current.bad"
+      fi
+      run_on "$command" p1
+      expect_code 70 "$RC" "$command refuses $shape problem-bearing projection ($OUT)"
+      if [ "$shape" = invalid ]; then
+        cmp "$F/current.bad" "$P1/current/k1.json" || fail "$command erased invalid projection"
+      else
+        assert_absent "$P1/current/k1.json" "$command did not reconstruct away missing problem"
+      fi
+      stored > "$F/store"
+      assert_grep 'seq-collision p1/k1' "$F/store" "$command preserves problem on $shape source"
+      assert_grep 'current-unreadable p1/k1' "$F/store" "$command alarms on $shape source"
+      mv "$F/current.saved" "$P1/current/k1.json"
+      run_on reconcile p1
+      expect_code 0 "$RC" 'verified projection restoration permits reconcile'
+      assert_equals seq-collision "$(jq -r .problem "$P1/current/k1.json")" 'restored problem remains until acknowledgement'
+    done
+  done
+  pass 'mutations cannot reconstruct away a problem from invalid or missing live projection'
+}
+
+case_bind_inventory_init() {
+  local shape
+  # The reported instance: both authoritative records lost, real receipts and
+  # projections survive. Refusal must precede any replacement or initialization.
+  world bind-surviving
+  payload p survivor
+  submit k1 note p
+  run_on ingest p1
+  mv "$OWN/bindings/p1.json" "$F/binding.saved"
+  mv "$P1/.live-keys" "$F/live.saved"
+  cp "$P1/current/k1.json" "$F/current.saved"
+  cp "$P1/receipts/k1/1.json" "$F/receipt.saved"
+  OUT=$(bind_p1 2> "$F/on.err"); RC=$?
+  expect_code 70 "$RC" "surviving tree refuses bind ($OUT)"
+  assert_equals unknown-surviving-tree "$(field code)" 'named refusal for surviving tree'
+  assert_absent "$P1/.live-keys" 'refusal never initializes empty membership'
+  assert_absent "$OWN/bindings/p1.json" 'refusal never republishes binding'
+  cmp "$F/current.saved" "$P1/current/k1.json" || fail 'refusal changed current'
+  cmp "$F/receipt.saved" "$P1/receipts/k1/1.json" || fail 'refusal changed receipt'
+  mv "$F/binding.saved" "$OWN/bindings/p1.json"
+  mv "$F/live.saved" "$P1/.live-keys"
+  bind_p1 > "$F/replay" || fail 'verified restoration permits ordinary bind replay'
+  # Isolated sibling evidence: any one surviving record or unreadable/nonregular
+  # layout refuses, even when the receipt and current directories are empty.
+  for shape in receipts current custody handled archive .announced .acked .tmp unexpected mode symlink live status; do
+    world "bind-surviving-$shape" nobind
+    mkdir -p "$P1/receipts" "$P1/current"
+    case "$shape" in
+      mode) chmod 000 "$P1/receipts" ;;
+      symlink) rmdir "$P1/receipts"; ln -s "$F/absent" "$P1/receipts" ;;
+      unexpected) printf '{}' > "$P1/unknown" ;;
+      live) printf '{"binding_id":"p1","keys":["k1"],"schema":"fm-owner-notice-live/v1"}' > "$P1/.live-keys" ;;
+      status) printf '{}' > "$P1/.outbox-status" ;;
+      *) mkdir -p "$P1/$shape"; printf '{}' > "$P1/$shape/record" ;;
+    esac
+    OUT=$(bind_p1 2> "$F/on.err"); RC=$?
+    [ "$shape" != mode ] || chmod 755 "$P1/receipts"
+    expect_code 70 "$RC" "$shape alone prevents first-bind initialization ($OUT)"
+    assert_equals unknown-surviving-tree "$(field code)" "$shape gives named refusal"
+    assert_absent "$OWN/bindings/p1.json" "$shape never republishes binding"
+    if [ "$shape" = live ]; then
+      assert_equals '["k1"]' "$(jq -c .keys "$P1/.live-keys")" 'existing membership not emptied'
+    else
+      assert_absent "$P1/.live-keys" "$shape never initializes membership"
+    fi
+  done
+  world bind-pristine-partial nobind
+  mkdir -p "$P1/receipts" "$P1/current"
+  OUT=$(bind_p1 2> "$F/on.err"); RC=$?
+  expect_code 0 "$RC" "provably empty partial layout can bind ($OUT)"
+  assert_equals '[]' "$(jq -c .keys "$P1/.live-keys")" 'pristine layout gets explicit empty inventory'
+  world bind-pristine-published nobind
+  OF=bind:before-create:kill bind_p1 > "$F/killed" 2>&1
+  assert_absent "$OWN/bindings/p1.json" 'crash before binding publication'
+  assert_equals '[]' "$(jq -c .keys "$P1/.live-keys")" 'first-bind inventory published before crash'
+  OUT=$(bind_p1 2> "$F/on.err"); RC=$?
+  expect_code 0 "$RC" "initialized pristine first-bind replay ($OUT)"
+  pass 'bind refuses unknown surviving trees and only initializes proven pristine layouts'
+}
+
+case_live_membership() {
+  local shape point rc
+  world live-membership
+  assert_equals '[]' "$(jq -c .keys "$P1/.live-keys")" "new binding has explicit empty membership"
+  run_on status
+  assert_equals true "$(field alarms_complete)" "healthy empty inventory is complete"
+  mkdir -p "$W/prod2/outbox"
+  on bind p2 --outbox "$W/prod2/outbox" --producer-actor process:prod --producer-uid "$(id -u)" \
+    --kinds note --max-bytes 1000 --consume-bound-seconds 3600 > /dev/null || fail 'bind p2'
+  payload p live
+  submit k1 note p
+  SPY="$F/spy"
+  NOW=1700000000 run_on ingest p1
+  assert_equals '["k1"]' "$(jq -c .keys "$P1/.live-keys")" "receipt key is a live member"
+  spy_before 'initial projection precedes membership' o-current-dirsync "$P1/current" o-membership-dirsync "$P1"
+  spy_before 'membership precedes receipt' o-membership-dirsync "$P1" o-receipt-dirsync "$P1/receipts/k1"
+  NOW=1700003601 run_on ingest p2
+  cp "$P1/.live-keys" "$F/live.good"
+  for shape in missing empty space malformed schema identity keys duplicate unsorted mode symlink directory fifo nul huge; do
+    mv "$P1/.live-keys" "$F/live.saved"
+    case "$shape" in
+      missing) : ;;
+      empty) : > "$P1/.live-keys" ;;
+      space) printf ' ' > "$P1/.live-keys" ;;
+      malformed) printf '{' > "$P1/.live-keys" ;;
+      schema|identity|keys|duplicate|unsorted)
+        cp "$F/live.good" "$P1/.live-keys"
+        case "$shape" in
+          schema) fix jset "$P1/.live-keys" schema=bad ;;
+          identity) fix jset "$P1/.live-keys" binding_id=p2 ;;
+          keys) fix jset "$P1/.live-keys" 'keys:=[7]' ;;
+          duplicate) fix jset "$P1/.live-keys" 'keys:=["k1","k1"]' ;;
+          unsorted) fix jset "$P1/.live-keys" 'keys:=["z","a"]' ;;
+        esac ;;
+      mode) cp "$F/live.good" "$P1/.live-keys"; chmod 000 "$P1/.live-keys" ;;
+      symlink) ln -s absent "$P1/.live-keys" ;;
+      directory) mkdir "$P1/.live-keys" ;;
+      fifo) mkfifo "$P1/.live-keys" ;;
+      nul) printf '\0' > "$P1/.live-keys" ;;
+      huge) fix payload 16777217 "$P1/.live-keys" ;;
+    esac
+    NOW=1700003601 run_on ingest p2
+    stored > "$F/store"
+    assert_grep 'membership-unreadable p1' "$F/store" "inventory $shape alarms"
+    assert_grep 'unconsumed p1/k1' "$F/store" "inventory $shape holds obligation"
+    run_on reconcile p1
+    expect_code 70 "$RC" "inventory $shape refuses owner writes"
+    assert_equals membership-unreadable "$(field code)" "inventory refusal names its source"
+    if [ "$shape" = directory ]; then rmdir "$P1/.live-keys"; else rm -f "$P1/.live-keys"; fi
+    mv "$F/live.saved" "$P1/.live-keys"
+    NOW=1700003601 run_on ingest p2
+    stored > "$F/store"
+    assert_no_grep membership-unreadable "$F/store" "valid restored inventory clears source level"
+  done
+  # Membership survives a crash even before the first projection/receipt.
+  payload q new
+  submit k2 note q
+  NOW=1700003601 OF=membership:after-add:kill run_on ingest p1
+  assert_equals '["k1","k2"]' "$(jq -c .keys "$P1/.live-keys")" 'membership is durable before receipt'
+  assert_absent "$P1/receipts/k2/1.json" 'no receipt before membership fault'
+  NOW=1700003601 run_on ingest p2
+  stored > "$F/store"
+  assert_equals pending "$(jq -r .state "$P1/current/k2.json")" 'membership crash has durable initial projection'
+  assert_no_grep 'current-unreadable p1/k2' "$F/store" 'first-write crash is distinguishable from a missing live projection'
+  NOW=1700003601 run_on ingest p1
+  expect_code 0 "$RC" "membership crash replay ($OUT)"
+  for point in k1 k2; do NOW=1700003601 run_on consume p1 "$point"; done
+  # Retention removes membership only after a durable terminal archive.
+  NOW=$((1700003601 + 8 * 86400)) OF=membership:after-remove:kill run_on ingest p1
+  assert_equals '["k2"]' "$(jq -c .keys "$P1/.live-keys")" 'first archived key leaves membership'
+  [ -n "$(find "$P1/archive" -name k1.json)" ] || fail 'membership removal needs archive'
+  assert_present "$P1/current/k1.json" 'crash before current unlink is replayable'
+  NOW=$((1700003601 + 8 * 86400)) run_on ingest p1
+  expect_code 0 "$RC" "retention membership replay ($OUT)"
+  assert_equals '[]' "$(jq -c .keys "$P1/.live-keys")" 'retained terminal keys no longer cost a snapshot'
+  assert_absent "$P1/current/k1.json" 'replay removes extra terminal projection'
+  assert_absent "$P1/current/k2.json" 'second terminal projection archived'
+  # Aged receipt history is disk-only. A poison historical key and archive
+  # directory must never be read or enumerated by an alarm snapshot.
+  mkdir "$P1/receipts/ancient"
+  printf '{' > "$P1/receipts/ancient/1.json"
+  chmod 000 "$P1/receipts/ancient" "$P1/archive"
+  OPENLOG="$F/opens" NOW=$((1700003601 + 8 * 86400)) run_on ingest p2
+  rc=$?
+  chmod 755 "$P1/receipts/ancient" "$P1/archive"
+  expect_code 0 "$rc" 'snapshot wrapper returned'
+  expect_code 0 "$RC" "snapshot ignores history ($OUT)"
+  assert_equals 0 "$(awk -v p="$P1/receipts" '$2 == "scandir" && $3 == p {n++} END {print n+0}' "$F/opens")" 'no receipt root enumeration'
+  assert_no_grep "$P1/receipts/ancient" "$F/opens" 'historical receipts never opened'
+  assert_no_grep "$P1/archive" "$F/opens" 'archives never opened on refresh'
+  stored > "$F/store"
+  assert_no_grep unreadable "$F/store" 'healthy empty active set is not an alarm'
+  pass 'bounded live membership fails closed, survives crash ordering and leaves history disk-only'
+}
+
+case_membership_write_bound() {
+  local bound
+  world membership-write-bound
+  payload p first
+  submit k1 note p
+  run_on ingest p1
+  cp "$P1/.live-keys" "$F/live.saved"
+  bound=$(wc -c < "$P1/.live-keys")
+  bound=$((bound + 1))
+  payload q next
+  submit k2 note q
+  # Only the write cap fires: the existing inventory is valid and every live
+  # projection and receipt exists. The production cap stays 16 MiB.
+  OF="membership-write-bound=$bound" run_on ingest p1
+  expect_code 70 "$RC" "new membership exceeds write bound ($OUT)"
+  assert_equals membership-full "$(field code)" 'write-side capacity refusal is named'
+  cmp "$F/live.saved" "$P1/.live-keys" || fail 'capacity refusal changed membership'
+  assert_absent "$P1/receipts/k2/1.json" 'capacity refusal precedes first receipt'
+  run_on ingest p1
+  expect_code 0 "$RC" "capacity restored permits replay ($OUT)"
+  query k2 note q
+  expect_code 0 "$RC" 'retry delivered only after membership could be published'
+  pass 'membership write capacity refuses without changing inventory or publishing receipt'
+}
+
+case_membership_problem_retention() {
+  world membership-problem-retention
+  payload p original
+  submit k1 note p
+  NOW=1700000000 run_on ingest p1
+  NOW=1700000000 OF=seq:stale-always=1 run_on consume p1 k1
+  expect_code 70 "$RC" 'sequence collision records problem'
+  NOW=1700000000 run_on consume p1 k1
+  expect_code 0 "$RC" 'ordinary retry consumes with problem still unacknowledged'
+  assert_equals consumed "$(jq -r .state "$P1/current/k1.json")" 'retention candidate is consumed'
+  assert_equals seq-collision "$(jq -r .problem "$P1/current/k1.json")" 'projection-only problem is present'
+  assert_equals null "$(jq -r .code "$P1/current/k1.json")" 'refusal-code guard cannot save this fixture'
+  NOW=1700691200 run_on ingest p1
+  expect_code 0 "$RC" 'aged consumed problem refresh'
+  assert_equals '["k1"]' "$(jq -c .keys "$P1/.live-keys")" 'unacknowledged problem keeps membership'
+  stored > "$F/store"
+  assert_grep 'seq-collision p1/k1' "$F/store" 'unacknowledged problem remains visible'
+  NOW=1700691200 run_on ack-refusal p1 k1 --note handled
+  NOW=1700691200 run_on ingest p1
+  expect_code 0 "$RC" 'acknowledged problem refresh'
+  assert_equals '[]' "$(jq -c .keys "$P1/.live-keys")" 'acknowledged terminal problem may be archived'
+  pass 'a problem alone prevents terminal membership removal until acknowledged'
+}
+
+case_membership_retention_guards() {
+  world membership-retention
+  payload p original
+  submit k1 note p
+  NOW=1700000000 run_on ingest p1
+  NOW=1700000000 run_on consume p1 k1
+  mv "$P1/.announced/k1" "$F/announced"
+  mkdir "$F/lock"
+  # shellcheck disable=SC2016 # Fixture shell is the recorded parent.
+  FM_OWNER_NOTICE_TEST_ROOT="$W" FM_OWNER_NOTICE_NOW=1700691200 bash -c \
+    'printf "%s\n" "$$" > "$1/pid"; python3 "$2" retention --home "$3" --lock "$1" p1; exit $?' \
+    _ "$F/lock" "$ENGINE" "$H" > "$F/retention.out"
+  expect_code 0 "$?" 'retention with unannounced consumed key'
+  assert_equals '["k1"]' "$(jq -c .keys "$P1/.live-keys")" 'unannounced terminal key keeps membership'
+  mv "$F/announced" "$P1/.announced/k1"
+  # A conflicting refusal after consumption is still an obligation until ack.
+  payload q different
+  fix envelope "$H" p1 k1 note "$F/q" > "$OB/k1.envelope.json"
+  NOW=1700691200 run_on ingest p1
+  expect_code 0 "$RC" "conflict before retention ($OUT)"
+  assert_equals '["k1"]' "$(jq -c .keys "$P1/.live-keys")" 'unacked refusal keeps consumed membership'
+  NOW=1700691200 run_on ack-refusal p1 k1 --note handled
+  NOW=1700691200 run_on ingest p1
+  assert_equals '[]' "$(jq -c .keys "$P1/.live-keys")" 'acked terminal key can leave membership'
+  pass 'retention cannot remove unannounced or unacknowledged obligations'
+}
+
+postcommit_routing_case() {
+  local command=$1 expected=$2 target=p1
+  world "postcommit-$command"
+  mkdir -p "$W/prod2/outbox" "$W/prod3/outbox"
+  on bind p2 --outbox "$W/prod2/outbox" --producer-actor process:prod --producer-uid "$(id -u)" \
+    --kinds note --max-bytes 1000 --consume-bound-seconds 3600 > /dev/null || fail 'bind p2'
+  payload p committed
+  submit k1 note p
+  case "$command" in
+    reconcile)
+      run_on ingest p1
+      fix jset "$P1/current/k1.json" state=pending kind:=null payload_sha256:=null seq:=null \
+        code:=null final_at:=null delivered_at:=null consumed_at:=null ;;
+    retire|purge)
+      NOW=1700000000 run_on ingest p1
+      NOW=1700000000 run_on consume p1 k1
+      if [ "$command" = purge ]; then NOW=1700000000 run_on retire p1; fi ;;
+    bind) target=p3 ;;
+  esac
+  cp "$OWN/bindings/p2.json" "$F/binding.good"
+  printf '{' > "$OWN/bindings/p2.json"
+  mv "$OWN/.bindings.list" "$F/list.saved"
+  case "$command" in
+    bind)
+      OUT=$(on bind p3 --outbox "$W/prod3/outbox" --producer-actor process:prod --producer-uid "$(id -u)" \
+        --kinds note --max-bytes 1000 --consume-bound-seconds 3600 2>&1); RC=$? ;;
+    purge) OUT=$(NOW=1734646401 on purge p1 2>&1); RC=$? ;;
+    *) OUT=$(on "$command" p1 2>&1); RC=$? ;;
+  esac
+  expect_code 70 "$RC" "$command postcommit routing failure ($OUT)"
+  printf '%s\n' "$OUT" > "$F/combined"
+  # Ordering is observable: one complete operation result, then the named
+  # routing diagnostic, followed only by ancillary front diagnostics.
+  OUT=$(jq -Rsc 'split("\n")[0] | fromjson' "$F/combined") || fail "$command lost its first JSON result"
+  assert_equals "$expected" "$(field state)" "$command retains committed state"
+  assert_equals 0 "$(field exit)" "$command retains operation exit independently of process failure"
+  case "$command" in
+    ingest)
+      assert_equals delivered "$(printf '%s' "$OUT" | jq -r '.outcomes["k1.envelope.json"]')" 'committed ingest outcomes retained'
+      assert_present "$P1/receipts/k1/1.json" 'ingest commit survives routing failure' ;;
+    reconcile) assert_equals delivered "$(jq -r .state "$P1/current/k1.json")" 'reconcile commit survives' ;;
+    retire) assert_equals false "$(field replay)" 'first retire result preserved'; assert_present "$OWN/bindings/p1.retired" 'retire commit survives' ;;
+    purge) assert_absent "$P1" 'purge commit survives' ;;
+    bind)
+      assert_equals false "$(field replay)" 'first bind result preserved'
+      assert_equals "$(fix sha "$OWN/bindings/p3.json")" "$(field binding_sha256)" 'binding receipt retains digest' ;;
+  esac
+  OUT=$(jq -Rsc 'split("\n")[1] | fromjson' "$F/combined") || fail "$command lost its following routing diagnostic"
+  assert_equals routing-unreadable "$(field code)" "$command diagnostic names routing failure"
+  assert_equals "$target" "$(field binding_id)" "$command diagnostic names committed binding"
+  assert_equals p2 "$(field source_binding_id)" "$command diagnostic names broken binding"
+  assert_equals "$OWN/.bindings.list" "$(field list)" "$command diagnostic names list"
+  assert_absent "$OWN/.bindings.list" 'unknown fallback never replaced'
+  cp "$F/binding.good" "$OWN/bindings/p2.json"
+  # A different healthy binding provides the next refresh, even after purge.
+  run_on reconcile p2
+  expect_code 0 "$RC" "$command next refresh repairs lists ($OUT)"
+  assert_present "$OWN/.bindings.list" 'next refresh rebuilt active routing'
+  pass "$command preserves its committed result before naming a postcommit routing failure"
+}
+
+case_postcommit_ingest() { postcommit_routing_case ingest ingested; }
+case_postcommit_reconcile() { postcommit_routing_case reconcile reconciled; }
+case_postcommit_retire() { postcommit_routing_case retire retired; }
+case_postcommit_purge() { postcommit_routing_case purge purged; }
+case_postcommit_bind() { postcommit_routing_case bind bound; }
+
+case_unknown_routing() {
+  local list shape
+  for list in .bindings.list .retired.list; do
+    for shape in unreadable malformed missing; do
+      world "routing-$list-$shape"
+      mkdir -p "$W/prod2/outbox"
+      on bind p2 --outbox "$W/prod2/outbox" --producer-actor process:prod --producer-uid "$(id -u)" \
+        --kinds note --max-bytes 1000 --consume-bound-seconds 3600 > /dev/null || fail "bind p2"
+      cp "$OWN/.bindings.list" "$F/active.good"
+      cp "$OWN/.retired.list" "$F/retired.good"
+      printf '{' > "$OWN/bindings/p1.json"
+      case "$shape" in
+        unreadable) chmod 000 "$OWN/$list" ;;
+        malformed) printf 'bad row' > "$OWN/$list" ;;
+        missing) mv "$OWN/$list" "$F/list.saved" ;;
+      esac
+      # Direct engine invocation under a fixture-only parent-owned lock proves
+      # refusal before any replacement, independently of the front's alarms.
+      mkdir "$F/lock"
+      # shellcheck disable=SC2016 # The inner shell owns the engine's lock.
+      FM_OWNER_NOTICE_TEST_ROOT="$W" bash -c 'printf "%s\n" "$$" > "$1/pid"; python3 "$2" lists --home "$3" --bindings-lock "$1"; exit $?' \
+        _ "$F/lock" "$ENGINE" "$H" > "$F/lists.out"
+      RC=$?
+      expect_code 70 "$RC" "routing fallback $list/$shape refuses"
+      assert_equals routing-unreadable "$(jq -r .code "$F/lists.out")" "refused for unknown routing, not lock ownership"
+      case "$shape" in
+        unreadable) chmod 644 "$OWN/$list" ;;
+        malformed) assert_equals 'bad row' "$(cat "$OWN/$list")" "invalid fallback was not replaced" ;;
+        missing) assert_absent "$OWN/$list" "missing fallback not rebuilt from incomplete bindings" ;;
+      esac
+      if [ "$list" = .retired.list ]; then
+        cmp -s "$OWN/.bindings.list" "$F/active.good" || fail "active membership was reduced"
+      elif [ "$shape" = unreadable ]; then
+        cmp -s "$OWN/.bindings.list" "$F/active.good" || fail "unreadable membership was reduced"
+      fi
+      # Restore the fault for the public front: its source level is durable.
+      [ "$shape" != unreadable ] || chmod 000 "$OWN/$list"
+      run_on ingest p2
+      stored > "$F/store"
+      assert_grep 'routing-unreadable all' "$F/store" "fallback source failure alarms"
+      [ "$shape" != unreadable ] || chmod 644 "$OWN/$list"
+    done
+  done
+  pass "unknown active or retired fallback refuses list replacement and raises a durable source level"
+}
+
+case_alarm_snapshot_order() {
+  local pid
+  world snapshot-order
+  OF=$(pause_at snapshot alarms:after-snapshot) on ingest p1 > "$F/first.out" 2>&1 &
+  pid=$!
+  reached snapshot
+  # Leave the first snapshot paused and attempt a second projection. It must
+  # refuse boundedly, not publish a newer set that the paused one could erase.
+  printf '{' > "$OWN/bindings/p1.json"
+  run_on bind p2 --outbox "$OB" --producer-actor process:prod --producer-uid "$(id -u)" \
+    --kinds note --max-bytes 1000 --consume-bound-seconds 3600
+  expect_code 70 "$RC" "concurrent projection cannot bypass snapshot lock"
+  assert_grep 'alarm-sync failed' "$F/on.err" "held projection lock is explicit"
+  release snapshot
+  wait "$pid"
+  run_on ingest p2
+  stored > "$F/store"
+  assert_grep 'binding-unreadable p1' "$F/store" "next ordered snapshot retains unknown binding"
+  pass "alarm projections serialize snapshot through sync without binding locks"
+}
+
 fm_run_case_pool "$(fm_case_pool_jobs "${FM_OWNER_NOTICE_CASE_JOBS:-}")" "$TMP_ROOT/.case-logs" \
   case_crash_owner \
   case_crash_client \
   case_publish_window \
+  case_publish_transition \
+  case_publish_lookup_unknown \
+  case_unknown_projection \
+  case_source_enumeration \
+  case_final_projection_without_receipts \
+  case_unknown_problem_mutation \
+  case_bind_inventory_init \
+  case_live_membership \
+  case_membership_write_bound \
+  case_membership_problem_retention \
+  case_membership_retention_guards \
+  case_unknown_routing \
+  case_postcommit_ingest \
+  case_postcommit_reconcile \
+  case_postcommit_retire \
+  case_postcommit_purge \
+  case_postcommit_bind \
+  case_alarm_snapshot_order \
   case_retire_truth \
   case_query_modes \
   case_unknown_sources \
