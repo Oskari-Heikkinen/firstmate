@@ -1018,6 +1018,9 @@ fm_lock_recheck_stale_owner() {
 
 FM_RECOVERY_MARKER_TOKEN=
 FM_RECOVERY_MARKER_ACTION='none'
+# 1 when the last arm check's recover came from quarantining a malformed
+# marker: unknown recovery state, which the watcher always re-announces.
+FM_RECOVERY_MARKER_MALFORMED=0
 FM_RECOVERY_MARKER_WRITTEN_TOKEN=
 FM_WAKE_APPEND_RECOVERY_PREVIOUS_TOKEN=
 FM_WAKE_APPEND_RECOVERY_PUBLISHED_TOKEN=
@@ -1247,6 +1250,7 @@ _fm_recovery_marker_ack() {
 _fm_recovery_marker_arm_check() {
   local marker=$1 lock line quarantine
   FM_RECOVERY_MARKER_ACTION='none'
+  FM_RECOVERY_MARKER_MALFORMED=0
   lock="${marker}.lock"
   fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
   if ! fm_lock_acquire_wait "$lock"; then
@@ -1281,6 +1285,8 @@ _fm_recovery_marker_arm_check() {
       return 1
     fi
     FM_RECOVERY_MARKER_ACTION='recover'
+    # shellcheck disable=SC2034 # Output read by callers after this function returns.
+    FM_RECOVERY_MARKER_MALFORMED=1
     fm_lock_release "$lock"
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     return 0
