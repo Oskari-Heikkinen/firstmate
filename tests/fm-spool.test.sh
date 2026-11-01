@@ -119,6 +119,8 @@ run_gate_case() (
   mkdir -p "$lab/spool" "$lab/wt"
   export WT="$lab/wt" TEARDOWN_WORK_SCAN="$lab/spool" FORCE='' KIND=ship MODE=no-mistakes
   export TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY=topic LANDED_HEAD=HEAD PROJ=fixture TEARDOWN_POOL_SLOT_LOST=0
+  # Invoked by the sourced landed-work functions through the fake tool surface.
+  # shellcheck disable=SC2329
   git() {
     case "${3:-}" in
       status) return 0 ;;
@@ -194,6 +196,8 @@ run_fallback_case() (
   teardown_remote() { printf 'MERGED\tabc\thttps://example.invalid/pull/1\n'; }
   ensure_commit_object() { return 0; }
   unpushed_patches_are_in_pr_head() { return 2; }
+  # Invoked by the sourced PR predicate.
+  # shellcheck disable=SC2329
   git() { [ "${3:-}" != rev-parse ] || { printf 'abc\n'; return 0; }; return 1; }
   work_is_landed topic || rc=$?
   if [ "$name" = fallback-valid ]; then
