@@ -1587,6 +1587,16 @@ def retention(ctx):
         consumed = [o for _, o in receipts_of(ctx.owner, ctx.bid, key) if o["outcome"] == "consumed"]
         if consumed and t - fmt.parse_iso(consumed[0]["recorded_at"]) >= HANDLED_KEEP:
             fmt.unlink_durable(ctx.path("handled", name), "o-handled-dirsync")
+    # The adapter cannot distinguish an archived indexed key from one still
+    # awaiting custody. Keep its terminal projection until a complete index
+    # proves the name is gone; unknown index state never authorizes archival.
+    indexed = None
+    try:
+        index = fmt.validate_index(read_json(ctx.path(".outbox-index")), ctx.bid)
+        if index["complete"] and not index["truncated"]:
+            indexed = {entry["name"][:-len(fmt.ENVELOPE_SUFFIX)] for entry in index["entries"]}
+    except (OSError, fmt.FormatError):
+        pass  # Coverage reports the source problem; retention preserves truth.
     for name in fmt.scandir_names(ctx.path("current"), "engine"):
         key = name[:-5]
         cur = ctx.refresh_current(key)
@@ -1599,6 +1609,8 @@ def retention(ctx):
             except FileNotFoundError:
                 since = None
         if since is None or t - since < CURRENT_KEEP:
+            continue
+        if indexed is None or key in indexed:
             continue
         if not os.path.lexists(ctx.path(".announced", key)):
             continue
