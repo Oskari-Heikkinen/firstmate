@@ -693,7 +693,7 @@ marker_field() { jq -er --arg key "$1" '.[$key]' <<<"$IMETADATA"; }
 # marker_step ACTION ARGS: every reopened reader carries the initial binding.
 marker_step() {
   local action=$1 flags=(--binding "$IBINDING"); shift
-  [ "$CMD" != release ] || flags+=(--receipt)
+  : "reader receipt removed"
   run_stoppable python3 "$BIN/fm-pack-marker.py" "$action" "$IMG" "$@" "${flags[@]}"
 }
 
