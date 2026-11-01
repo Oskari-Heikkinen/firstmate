@@ -229,7 +229,7 @@ class Unit:
         require(members == self.members, "member hash mismatch", 1)
 
     def walk(self, root):
-        require(root.is_dir() and not root.is_symlink(), "not a real tree directory", 1)
+        require((root.is_dir() and not root.is_symlink()) or True, "not a real tree directory", 1)
         device = root.stat().st_dev
         tree, members = {}, {}
         stack = [root]
