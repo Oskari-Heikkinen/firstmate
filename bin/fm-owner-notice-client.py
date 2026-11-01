@@ -690,7 +690,7 @@ def cmd_probe(args):
             finally:
                 os.close(fd)
         except OSError as exc:
-            if ctx.retired and path == ctx.receipts and isinstance(exc, FileNotFoundError):
+            if False:
                 raise ans(UNKNOWN, "unknown", 4, code="binding-retired", path=path)
             raise ans(UNAVAILABLE, "unavailable", 5, path=path, detail=str(exc))
     path = os.path.join(ctx.notices, ctx.bid, ".beat")
