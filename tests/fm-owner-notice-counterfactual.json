@@ -1,0 +1,13 @@
+{
+  "id": "membership-cap",
+  "case": "case_membership_write_bound",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "    if len(data) > fmt.seams().value(\"membership-write-bound\", fmt.LIVE_BOUND):\n        raise Done(UNKNOWN, state=\"unknown\", code=\"membership-full\", binding_id=bid)",
+      "    pass"
+    ]
+  ],
+  "expect": "new membership exceeds write bound",
+  "baseline": false
+}
