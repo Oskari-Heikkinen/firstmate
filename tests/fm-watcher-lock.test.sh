@@ -1120,9 +1120,8 @@ stop_outside_state_locks() {  # <pid> <state>
   return 1
 }
 
-# On a /proc-less host, fm_pid_identity renders a holder's lstart in the
-# caller's time zone, so a watch-lock identity recorded under another zone no
-# longer recomputes for its own live holder. A fresh watcher must replace that
+# A pre-UTC-pin /proc-less build rendered lstart in the caller's zone.
+# Its legacy watch-lock identity no longer recomputes with the canonical reader. A fresh watcher must replace that
 # live holder instead of standing down beside it, and the old watcher must stand
 # down on its own (exit 0) without being terminated. <successor-first> 1 pauses
 # the old watcher until the successor has delivered its recovery wake and exited,
@@ -1741,6 +1740,58 @@ test_lock_respects_live_holder_matching_its_start_time() {
     *) fail "lock held by a live holder matching its recorded start time was not refused: $out" ;;
   esac
   pass "live holder matching its recorded start time keeps its lock"
+}
+
+# Current producers and consumers agree across zones without rewriting the
+# holder's records. Capability changes are incomparable, never proof of reuse.
+assert_live_lock_survives_reader_environment() {  # <case> <holder-proc> <reader-proc>
+  local name=$1 holder_proc=$2 reader_proc=$3 dir state holder out i
+  dir=$(make_case "$name")
+  state="$dir/state"
+  [ "$holder_proc" != hidden ] || holder_proc="$dir/no-proc"
+  [ "$reader_proc" != hidden ] || reader_proc="$dir/no-proc"
+  TZ=Asia/Tokyo FM_PROC_ROOT_OVERRIDE="$holder_proc" FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$STATE/.watch.lock" || exit 91
+    fm_pid_identity "$$" > "$STATE/.watch.lock/pid-identity" || exit 92
+    : > "$2/ready"
+    deadline=$((SECONDS + 60))
+    while [ ! -e "$2/release" ] && [ "$SECONDS" -lt "$deadline" ]; do sleep 0.02; done
+    fm_lock_release "$STATE/.watch.lock"
+  ' _ "$LIB" "$dir" > "$dir/holder.out" 2>&1 &
+  holder=$!
+  for i in $(seq 1 600); do
+    [ ! -e "$dir/ready" ] || break
+    is_live_non_zombie "$holder" || break
+    sleep 0.05
+  done
+  assert_present "$dir/ready" "fixture holder never published its real lock: $(cat "$dir/holder.out")"
+  out=$(TZ=America/Los_Angeles FM_PROC_ROOT_OVERRIDE="$reader_proc" FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_pid_identity_to value "$2" || exit 93
+    [ "$value" = "$(fm_pid_identity "$2")" ] || exit 94
+    if fm_lock_try_acquire "$STATE/.watch.lock"; then
+      fm_lock_release "$STATE/.watch.lock"
+      printf "stolen\n"
+    else
+      printf "held=%s\n" "$FM_LOCK_HELD_PID"
+    fi
+  ' _ "$LIB" "$holder")
+  : > "$dir/release"
+  wait "$holder" || fail "fixture holder failed"
+  [ "$out" = "held=$holder" ] || fail "a reader environment change reclaimed a current live holder ($name): $out"
+}
+
+test_lock_current_holder_survives_different_timezones() {
+  assert_live_lock_survives_reader_environment zone-current hidden hidden
+  pass "current lock identities agree across time zones without editing the holder record"
+}
+
+test_lock_current_holder_survives_proc_capability_change() {
+  [ -r "/proc/$$/stat" ] || { pass "proc capability comparison requires Linux-compatible proc"; return; }
+  assert_live_lock_survives_reader_environment proc-to-ps /proc hidden
+  assert_live_lock_survives_reader_environment ps-to-proc hidden /proc
+  pass "incomparable proc and ps identities never authorize reclaim of a live holder"
 }
 
 test_lock_reclaims_holder_whose_identity_no_longer_recomputes() {
@@ -3070,6 +3121,8 @@ WATCHER_LOCK_CASES=(
   test_lock_respects_live_holder_matching_its_start_time
   test_lock_reclaims_holder_whose_identity_no_longer_recomputes
   test_lock_keeps_live_daemon_holder_with_stale_identity
+  test_lock_current_holder_survives_different_timezones
+  test_lock_current_holder_survives_proc_capability_change
   test_lock_empty_pid_uses_minimum_grace
   test_lock_late_claim_loses_after_recreate
   test_lock_bounded_wait_earns_one_grace_window_for_unpublished_pid

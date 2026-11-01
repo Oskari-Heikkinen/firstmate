@@ -149,8 +149,6 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 OWNER_LOCK="$STATE/.claude-autoarm.lock"
 FAILURE_NOTICE="$STATE/.claude-autoarm-failure-notified"
 FAILURE_ALARM="$STATE/.claude-autoarm-failure-alarmed"
-# Only this invocation's commit must survive an interruption as a final rewake.
-AUTOARM_COMMITTED_ALARM=0
 # Set on a lost supervision-host hand-back, whose actionable wake lines are
 # already on stderr and reach main only through this hook's own exit 2: a
 # healthy-watcher episode reset must then still deliver them (the watcher's
@@ -226,6 +224,7 @@ fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 # idle or away home remains byte-for-byte inert. Missing or malformed locks are
 # uncertainty rather than stale-owner evidence and remain inert.
 RECOVER_SESSION_LOCK=0
+fm_autoarm_session_binding_to ADMITTED_SESSION "$STATE" || ADMITTED_SESSION=
 if ! fm_session_lock_owned_by_self "$STATE"; then
   LOCK_PID=$(cat "$STATE/.lock" 2>/dev/null || true)
   case "$LOCK_PID" in
@@ -250,6 +249,7 @@ need_supervision || exit 0
 # before touching any auto-arm state.
 if [ "$RECOVER_SESSION_LOCK" -eq 1 ]; then
   "$SCRIPT_DIR/fm-lock.sh" >/dev/null 2>&1 || exit 0
+  fm_autoarm_session_binding_to ADMITTED_SESSION "$STATE" || ADMITTED_SESSION=
   fm_session_lock_owned_by_self "$STATE" || exit 0
 fi
 
@@ -266,14 +266,14 @@ fi
 # shim defers to while genuinely deciding and reclaims once when proven
 # abandoned.
 fm_autoarm_claim_open "$STATE" "$GRACE" && exit 0
-fm_autoarm_claim_next "$STATE" "$GRACE"
+fm_autoarm_claim_next "$STATE" "$GRACE" "$ADMITTED_SESSION"
 CLAIM_RC=$?
 if [ "$CLAIM_RC" -ne 0 ]; then
   [ "$CLAIM_RC" -eq 2 ] && exit 0
   ROLE=$(fm_lock_role "$OWNER_LOCK" 2>/dev/null || true)
   [ -n "$ROLE" ] || exit 0
   fm_autoarm_release_abandoned "$STATE" "$GRACE" || exit 0
-  fm_autoarm_claim_next "$STATE" "$GRACE" || exit 0
+  fm_autoarm_claim_next "$STATE" "$GRACE" "$ADMITTED_SESSION" || exit 0
 fi
 MY_GEN=$FM_AUTOARM_MY_GEN
 [ -n "$MY_GEN" ] || exit 0
@@ -356,7 +356,6 @@ autoarm_commit_attended_alarm() {
       if [ "$budget_session" = "$session_id" ] \
         && [ "$budget_count" -gt "$BLOCK_BUDGET" ] \
         && _fm_autoarm_write_owned_locked "$STATE" "$MY_GEN" failed-suppressed "$FAILURE_ALARM"; then
-        AUTOARM_COMMITTED_ALARM=1
         rc=0
       fi
     fi
@@ -409,8 +408,11 @@ autoarm_exit_suppressed() {  # <cause>
   if [ "$rc" -eq 2 ]; then
     fm_autoarm_reset_owned "$STATE" "$MY_GEN" >/dev/null 2>&1
     rc=$?
-    [ "$rc" -ne 0 ] || autoarm_record clean
-    if [ "$rc" -ne 1 ]; then
+    if [ "$rc" -eq 2 ]; then
+      [ -z "${OUT:-}" ] || rm -f "$OUT" 2>/dev/null || true
+      exit 0
+    fi
+    if [ "$rc" -eq 0 ]; then
       [ -z "${OUT:-}" ] || rm -f "$OUT" 2>/dev/null || true
       if [ "$AUTOARM_DELIVER_ON_RESET" -eq 1 ]; then
         printf '%s; a verified healthy watcher is running, so no failure episode continues, and this rewake delivers the supervision host hand-back above.\n' "$cause" >&2
@@ -451,7 +453,7 @@ handle_autoarm_signal() {
     wait "$ARM_PID" 2>/dev/null || true
   fi
   [ -z "${OUT:-}" ] || rm -f "$OUT" 2>/dev/null || true
-  if [ "$AUTOARM_COMMITTED_ALARM" -eq 1 ]; then
+  if fm_autoarm_marker_owned "$FAILURE_ALARM" "$MY_GEN"; then
     autoarm_alarm_banner
     exit 2
   fi
@@ -459,6 +461,10 @@ handle_autoarm_signal() {
     printf 'firstmate watcher auto-arm interrupted by %s after the attended alarm - the failure episode is already alarmed, so this suppressed continuation emits no further rewake.\n' "$signal" >&2
     autoarm_record failed-suppressed
     exit 0
+  fi
+  if fm_autoarm_marker_owned "$FAILURE_NOTICE" "$MY_GEN"; then
+    printf 'firstmate watcher auto-arm INTERRUPTED by %s after committing its failure notice - drain the durable wake and diagnose the automatic Stop hook before relying on unattended supervision.\n' "$signal" >&2
+    exit 2
   fi
   if [ ! -e "$FAILURE_NOTICE" ]; then
     printf 'firstmate watcher auto-arm INTERRUPTED by %s - the Stop-owned automatic supervision mechanism did not reach a terminal watcher outcome.\n' "$signal" >&2
@@ -633,7 +639,7 @@ if [ "$HEALTHY" -eq 1 ]; then
   fm_autoarm_reset_owned "$STATE" "$MY_GEN"
   RESET_RC=$?
   if [ "$RESET_RC" -eq 0 ]; then
-    autoarm_record clean
+    # reset_owned committed clean before releasing its generation hold.
     [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
     exit 0
   fi
