@@ -9,7 +9,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | --- | --- |
 | Firstmate's code, private files, or project location | [FM_HOME](#fm_home) and [operational home layout](#operational-home-layout-and-state) |
 | Task windows and worker tools | [Runtime backend](#runtime-backend-configbackend--fm_backend) and [harness support](#harness-support) |
-| Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
+| Worker permissions, accounts, or environment | [Claude permission mode](#claude-permission-mode-configclaude-permission-mode), [worker account pin](#worker-account-pin-configclaude-account-configpi-account), [worker tool exclusions](#worker-tool-exclusions-configcrew-exclude-tools), [worker prompt prefix](#worker-prompt-prefix-agentsworker-skillslist-configworker-prefix-size), and [worker launch environment](#worker-launch-environment-configlaunch-env-allowlist) |
 | Backlog, preferences, and memory | [Backlog backend](#backlog-backend-taskstoml--configbacklog-backend), [captain preferences](#captain-preferences-datacaptainmd--datacaptain-sharedmd), [external memory tiers](#external-memory-tiers-memory-layering-section), and [startup memory budget](#startup-memory-budget-configstartup-memory-budget) |
 | Supervision and presentation | [Pi supervision branch](#pi-supervision-branch), [supervision host](#supervision-host-configsupervision-host), and [Calm preference](#calm-preference-configcalm) |
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
@@ -1081,6 +1081,48 @@ Names present in the registry produce no report; unknown or unverified names do 
 Each relaunch installs a fresh worker extension with the home's current list, so the replacement performs the same check.
 
 [`bin/fm-exclude-tools-lib.sh`](../bin/fm-exclude-tools-lib.sh) implements parsing and pre-launch validation for this contract; [`bin/fm-spawn.sh`](../bin/fm-spawn.sh)'s header owns the launch-flag mechanics.
+
+## Worker prompt prefix (.agents/worker-skills.list, config/worker-prefix-size)
+
+Every turn a worker takes re-reads its whole prompt prefix, so whatever a ship or scout launch loads but never uses costs it on every turn.
+A templated Claude or Pi ship or scout launch therefore drops what a worker does not need; secondmate, primary, and raw launch commands are unchanged.
+
+| What a worker drops | Claude | Pi |
+| --- | --- | --- |
+| Skill descriptions it does not need | `skillOverrides` sets every skill not kept to `name-only`, so the worker still sees its name | `--no-skills`, then one `--skill <dir>` per kept skill |
+| Artifacts, claude.ai connectors, and workflows | `disableArtifact`, `disableClaudeAiConnectors`, and `disableWorkflows` | not loaded by Pi |
+| Tools no worker uses | `permissions.deny` of `AskUserQuestion`, `ScheduleWakeup`, `ReportFindings`, and `ListAgents`: the operator answers no worker question, nothing schedules a worker's turn, findings travel in the worker's report, and a worker messages no other session | not loaded by Pi |
+| Auto-memory, for a worktree of Firstmate's own repository | `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, because that memory is the supervisor's; any other project's memory is its own and stays on | not loaded by Pi |
+
+### Which skills a worker keeps
+
+The tracked [`.agents/worker-skills.list`](../.agents/worker-skills.list) names each skill `keep` or `name-only`; its header owns the format.
+A skill it does not name is `name-only`, so a new skill costs a worker nothing until someone lists it as `keep`, and [`tests/fm-worker-prefix.test.sh`](../tests/fm-worker-prefix.test.sh) fails when a repository skill is missing from the list.
+For Claude, the name-only set is the list's `name-only` entries plus every skill found in Firstmate's `.agents/skills`, a Firstmate-repository worktree's own, the Claude config directory's `skills/`, and its synced skill manifests, less the kept ones.
+A project's own skills keep their full listing, because the list classifies only Firstmate's and the operator's.
+For Pi, each kept skill is loaded from the first of a Firstmate-repository worktree's `.agents/skills`, `~/.agents/skills`, and the Pi agent directory's `skills/` that holds it, and any other project's `.agents/skills` and `.pi/skills` are loaded whole.
+A Pi executable whose help does not advertise both `--no-skills` and `--skill` launches without them, and the spawn prints a warning naming the worker.
+
+The list is read on every worker launch and relaunch.
+A list that cannot be read, is empty, or has an unknown class, a malformed or quoted name, or a repeated name refuses the launch with the file and line, before any endpoint, worktree, or task record exists; a relaunch checks it before stopping the running worker.
+
+### First-turn size check
+
+A Claude worker's launch adds a second Stop hook, [`bin/fm-worker-prefix-check.sh`](../bin/fm-worker-prefix-check.sh), that reads the worker's first model call from its transcript once and compares its prompt size, the input plus cache-creation plus cache-read tokens, with the size this home expects.
+It records one verdict per launch in `state/worker-prefix/log`, writes `state/<task-id>.prefix-checked`, and from then on costs that worker one file test per turn; a relaunch removes the marker, so the replacement is checked too.
+Its alarms live in the alert store `state/worker-prefix/alerts.json`, registered against `state/worker-prefix.status`:
+
+| Key | Raised when | Cleared when |
+| --- | --- | --- |
+| `worker-prefix-over-<project>` | a first turn is larger than the expected size plus the margin | a later worker of that project starts within it |
+| `worker-prefix-unread-<project>` | the transcript cannot be found or read, or its first reply carries no numeric usage | a later first turn of that project is read |
+| `worker-prefix-config` | `config/worker-prefix-size` cannot be read or has a bad line | the file reads again |
+
+The optional local, gitignored `config/worker-prefix-size` sets the expected size, with one `<scope> <expected-tokens> <margin-tokens>` line per scope, where the scope is `default` or a project name and `#` starts a comment.
+A project's own line wins over `default`, and with no file the size is 20000 tokens with a 5000-token margin.
+The file is read on every check, so a change applies to the next worker, and a bad file falls back to the built-in size until it is fixed.
+It is not in the inherited configuration set.
+The check covers Claude workers only; a Pi worker's first-turn size is not measured.
 
 ## Worker account pin (config/claude-account, config/pi-account)
 
