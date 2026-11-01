@@ -2825,8 +2825,7 @@ fm_autoarm_reset_owned() {  # <state-dir> <gen>
     fm_lock_release "$lock"
     return 1
   fi
-  _fm_autoarm_write_owned_locked "$state" "$gen" clean
-  rc=$?
+  rc=0
   fm_lock_release "$lock"
   return "$rc"
 }
