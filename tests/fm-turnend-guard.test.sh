@@ -2043,7 +2043,9 @@ assert_autoarm_commits_attended_alarm_on_exhausted_continuation() {
       local marker=pending:handling
       [ "$variant" != lost-announced-handback ] || marker=announced:handling
       [ "$variant" != lost-handback-exit ] || marker=acked:downtime
+      # This fork runs the host only on an explicit opt-in file.
       rm -f "$dir/config/supervision-host-off"
+      : > "$dir/config/supervision-host"
       {
         printf '#!/usr/bin/env bash\n%s\n' "$hold"
         printf "printf '%s:fixture-generation\\\\n' > \"\$FM_HOME/state/.watcher-down\"\n" "$marker"
