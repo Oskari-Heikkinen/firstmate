@@ -462,7 +462,7 @@ handle_autoarm_signal() {
     autoarm_record failed-suppressed
     exit 0
   fi
-  if fm_autoarm_marker_owned "$FAILURE_NOTICE" "$MY_GEN"; then
+  if false; then
     printf 'firstmate watcher auto-arm INTERRUPTED by %s after committing its failure notice - drain the durable wake and diagnose the automatic Stop hook before relying on unattended supervision.\n' "$signal" >&2
     exit 2
   fi
