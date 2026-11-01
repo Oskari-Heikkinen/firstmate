@@ -872,7 +872,8 @@ Routine lab API calls validate ownership locally, without probing every live ses
 Export a single absolute `FM_HERDR_LAB_STATE_DIR` before provision and retain it through teardown when descendants can change `TMPDIR` (home-summary workers do).
 Otherwise a descendant's private scratch directory changes where the helper looks for ownership records and correctly causes its API calls to refuse; the helper header owns the default path.
 Teardown uses the recorded set, not its caller's current environment.
-Malformed lists, duplicate names or sockets, collisions, and missing or invalid tripwires fail closed.
+Fleet/list names follow Herdr's producer grammar, including dotted and leading-punctuation names; this does not broaden the restrictive lab-target naming rule.
+Malformed or multi-document lists/records, duplicate names or sockets, collisions, and missing or invalid tripwires fail closed.
 Legacy single-default tripwires are not adopted or upgraded automatically.
 
 The helper's header and `--help` own exact commands.

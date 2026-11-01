@@ -252,6 +252,154 @@ test_changed_named_fleet_refuses_before_destruction() {
   pass "fm-herdr-lab: recorded named fleet changes refuse before destructive calls"
 }
 
+test_upstream_session_names() {
+  local name="fm-lab-grammar-$$" selected long_name
+  long_name=$(printf '%064d' 0)
+  for selected in firstmate.prod .fleet _fleet -fleet "$long_name"; do
+    named_fleet_fixture
+    jq --arg selected "$selected" '
+      .sessions[1].name = $selected
+      | .sessions += [
+          {name:"old.lab",default:false,running:false,socket_path:"/fleet/old.sock"},
+          {name:"-peer",default:false,running:true,socket_path:"/fleet/peer.sock"}]
+    ' "$FAKE_STATE/fleet.json" > "$TMP_ROOT/grammar-fleet.json"
+    cp "$TMP_ROOT/grammar-fleet.json" "$FAKE_STATE/fleet.json"
+    FM_FAKE_FLEET_SESSION="$selected" run_with_fake fm_herdr_lab_provision "$name" \
+      || fail "producer-valid selected name refused: $selected"
+    jq -e --arg selected "$selected" '
+      (.sessions | length == 2) and any(.sessions[]; .name == $selected)
+    ' "$TRIPWIRES/$name.fleet-state.json" >/dev/null \
+      || fail "producer-valid name missing from recorded fleet: $selected"
+    # A valid stopped session appearing later must not invalidate the recorded
+    # selection. This also exercises the same grammar when reading the record.
+    jq '.sessions += [{name:".later",default:false,running:false,socket_path:"/fleet/later.sock"}]' \
+      "$FAKE_STATE/fleet.json" > "$TMP_ROOT/grammar-later.json"
+    cp "$TMP_ROOT/grammar-later.json" "$FAKE_STATE/fleet.json"
+    run_with_fake fm_herdr_lab_teardown "$name" \
+      || fail "producer-valid recorded name or unrelated session refused: $selected"
+  done
+  rm -f "$FAKE_STATE/fleet.json"
+  pass "fm-herdr-lab: producer grammar covers selected, unrelated and recorded names"
+}
+
+# Each malformed row changes only the named contract. The selected fleet is
+# otherwise valid, so removing that one guard reaches server startup rather
+# than falling into a second refusal such as unknown selection or collision.
+assert_session_guard() { # <case> <jq-mutation>
+  local label=$1 mutation=$2 name="fm-lab-schema-$$" status=0
+  named_fleet_fixture
+  jq '.sessions += [{name:"inventory",default:false,running:false,socket_path:"/inventory.sock"}]' \
+    "$FAKE_STATE/fleet.json" > "$TMP_ROOT/schema-base.json"
+  jq "$mutation" "$TMP_ROOT/schema-base.json" > "$FAKE_STATE/fleet.json"
+  : > "$FAKE_LOG"
+  FM_FAKE_FLEET_SESSION=firstmate run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "$label must independently refuse"
+  assert_no_grep "server --session" "$FAKE_LOG" "$label reached server startup"
+  assert_absent "$TRIPWIRES/$name.fleet-state.json" "$label published ownership"
+  rm -f "$FAKE_STATE/fleet.json"
+}
+
+test_session_name_grammar_refusals() {
+  local mutation
+  for mutation in '.sessions[2].name = ""' '.sessions[2].name = "."' \
+    '.sessions[2].name = ".."' '.sessions[2].name = ("a" * 65)' \
+    '.sessions[2].name = "a/b"' '.sessions[2].name = "a b"' \
+    '.sessions[2].name = "a\tb"' '.sessions[2].name = "a\nb"' \
+    '.sessions[2].name = "a\n"' '.sessions[2].name = "a\u0000b"' \
+    '.sessions[2].name = "a\u007fb"' '.sessions[2].name = "\u00e9"'; do
+    assert_session_guard "name grammar ($mutation)" "$mutation"
+  done
+  pass "fm-herdr-lab: producer name length, reserved names and byte grammar refuse independently"
+}
+
+test_session_name_type() {
+  assert_session_guard "name type" '.sessions[2].name = 17'
+  pass "fm-herdr-lab: name type refuses independently"
+}
+
+test_session_unique_names() {
+  assert_session_guard "duplicate name with distinct sockets" '.sessions[2].name = "firstmate"'
+  pass "fm-herdr-lab: duplicate names refuse independently of socket uniqueness"
+}
+
+test_session_unique_sockets() {
+  assert_session_guard "duplicate socket with distinct names" '.sessions[2].socket_path = .sessions[1].socket_path'
+  pass "fm-herdr-lab: duplicate sockets refuse independently of name uniqueness"
+}
+
+test_session_default_identity() {
+  # Truthy nonboolean keeps exactly one default row, so cardinality cannot mask
+  # the identity/type guard. The second case has boolean but wrong identity.
+  assert_session_guard "default flag type" '.sessions[0].default = "true"'
+  assert_session_guard "default identity" '.sessions[0].name = "renamed-default"'
+  pass "fm-herdr-lab: default identity and boolean type refuse independently of cardinality"
+}
+
+test_session_default_cardinality() {
+  # Multiple canonical defaults also violate name uniqueness. Zero defaults
+  # isolates the cardinality predicate while every remaining row is valid.
+  assert_session_guard "missing default cardinality" '.sessions |= map(select(.name != "default"))'
+  pass "fm-herdr-lab: missing default refuses independently of identity and uniqueness"
+}
+
+test_session_running_type() {
+  assert_session_guard "running flag type" '.sessions[2].running = "false"'
+  pass "fm-herdr-lab: running flag type refuses independently"
+}
+
+test_session_socket_type() {
+  assert_session_guard "socket type" '.sessions[2].socket_path = 17'
+  pass "fm-herdr-lab: socket type refuses independently"
+}
+
+test_session_socket_absolute() {
+  assert_session_guard "absolute socket path" '.sessions[2].socket_path = "relative.sock"'
+  pass "fm-herdr-lab: relative socket refuses independently"
+}
+
+test_session_socket_controls() {
+  local mutation
+  for mutation in '.sessions[2].socket_path = "/nul\u0000sock"' \
+    '.sessions[2].socket_path = "/tab\tsock"' '.sessions[2].socket_path = "/del\u007fsock"'; do
+    assert_session_guard "socket control byte ($mutation)" "$mutation"
+  done
+  pass "fm-herdr-lab: socket control bytes refuse independently"
+}
+
+test_multidocument_session_list() {
+  local name="fm-lab-multilist-$$" status=0
+  named_fleet_fixture
+  jq '.sessions[1].socket_path = "/second-document.sock"' "$FAKE_STATE/fleet.json" > "$TMP_ROOT/second-list.json"
+  cat "$FAKE_STATE/fleet.json" "$TMP_ROOT/second-list.json" > "$FAKE_STATE/list-raw"
+  : > "$FAKE_LOG"
+  FM_FAKE_FLEET_SESSION=firstmate run_with_fake fm_herdr_lab_provision "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "two individually valid session-list documents must refuse"
+  assert_no_grep "server --session" "$FAKE_LOG" "multi-document list reached startup"
+  assert_absent "$TRIPWIRES/$name.fleet-state.json" "multi-document list published ownership"
+  rm -f "$FAKE_STATE/list-raw" "$FAKE_STATE/fleet.json"
+  pass "fm-herdr-lab: live session lists require exactly one document"
+}
+
+test_multidocument_tripwire() {
+  local name="fm-lab-multirecord-$$" record status=0
+  named_fleet_fixture
+  FM_FAKE_FLEET_SESSION=firstmate run_with_fake fm_herdr_lab_provision "$name" || fail "multi-document record setup failed"
+  record="$TRIPWIRES/$name.fleet-state.json"
+  cp "$record" "$TMP_ROOT/first-record.json"
+  jq '.sessions[1].socket_path = "/second-record.sock"' "$record" > "$TMP_ROOT/second-record.json"
+  cat "$TMP_ROOT/first-record.json" "$TMP_ROOT/second-record.json" > "$record"
+  : > "$FAKE_LOG"
+  run_with_fake fm_herdr_lab_stop "$name" >/dev/null 2>&1 || status=$?
+  expect_code 1 "$status" "two individually valid tripwire documents must refuse"
+  assert_no_grep "session stop" "$FAKE_LOG" "multi-document record reached stop"
+  assert_no_grep "session delete" "$FAKE_LOG" "multi-document record reached delete"
+  assert_present "$record" "multi-document refusal discarded ownership evidence"
+  cp "$TMP_ROOT/first-record.json" "$record"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "restored single-document record refused"
+  rm -f "$FAKE_STATE/fleet.json"
+  pass "fm-herdr-lab: recorded ownership requires exactly one document"
+}
+
 test_malformed_fleet_refuses() {
   local name="fm-lab-malformed-$$" value status
   for value in '' ' ' '{}' '{"sessions":[]}' '{"sessions":null}' '{' \
@@ -264,7 +412,7 @@ test_malformed_fleet_refuses() {
     assert_no_grep "server --session" "$FAKE_LOG" "malformed fleet launched a server"
   done
   named_fleet_fixture
-  for value in '.sessions += [.sessions[1]]' '.sessions[1].running = "true"' \
+  for value in '.sessions += [(.sessions[1] | .socket_path = "/distinct-duplicate-name.sock")]' '.sessions[1].running = "true"' \
     '.sessions[1].socket_path = .sessions[0].socket_path' '.sessions[1].name = "bad\nname"' \
     '.sessions[1].socket_path = ""' '.sessions[1].socket_path = "/nul\u0000sock"' \
     '.sessions[1].socket_path = "/tab\tsock"' '.sessions[1].socket_path = "/del\u007fsock"' ; do
@@ -332,12 +480,17 @@ test_viewer_child_scrubs_routing() {
 }
 
 test_refuses_unsafe_names() {
-  local status=0 generated
+  local status=0 generated invalid
   fm_herdr_lab_validate_name default >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "literal default must be refused"
   status=0
   fm_herdr_lab_validate_name arbitrary-session >/dev/null 2>&1 || status=$?
   expect_code 1 "$status" "non-lab prefix must be refused"
+  for invalid in fm-lab-.fleet fm-lab-_fleet fm-lab--fleet fm-lab-dotted.name; do
+    status=0
+    fm_herdr_lab_validate_name "$invalid" >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "producer-valid names must not broaden restrictive lab targets"
+  done
   fm_herdr_lab_validate_name fm-lab-safe-123 || fail "valid lab session name was refused"
   generated=$(fm_herdr_lab_name fm-autodetect-smoke-concurrency-h3)
   fm_herdr_lab_validate_name "$generated" || fail "generated lab session name was refused"
@@ -784,6 +937,19 @@ test_ambiguous_fleet_refuses
 test_explicit_fleet_selection
 test_live_name_collision_refuses
 test_changed_named_fleet_refuses_before_destruction
+test_upstream_session_names
+test_session_name_grammar_refusals
+test_session_name_type
+test_session_unique_names
+test_session_unique_sockets
+test_session_default_identity
+test_session_default_cardinality
+test_session_running_type
+test_session_socket_type
+test_session_socket_absolute
+test_session_socket_controls
+test_multidocument_session_list
+test_multidocument_tripwire
 test_malformed_fleet_refuses
 test_invalid_tripwire_refuses
 test_viewer_child_scrubs_routing

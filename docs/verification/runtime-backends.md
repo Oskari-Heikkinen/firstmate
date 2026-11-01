@@ -1479,6 +1479,9 @@ Thus an explicit session wins over `HERDR_SOCKET_PATH` in this version; ambient 
 `server::socket_paths::client_socket_path` likewise prefers an explicit session, then derives a client socket from `HERDR_SOCKET_PATH`, then accepts legacy `HERDR_CLIENT_SOCKET_PATH`.
 Scrubbing both overrides and inherited pane identity at the lab process boundary prevents descendants or alternate command paths from falling back to the fleet socket; it complements, rather than replaces, explicit session routing.
 `session::list_sessions` always includes `session_info(None)` for default, independently of whether it is running, then named sessions.
+The same revision's [`session::validate_name`](https://github.com/herdrdev/herdr/blob/065ef9d6a531c49fb8bee7e818ef837065b21ee9/src/session.rs#L452-L475) accepts 1–64 ASCII alphanumeric, dot, underscore or hyphen bytes, except literal `.` and `..`; dots and leading punctuation are valid.
+The CI-pinned [v0.7.4 validator](https://github.com/herdrdev/herdr/blob/v0.7.4/src/session.rs#L425-L445) has the same grammar (source-only comparison).
+The shared live-list/ownership normalizer follows that producer grammar, including for unrelated sessions, while lab targets retain their stricter `fm-lab-*` rule.
 Portable regression coverage is `tests/fm-herdr-lab.test.sh`, using fake Herdr only; this source check is not a live named-fleet lifecycle proof.
 
 ### fm-remote server birth and login-keychain access
