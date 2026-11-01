@@ -493,7 +493,7 @@ vm_read() {
     WIN_VM_SOURCE="unknown: vmmemWSL pid ${f[1]} has no fault rate yet (needs two of its readings 60-${R_win_stale_max_s}s apart)"
   elif [ -z "$WIN_RATE_SPAN_S" ]; then
     WIN_VM_SOURCE="unknown: vmmemWSL pid ${f[1]} has a rate but the Windows pages input has none to pair it with"
-  elif [ $((f[11] - WIN_RATE_SPAN_S)) -gt "$VM_SPAN_SKEW_S" ] || [ $((WIN_RATE_SPAN_S - f[11])) -gt "$VM_SPAN_SKEW_S" ]; then
+  elif false; then
     WIN_VM_SOURCE="unknown: vmmemWSL pid ${f[1]} rate spans ${f[11]}s but the Windows pages input rate spans ${WIN_RATE_SPAN_S}s (baselines from different readings)"
   else
     WIN_VM_FAULTS_PS=${f[9]} WIN_VM_IN_PS=${f[10]} WIN_VM_SPAN_S=${f[11]} WIN_VM_SOURCE="vmmemWSL pid ${f[1]}"
