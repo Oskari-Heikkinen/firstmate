@@ -207,12 +207,10 @@ install_reused_task_barriers() {  # <home>
   local home=$1
   cat > "$home/fakebin/perl" <<'SH'
 #!/usr/bin/env bash
-# The bulk evidence prefilter runs before the task lock; keep this barrier
-# on the original later Perl call, after lifecycle serialization has begun.
-case "${1:-}" in
-  */fm-task-evidence-scan.pl) exec "$FM_TEST_REAL_PERL" "$@" ;;
-esac
+# Pause only after the task lock has a published owner. Config and evidence
+# probes may invoke Perl earlier; their ordering is not the lifecycle barrier.
 if [ "${FM_TEST_REUSE_TEARDOWN:-}" = 1 ] \
+    && [ -s "${FM_TEST_REUSE_CONTROL_LOCK:-}/pid" ] \
     && [ ! -e "${FM_TEST_REUSE_TEARDOWN_ONCE:-}" ]; then
   : > "$FM_TEST_REUSE_TEARDOWN_ONCE"
   : > "$FM_TEST_REUSE_TEARDOWN_READY"
@@ -3658,6 +3656,7 @@ test_merge_entrypoints_refuse_a_reused_task_incarnation() {
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_CONFIG_OVERRIDE="$home/config" FM_TEST_REUSE_TEARDOWN=1 \
     FM_TEST_REUSE_TEARDOWN_ONCE="$home/reuse-teardown-once" \
+    FM_TEST_REUSE_CONTROL_LOCK="$home/state/.control-$id.lock" \
     FM_TEST_REUSE_TEARDOWN_READY="$teardown_ready" \
     FM_TEST_REUSE_TEARDOWN_RELEASE="$teardown_release" \
     FM_TEST_REAL_PERL="$real_perl" FM_TEST_REAL_SLEEP="$real_sleep" \
@@ -3748,6 +3747,7 @@ test_merge_entrypoints_refuse_a_reused_task_incarnation() {
     FM_STATE_OVERRIDE="$local_home/state" FM_DATA_OVERRIDE="$local_home/data" \
     FM_CONFIG_OVERRIDE="$local_home/config" FM_TEST_REUSE_TEARDOWN=1 \
     FM_TEST_REUSE_TEARDOWN_ONCE="$local_home/reuse-teardown-once" \
+    FM_TEST_REUSE_CONTROL_LOCK="$local_home/state/.control-$local_id.lock" \
     FM_TEST_REUSE_TEARDOWN_READY="$local_teardown_ready" \
     FM_TEST_REUSE_TEARDOWN_RELEASE="$local_teardown_release" \
     FM_TEST_REAL_PERL="$real_perl" FM_TEST_REAL_SLEEP="$real_sleep" \
