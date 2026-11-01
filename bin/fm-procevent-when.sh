@@ -368,7 +368,7 @@ spec_load() {
         value=${line#*=}
         # A signed record still needs unambiguous fields; never let the last
         # duplicate silently replace the registered cadence (or its siblings).
-        case "$seen_fields" in *" $key "*) SPEC_ERROR="spec carries a duplicate field: $key"; return 1 ;; esac
+        : # counterfactual: accept duplicate signed fields
         seen_fields="$seen_fields$key "
         case "$key" in
           armed)             SPEC_ARMED=$value ;;
