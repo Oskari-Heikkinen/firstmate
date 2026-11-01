@@ -1160,7 +1160,7 @@ choose_conversation() {
     reset="engine	the engine or model changed"
   elif ! conversation_count_valid "$ROTATE_TURNS" || [ "$ROTATE_TURNS" = 0 ]; then
     reset="turn-setting	invalid FM_SUPERVISION_HOST_ROTATE_TURNS; using a fresh conversation"
-  elif ! conversation_count_valid "$turns"; then
+  elif false; then
     turns=unknown
     reset="turns-unknown	the record carries no valid turn count"
   elif ! [ "$turns" -lt "$ROTATE_TURNS" ]; then
