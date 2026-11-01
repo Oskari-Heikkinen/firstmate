@@ -5479,6 +5479,7 @@ BUSY_GEN=
     j_stopfail=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event stop-failure 2>/dev/null || true")
     j_sessionend=$(json_escape "$busy_cmd_prefix idle $busy_suffix --event session-end 2>/dev/null || true")
     stop_entry=
+    prefix_hook=
     if [ "$KIND" = secondmate ] && grep -qF '.fm-busy-stop' "$WT/bin/fm-turnend-guard.sh" 2>/dev/null; then
       {
         printf 'writer=%s\n' "$FM_ROOT/bin/fm-busy-event.sh"
@@ -5494,17 +5495,18 @@ BUSY_GEN=
       fi
       j_stop=$(json_escape "${stop_turnend}$busy_cmd_prefix idle $busy_suffix --event stop 2>/dev/null || true")
       # A templated worker launch also gets the first-turn prompt-prefix
-      # check (bin/fm-worker-prefix-check.sh), which writes its marker once
-      # it has a verdict, so later turns cost one file test. This launch
+      # check (bin/fm-worker-prefix-check.sh) on Stop, UserPromptSubmit and
+      # SessionEnd, so a reply Claude had not yet written to the transcript
+      # when the Stop hooks ran is still checked. The check writes its marker
+      # once it has a verdict, so later hooks cost one file test. This launch
       # removes the previous incarnation's marker, so a relaunch is checked.
-      prefix_hook=
       rm -f "$STATE_REAL/$ID.prefix-checked"
-      [ -z "$WORKER_SKILLS" ] || prefix_hook=$(bash "$SCRIPT_DIR/fm-worker-prefix-lib.sh" stop-hook "$FM_ROOT" "$FM_HOME" \
+      [ -z "$WORKER_SKILLS" ] || prefix_hook=$(bash "$SCRIPT_DIR/fm-worker-prefix-lib.sh" hook "$FM_ROOT" "$FM_HOME" \
         "$STATE_REAL" "$(resolve_path "$CONFIG")" "$ID" "$(basename "$PROJ_ABS")") \
-        || { echo "error: could not build the first-turn prompt-prefix Stop hook for $ID" >&2; exit 1; }
+        || { echo "error: could not build the first-turn prompt-prefix hook for $ID" >&2; exit 1; }
       stop_entry="\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_stop\"}$prefix_hook]}],"
     fi
-    hooks_json="\"hooks\":{$(fm_component_claude_entries "$FM_ROOT" "$KIND" "$FM_HOME" "$WT")\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_submit\"}]}],${stop_entry}\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_stopfail\"}]}],\"SessionEnd\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_sessionend\"}]}]}"
+    hooks_json="\"hooks\":{$(fm_component_claude_entries "$FM_ROOT" "$KIND" "$FM_HOME" "$WT")\"UserPromptSubmit\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_submit\"}$prefix_hook]}],${stop_entry}\"StopFailure\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_stopfail\"}]}],\"SessionEnd\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"$j_sessionend\"}$prefix_hook]}]}"
     if [ "$KIND" = secondmate ]; then
       session_keys='"feedbackDrafts":"off",'
       if [ "$KEEP_AI_TRAILERS" != 1 ]; then

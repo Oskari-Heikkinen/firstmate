@@ -1108,8 +1108,9 @@ A list that cannot be read, is empty, or has an unknown class, a malformed or qu
 
 ### First-turn size check
 
-A Claude worker's launch adds a second Stop hook, [`bin/fm-worker-prefix-check.sh`](../bin/fm-worker-prefix-check.sh), that reads the worker's first model call from its transcript once and compares its prompt size, the input plus cache-creation plus cache-read tokens, with the size this home expects.
-It records one verdict per launch in `state/worker-prefix/log`, writes `state/<task-id>.prefix-checked`, and from then on costs that worker one file test per turn; a relaunch removes the marker, so the replacement is checked too.
+A Claude worker's launch adds a hook, [`bin/fm-worker-prefix-check.sh`](../bin/fm-worker-prefix-check.sh), that reads the worker's first model call from its transcript once and compares its prompt size, the input plus cache-creation plus cache-read tokens, with the size this home expects.
+It runs on Stop, UserPromptSubmit and SessionEnd, because Claude can run the Stop hooks before the turn's reply is in the transcript; the next prompt or the session's end then checks that reply.
+It records one verdict per launch in `state/worker-prefix/log`, writes `state/<task-id>.prefix-checked`, and from then on costs that worker one file test per hook; a relaunch removes the marker, so the replacement is checked too.
 Its alarms live in the alert store `state/worker-prefix/alerts.json`, registered against `state/worker-prefix.status`:
 
 | Key | Raised when | Cleared when |

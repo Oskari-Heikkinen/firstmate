@@ -18,10 +18,10 @@
 # Default-on because it submits no prompt to a provider; FM_WORKER_PREFIX_LIVE=1
 # (or FM_LIVE=1) makes an absent harness a failure, =0 turns the guard off.
 # FM_WORKER_PREFIX_TURN_LIVE=1 (or FM_LIVE=1) also submits one short prompt on
-# the operator's own Claude login with the worker's settings and the real
-# bin/fm-worker-prefix-check.sh as its Stop hook, and fails unless the check
-# read a numeric first-turn size from the real transcript; it spends tokens, so
-# it stays opt-in.
+# the operator's own Claude login in the worker's worktree with its settings,
+# so the hooks fm-spawn installed run the real bin/fm-worker-prefix-check.sh,
+# and fails unless the check read a numeric first-turn size from the real
+# transcript by the time Claude exits; it spends tokens, so it stays opt-in.
 # docs/verification/runtime-backends.md "Worker prompt prefix" records the
 # dated results.
 set -u
@@ -219,26 +219,26 @@ run_claude() {
 }
 
 # run_claude_turn <version> <settings>: one real prompt on the operator's own
-# login with the worker's settings and the real first-turn check as its Stop
-# hook, which must read a numeric size from the transcript Claude wrote.
+# login in the worker's worktree with the worker's settings. The hooks fm-spawn
+# wrote there run the real first-turn check, which must have read a numeric
+# size from the transcript Claude wrote by the time Claude exits. The capture
+# runs fired those hooks too, so their marker and log lines are cleared first.
 run_claude_turn() {
-  local version=$1 settings=$2 state="$TMP_ROOT/turn-state" cfg="$TMP_ROOT/turn-config" hook line
-  mkdir -p "$state" "$cfg"
-  hook="$(printf '%q' "$ROOT/bin/fm-worker-prefix-check.sh") $(printf '%q' "$HOME_DIR") $(printf '%q' "$state") $(printf '%q' "$cfg") live-turn firstmate"
-  settings=$(printf '%s' "$settings" | jq -c --arg c "$hook" '.hooks = {Stop: [{hooks: [{type: "command", command: $c}]}]}') \
-    || fail "claude $version: could not add the Stop hook to the worker settings"
+  local version=$1 settings=$2 state line
+  state=$(cd "$HOME_DIR/state" && pwd -P) || fail "claude $version: the worker's state directory is gone"
+  rm -f "$state/live-claude-prefix.prefix-checked" "$state/worker-prefix/log"
   (cd "$FM_WT" && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 \
     timeout 300 claude -p 'Reply with exactly the word OK. Do not use any tools.' --max-turns 1 \
     --model claude-haiku-4-5 --settings "$settings" >"$TMP_ROOT/turn.out" 2>&1 </dev/null) \
     || fail "claude $version: the prompt failed: $(tail -n 3 "$TMP_ROOT/turn.out" | tr '\n' ' ')"
-  [ -e "$state/live-turn.prefix-checked" ] || fail "claude $version: the Stop hook reached no verdict"
+  [ -e "$state/live-claude-prefix.prefix-checked" ] || fail "claude $version: the worker's hooks reached no first-turn verdict by exit"
   line=$(tail -n 1 "$state/worker-prefix/log" 2>/dev/null)
   case "$line" in
   *" prefix="[0-9]*" verdict=within" | *" prefix="[0-9]*" verdict=over") ;;
   *) fail "claude $version: the first-turn check did not read a size from the real transcript: ${line:-no log line}" ;;
   esac
   printf 'note: claude %s first turn: %s\n' "$version" "$line"
-  pass "claude $version: the Stop hook's transcript carries the first-turn usage the check reads"
+  pass "claude $version: the worker's installed hooks check the first turn's usage from the real transcript"
 }
 
 run_pi() {

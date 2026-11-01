@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fm-worker-prefix-lib.sh - the worker prompt-prefix cut: the one parser of
 # .agents/worker-skills.list and the builders of the Claude --settings members,
-# Pi skill arguments and first-turn Stop hook it drives. bin/fm-control.sh
+# Pi skill arguments and first-turn check hook it drives. bin/fm-control.sh
 # sources it; bin/fm-spawn.sh runs it as a command (the entry at the end), so
 # its body stays out of fm-spawn.sh's lint closure.
 #
@@ -216,24 +216,27 @@ fm_worker_prefix_pi_launch_args() {
     -- ${project_dirs[@]+"${project_dirs[@]}"}
 }
 
-# fm_worker_prefix_stop_command <fm-root> <fm-home> <state> <config> <task-id> <project>:
-# print the Stop hook shell command that runs bin/fm-worker-prefix-check.sh
-# until it writes <state>/<task-id>.prefix-checked; after that a turn costs
-# one file test. The check records its own failures (exit 1); any other
+# fm_worker_prefix_hook_command <fm-root> <fm-home> <state> <config> <task-id> <project>:
+# print the hook shell command that runs bin/fm-worker-prefix-check.sh until it
+# writes <state>/<task-id>.prefix-checked; after that a hook costs one file
+# test. bin/fm-spawn.sh installs it on Stop, UserPromptSubmit and SessionEnd:
+# Claude can run the Stop hooks before the turn's reply reaches the
+# transcript, and the check then waits, so the next prompt or the session's
+# end checks that same first reply. The check records its own failures (exit 1); any other
 # non-zero exit - a missing or unrunnable checker, a usage error, a kill, or a
 # failure it could not record (exit 3) - appends the checker's
 # blocked [key=worker-prefix-check-<task-id>] line to <state>/worker-prefix.status
 # here unless that key is already open, so a broken checker reports once
 # rather than every turn. The marker stays absent, so the check runs again at
-# the next turn end and resolves the key once it finishes. Only when that
+# the next hook and resolves the key once it finishes. Only when that
 # append fails too does the hook exit 1 with a message, which Claude shows
 # without blocking the stop.
-fm_worker_prefix_stop_command() {
+fm_worker_prefix_hook_command() {
   local marker check status fmt
   marker=$(_fm_worker_prefix_quote "$3/$5.prefix-checked")
   check=$(_fm_worker_prefix_quote "$1/bin/fm-worker-prefix-check.sh")
   status=$(_fm_worker_prefix_quote "$3/worker-prefix.status")
-  fmt=$(_fm_worker_prefix_quote "blocked [key=worker-prefix-check-$5] [at=%s]: worker-prefix-check-$5: the prompt-prefix check for worker %s exited %s without a verdict and could not record why; run bin/fm-worker-prefix-check.sh by hand with a Stop hook input to see the error\n")
+  fmt=$(_fm_worker_prefix_quote "blocked [key=worker-prefix-check-$5] [at=%s]: worker-prefix-check-$5: the prompt-prefix check for worker %s exited %s without a verdict and could not record why; run bin/fm-worker-prefix-check.sh by hand with a hook input to see the error\n")
   # shellcheck disable=SC2016 # $? and $(date) belong to the generated command
   printf '[ -f %s ] || { %s %s %s %s %s %s >/dev/null 2>&1; s=$?; [ "$s" -le 1 ] || grep -F %s %s 2>/dev/null | tail -n 1 | grep -q "^blocked" || printf %s "$(date +%%s)" %s "$s" 2>/dev/null >>%s || { echo %s >&2; exit 1; }; }' \
     "$marker" "$check" "$(_fm_worker_prefix_quote "$2")" "$(_fm_worker_prefix_quote "$3")" "$(_fm_worker_prefix_quote "$4")" \
@@ -243,12 +246,12 @@ fm_worker_prefix_stop_command() {
     "$(_fm_worker_prefix_quote "fm-worker-prefix-check: cannot record that the prompt-prefix check for worker $5 failed in $3/worker-prefix.status")"
 }
 
-# fm_worker_prefix_stop_hook <fm-root> <fm-home> <state> <config> <task-id> <project>:
-# the Claude Stop hook entry, with a leading comma, that runs
-# fm_worker_prefix_stop_command.
-fm_worker_prefix_stop_hook() {
+# fm_worker_prefix_hook <fm-root> <fm-home> <state> <config> <task-id> <project>:
+# the Claude hook entry, with a leading comma, that runs
+# fm_worker_prefix_hook_command.
+fm_worker_prefix_hook() {
   local entry
-  entry=$(jq -cn --arg c "$(fm_worker_prefix_stop_command "$@")" '{type: "command", command: $c}') || return 1
+  entry=$(jq -cn --arg c "$(fm_worker_prefix_hook_command "$@")" '{type: "command", command: $c}') || return 1
   printf ',%s' "$entry"
 }
 
@@ -279,7 +282,7 @@ fm_worker_prefix_launch() {
 }
 
 # Run as a command: fm-worker-prefix-lib.sh <launch-entries|launch|
-# claude-setting|pi-launch-args|stop-hook> <args>..., each the function of that
+# claude-setting|pi-launch-args|hook> <args>..., each the function of that
 # name above.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
@@ -287,8 +290,8 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   launch) shift; fm_worker_prefix_launch "$@"; exit ;;
   claude-setting) shift; fm_worker_prefix_claude_setting "$@"; exit ;;
   pi-launch-args) shift; fm_worker_prefix_pi_launch_args "$@"; exit ;;
-  stop-hook) shift; fm_worker_prefix_stop_hook "$@"; exit ;;
+  hook) shift; fm_worker_prefix_hook "$@"; exit ;;
   esac
-  echo "usage: fm-worker-prefix-lib.sh launch-entries|launch|claude-setting|pi-launch-args|stop-hook <args>..." >&2
+  echo "usage: fm-worker-prefix-lib.sh launch-entries|launch|claude-setting|pi-launch-args|hook <args>..." >&2
   exit 2
 fi

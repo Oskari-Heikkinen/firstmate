@@ -642,7 +642,8 @@ Pi has no name-only mode, so a skill it does not load is not listed at all.
 
 These keys are vendor settings that fail open when renamed, so the first-turn check in `bin/fm-worker-prefix-check.sh` is the guard that notices a Claude update that brings the tokens back.
 [`tests/fm-worker-prefix-live-e2e.test.sh`](../../tests/fm-worker-prefix-live-e2e.test.sh) refreshes this record without spending model tokens: it captures each installed harness's first request for a Firstmate-repository ship worker with and without the launch material `bin/fm-spawn.sh` generates and fails, naming the harness and version, when a cut tool, a name-only skill description or the memory index still reaches the request.
-With `FM_WORKER_PREFIX_TURN_LIVE=1` it also submits one short prompt with those settings and the real check as the Stop hook, and fails unless the check read a numeric first-turn size from the transcript Claude wrote.
+With `FM_WORKER_PREFIX_TURN_LIVE=1` it also submits one short prompt with those settings in the worker's worktree, where the hooks `bin/fm-spawn.sh` installed run the real check, and fails unless the check read a numeric first-turn size from the transcript Claude wrote by the time Claude exits.
+On 2026-11-01, with Claude Code 2.1.314 and `claude -p`, the check found no assistant record when it ran as the Stop hook, but read `prefix=21876` from the same transcript once the process had finished, so a Stop hook alone can miss the reply.
 
 ## Pi launch project trust
 

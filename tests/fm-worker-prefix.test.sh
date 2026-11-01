@@ -236,6 +236,42 @@ test_claude_ship_launch_carries_the_cut() {
   pass "a claude ship launch carries the prompt-prefix members and the first-turn check, and keeps a project's auto-memory"
 }
 
+# Claude can run a turn's Stop hooks before the reply reaches the transcript,
+# so the same check runs again on the next prompt and at the session's end.
+test_claude_check_reruns_on_the_next_prompt_and_session_end() {
+  local out settings state transcript stop submit end
+  new_case claude-late claude
+  out=$(spawn_ship prefix-late-z4) || fail "claude spawn failed: $out"
+  state=$(cd "$HOME_DIR/state" && pwd -P)
+  settings="$WT_DIR/.claude/settings.local.json"
+  stop=$(jq -r '.hooks.Stop[0].hooks[].command' "$settings" | grep -F fm-worker-prefix-check.sh)
+  submit=$(jq -r '.hooks.UserPromptSubmit[0].hooks[].command' "$settings" | grep -F fm-worker-prefix-check.sh)
+  end=$(jq -r '.hooks.SessionEnd[0].hooks[].command' "$settings" | grep -F fm-worker-prefix-check.sh)
+  [ -n "$stop" ] || fail "the ship's Stop hooks have no prefix check: $(cat "$settings")"
+  assert_equals "$stop" "$submit" "the ship's UserPromptSubmit hooks lack the prefix check"
+  assert_equals "$stop" "$end" "the ship's SessionEnd hooks lack the prefix check"
+  transcript="$CASE_DIR/t.jsonl"
+  jq -cn --arg t "$transcript" '{hook_event_name:"UserPromptSubmit",prompt:"x",transcript_path:$t}' | sh -c "$submit" \
+    || fail "the first prompt's hook failed"
+  assert_absent "$state/prefix-late-z4.prefix-checked" "the first prompt, before Claude wrote a transcript, wrote a marker"
+  assert_absent "$state/worker-prefix/log" "the first prompt, before Claude wrote a transcript, logged a verdict"
+  printf '%s\n' '{"type":"user"}' > "$transcript"
+  jq -cn --arg t "$transcript" '{hook_event_name:"UserPromptSubmit",prompt:"x",transcript_path:$t}' | sh -c "$submit" \
+    || fail "the first prompt's hook failed on a reply-less transcript"
+  assert_absent "$state/prefix-late-z4.prefix-checked" "the first prompt wrote a marker before any reply"
+  jq -cn --arg t "$transcript" '{hook_event_name:"Stop",transcript_path:$t}' | sh -c "$stop" || fail "the Stop hook failed"
+  assert_absent "$state/prefix-late-z4.prefix-checked" "a Stop before the reply reached the transcript wrote a marker"
+  printf '%s\n' '{"type":"assistant","version":"9.9.9","message":{"usage":{"input_tokens":3,"cache_creation_input_tokens":900,"cache_read_input_tokens":0}}}' >> "$transcript"
+  jq -cn --arg t "$transcript" '{hook_event_name:"SessionEnd",reason:"other",transcript_path:$t}' | sh -c "$end" \
+    || fail "the SessionEnd hook failed"
+  assert_present "$state/prefix-late-z4.prefix-checked" "the session's end did not check the late reply"
+  assert_grep "verdict=within" "$state/worker-prefix/log" "the session's end logged no verdict"
+  jq -cn --arg t "$transcript" '{hook_event_name:"UserPromptSubmit",prompt:"x",transcript_path:$t}' | sh -c "$submit" \
+    || fail "the UserPromptSubmit hook failed"
+  assert_equals 1 "$(wc -l < "$state/worker-prefix/log" | tr -d ' ')" "a checked worker was checked again on the next prompt"
+  pass "the prefix check waits through the first prompt and a Stop before the reply, then checks the reply once at the session's end, and the next prompt adds nothing"
+}
+
 test_claude_stop_hook_records_a_verdict_once() {
   local out cmd state transcript
   new_case claude-hook claude
@@ -556,7 +592,7 @@ test_stop_hook_records_a_checker_that_cannot_record_itself() {
   state="$dir/a&b c'd/state"
   mkdir -p "$state" "$dir/config" "$dir/root/bin"
   transcript "$dir/t.jsonl" 100
-  cmd=$(fm_worker_prefix_stop_command "$dir/root" "$dir" "$state" "$dir/config" h1 proj)
+  cmd=$(fm_worker_prefix_hook_command "$dir/root" "$dir" "$state" "$dir/config" h1 proj)
   out=$(jq -cn --arg t "$dir/t.jsonl" '{transcript_path:$t}' | sh -c "$cmd" 2>&1) || fail "a missing checker failed the Stop hook: $out"
   assert_grep "blocked [key=worker-prefix-check-h1]" "$state/worker-prefix.status" "a missing checker raised nothing"
   assert_grep "worker h1 exited 127" "$state/worker-prefix.status" "the fallback line does not name the worker and exit"
@@ -564,14 +600,14 @@ test_stop_hook_records_a_checker_that_cannot_record_itself() {
   out=$(jq -cn --arg t "$dir/t.jsonl" '{transcript_path:$t}' | sh -c "$cmd" 2>&1) || fail "a second missing-checker turn failed: $out"
   assert_equals 1 "$(grep -c 'key=worker-prefix-check-h1' "$state/worker-prefix.status")" "a broken checker reported again on its next turn"
   # A checker that works again finishes and resolves the fallback's blocker.
-  cmd=$(fm_worker_prefix_stop_command "$ROOT" "$dir" "$state" "$dir/config" h1 proj)
+  cmd=$(fm_worker_prefix_hook_command "$ROOT" "$dir" "$state" "$dir/config" h1 proj)
   out=$(jq -cn --arg t "$dir/t.jsonl" '{transcript_path:$t}' | sh -c "$cmd" 2>&1) || fail "the repaired check failed: $out"
   assert_present "$state/h1.prefix-checked" "the repaired check wrote no marker"
   assert_equals "resolved" "$(grep -F 'key=worker-prefix-check-h1]' "$state/worker-prefix.status" | tail -n 1 | cut -d' ' -f1)" \
     "the repaired check did not resolve the fallback's blocker"
   printf '#!/bin/sh\nexit 1\n' > "$dir/root/bin/fm-worker-prefix-check.sh"
   chmod +x "$dir/root/bin/fm-worker-prefix-check.sh"
-  cmd=$(fm_worker_prefix_stop_command "$dir/root" "$dir" "$state" "$dir/config" h2 proj)
+  cmd=$(fm_worker_prefix_hook_command "$dir/root" "$dir" "$state" "$dir/config" h2 proj)
   printf '{}' | sh -c "$cmd" || fail "a checker that recorded its own failure failed the Stop hook"
   assert_equals 0 "$(grep -c 'key=worker-prefix-check-h2' "$state/worker-prefix.status")" \
     "the fallback repeated a failure the checker had recorded"
@@ -673,6 +709,7 @@ test_pi_skill_dirs_take_kept_skills_and_whole_project_roots
 test_launch_builder_keeps_special_characters_in_paths
 test_claude_ship_launch_carries_the_cut
 test_claude_stop_hook_records_a_verdict_once
+test_claude_check_reruns_on_the_next_prompt_and_session_end
 test_firstmate_repo_claude_worker_drops_auto_memory
 test_pi_ship_launch_loads_only_kept_skills
 test_pi_ship_launch_keeps_special_characters_in_paths

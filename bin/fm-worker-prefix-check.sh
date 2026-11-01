@@ -3,12 +3,14 @@
 # prefix with the size this home expects, and raise one alert when it is over.
 #
 # Usage:
-#   fm-worker-prefix-check.sh <home> <state-dir> <config-dir> <task-id> <project> < <stop-hook-json>
+#   fm-worker-prefix-check.sh <home> <state-dir> <config-dir> <task-id> <project> < <hook-json>
 #
-# bin/fm-spawn.sh installs this as a ship or scout Claude worker's second Stop
-# hook, behind a test for state/<task-id>.prefix-checked, so it runs at the end
-# of the worker's turns until it reaches a verdict and never again for that
-# launch; a launch or relaunch removes the marker. docs/configuration.md
+# bin/fm-spawn.sh installs this as a ship or scout Claude worker's Stop,
+# UserPromptSubmit and SessionEnd hook, behind a test for
+# state/<task-id>.prefix-checked, so it runs at those points until it reaches
+# a verdict and never again for that launch; a launch or relaunch removes the
+# marker. Claude can run the Stop hooks before the turn's reply is in the
+# transcript, so the next prompt or the session's end checks that reply. docs/configuration.md
 # "Worker prompt prefix" owns the operator contract and config/worker-prefix-size;
 # docs/verification/runtime-backends.md records the transcript fields read.
 #
@@ -18,7 +20,9 @@
 # cache_read_input_tokens, the whole prompt of the worker's first model call.
 # Each must be a whole number from 0 to 999999999 (the cache counters may be
 # absent or null). A transcript with no assistant record yet, or only a
-# partly written last line, leaves no verdict, so the next Stop tries again.
+# partly written last line, leaves no verdict, so the next hook tries again;
+# so does a transcript that does not exist yet at a UserPromptSubmit, since a
+# session's first prompt can come before Claude creates it.
 # Every verdict appends one line to state/worker-prefix/log and sets the store
 # state/worker-prefix/alerts.json (store id worker-prefix, registered against
 # state/worker-prefix.status) to it:
@@ -27,7 +31,8 @@
 #   unjudged  config/worker-prefix-size is refused, so there is no size to
 #             compare with: leaves worker-prefix-over-<project> as it is
 #   unread    the hook input is not JSON or names no transcript, the transcript
-#             is not a readable regular file, a complete line before its first
+#             is not a readable regular file (other than not yet existing at a
+#             UserPromptSubmit), a complete line before its first
 #             assistant record is not JSON, or that record has no valid usage:
 #             raises worker-prefix-unread-<project>
 # over, within and unjudged also clear worker-prefix-unread-<project>. A
@@ -39,13 +44,13 @@
 # be registered or set, or the log or marker cannot be written), it appends
 # one direct `blocked [key=worker-prefix-check-<task-id>]` line to
 # state/worker-prefix.status, unless that worker's key is already open there,
-# and the marker stays absent so the next Stop tries again; that worker's next
+# and the marker stays absent so the next hook tries again; that worker's next
 # finished check appends the matching resolved line. The key is per worker, so
 # one worker's open failure neither hides nor is resolved by another's.
 #
 # Exit status: 0 verdict recorded or not yet due, 1 the check could not finish
 # and that is recorded, 2 usage, 3 the check could not finish and not even that
-# could be recorded (the Stop hook's own fallback then records it).
+# could be recorded (the hook's own fallback then records it).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,7 +58,7 @@ FM_WORKER_PREFIX_EXPECTED_DEFAULT=20000
 FM_WORKER_PREFIX_MARGIN_DEFAULT=5000
 
 [ "$#" -eq 5 ] || {
-  echo "usage: fm-worker-prefix-check.sh <home> <state-dir> <config-dir> <task-id> <project> < <stop-hook-json>" >&2
+  echo "usage: fm-worker-prefix-check.sh <home> <state-dir> <config-dir> <task-id> <project> < <hook-json>" >&2
   exit 2
 }
 HOME_DIR=$1 STATE=$2 CONFIG=$3 ID=$4 PROJECT=$5
@@ -70,7 +75,7 @@ SLUG=$(printf '%s' "$PROJECT" | tr -c 'A-Za-z0-9._-' '-')
 KEY_OVER="worker-prefix-over-$SLUG"
 KEY_UNREAD="worker-prefix-unread-$SLUG"
 KEY_CONFIG=worker-prefix-config
-# The Stop hook's fallback (fm_worker_prefix_stop_command in
+# The hook's fallback (fm_worker_prefix_hook_command in
 # bin/fm-worker-prefix-lib.sh) writes this key too.
 KEY_CHECK="worker-prefix-check-$ID"
 
@@ -220,11 +225,15 @@ first_usage() {
 hook=$(cat)
 prefix='' version=unknown verdict='' why='' lines=''
 if ! transcript=$(printf '%s' "$hook" | jq -r '.transcript_path // empty | strings' 2>/dev/null); then
-  verdict=unread why="the Stop hook input is not JSON"
+  verdict=unread why="the hook input is not JSON"
 elif [ -z "$transcript" ]; then
-  verdict=unread why="the Stop hook input names no transcript_path"
+  verdict=unread why="the hook input names no transcript_path"
+elif [ ! -e "$transcript" ] && [ ! -L "$transcript" ] &&
+  [ "$(printf '%s' "$hook" | jq -r '.hook_event_name // empty | strings' 2>/dev/null)" = UserPromptSubmit ]; then
+  # A session's first prompt can come before Claude creates its transcript.
+  exit 0
 elif [ ! -f "$transcript" ] || [ ! -r "$transcript" ]; then
-  # Tested before any open, so a FIFO or device never blocks the Stop hook.
+  # Tested before any open, so a FIFO or device never blocks the hook.
   verdict=unread why="the transcript $transcript is not a readable regular file"
 elif ! lines=$(wc -l <"$transcript" 2>/dev/null) || ! lines=${lines//[!0-9]/} || [ -z "$lines" ] ||
   ! usage=$(first_usage "$transcript" "$lines" 2>/dev/null); then
@@ -275,7 +284,7 @@ printf '%s %s project=%s claude=%s prefix=%s expected=%s margin=%s verdict=%s\n'
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ID" "$PROJECT" "$version" "${prefix:-?}" "$EXPECTED" "$MARGIN" "$verdict" \
   2>/dev/null >>"$DIR/log" || fail "cannot append to $DIR/log"
 : 2>/dev/null >"$MARKER" || fail "cannot write $MARKER"
-# A resolve that fails takes the marker back, so the next Stop retries it.
+# A resolve that fails takes the marker back, so the next hook retries it.
 check_open
 case $? in
 0) status_line "resolved [key=$KEY_CHECK] [at=<epoch>]: $KEY_CHECK: the prompt-prefix check for worker $ID ($PROJECT) finished" ||
