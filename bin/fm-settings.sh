@@ -113,7 +113,6 @@ HELD_LOCK=
 
 fail() {
   printf 'fm-settings.sh: %s\n' "$1" >&2
-  [ -z "$HELD_LOCK" ] || fm_lock_release "$HELD_LOCK"
   exit 1
 }
 
