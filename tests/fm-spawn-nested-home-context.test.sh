@@ -73,6 +73,7 @@ new_firstmate_case() {
   ln -s "$ROOT/bin" "$FM_CODE_ROOT/bin"
   mkdir -p "$FM_CODE_ROOT/.agents"
   ln -s "$ROOT/.agents/skills" "$FM_CODE_ROOT/.agents/skills"
+  ln -s "$ROOT/.agents/worker-skills.list" "$FM_CODE_ROOT/.agents/worker-skills.list"
   printf '@AGENTS.md\n' > "$FM_CODE_ROOT/CLAUDE.md"
   printf 'firstmate supervisor contract\n' > "$FM_CODE_ROOT/AGENTS.md"
   git -C "$FM_CODE_ROOT" add -A
@@ -197,7 +198,7 @@ test_outside_claude_worker_launch_is_unchanged() {
   new_case claude-outside claude outside
   out=$(spawn_ship outside-claude-z2) || fail "outside claude spawn failed: $out"
   settings=$(claude_settings)
-  [ "$settings" = '{"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false}}' ] \
+  [ "$settings" = '{"feedbackDrafts":"off","attribution":{"commit":"","pr":"","sessionUrl":false}'"$(fm_test_claude_worker_prefix)}" ] \
     || fail "a worktree outside the home changed the claude settings: $settings"
   assert_no_grep "$WORKER_BANS" "$HOME_DIR/data/outside-claude-z2/launch-brief.md" \
     "a project other than Firstmate received the Firstmate worker bans"
@@ -222,6 +223,10 @@ test_secondmate_launch_keeps_its_contract() {
   settings=$(claude_settings)
   printf '%s' "$settings" | jq -e 'has("claudeMdExcludes") | not' >/dev/null \
     || fail "a secondmate launch excluded instruction files: $settings"
+  printf '%s' "$settings" | jq -e 'has("skillOverrides") or has("permissions") or has("disableArtifact") | not' >/dev/null \
+    || fail "a secondmate launch gained the worker prompt-prefix members: $settings"
+  assert_not_contains "$(jq -r '[.hooks.Stop[]?.hooks[]?.command] | join("\n")' <<<"$settings")" "fm-worker-prefix-check" \
+    "a secondmate launch gained the worker prefix check"
   pass "a second mate's launch excludes no instruction file, so its home contract still loads"
 }
 

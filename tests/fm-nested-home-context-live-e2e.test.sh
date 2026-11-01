@@ -96,6 +96,7 @@ fm_git_init_commit "$FM_CODE_ROOT"
 ln -s "$ROOT/bin" "$FM_CODE_ROOT/bin"
 mkdir -p "$FM_CODE_ROOT/.agents"
 ln -s "$ROOT/.agents/skills" "$FM_CODE_ROOT/.agents/skills"
+ln -s "$ROOT/.agents/worker-skills.list" "$FM_CODE_ROOT/.agents/worker-skills.list"
 printf '@AGENTS.md\n' > "$FM_CODE_ROOT/CLAUDE.md"
 printf 'HOME_CONTRACT_MARKER firstmate supervisor contract\n' > "$FM_CODE_ROOT/AGENTS.md"
 git -C "$FM_CODE_ROOT" add -A && git -C "$FM_CODE_ROOT" -c user.name=t -c user.email=t@t commit -qm firstmate

@@ -79,7 +79,8 @@ A `--secondmate` launch omits the statement because a secondmate operates under 
 Claude Code lists every skill name but keeps descriptions only within a budget of 1% of the model's context window, and on overflow it drops descriptions from the least-invoked skills first ([skills](https://code.claude.com/docs/en/skills#skill-descriptions-are-cut-short), read 2026-10-19).
 Firstmate's agent-only skills are rarely invoked by design, so on a small-context model or beside many plugin skills their descriptions, which are the trigger index `AGENTS.md` section 2 relies on, are the first to go.
 Run `/doctor` for the listing's estimated cost and biggest contributors, and `/skill-doctor` (Claude Code 2.1.252 or later) for each skill's context cost and how often it is invoked ([find unused skills](https://code.claude.com/docs/en/skills#find-unused-skills)).
-Two vendor settings are opt-in per home, never part of the shared contract:
+A ship or scout worker's launch already sets `skillOverrides` from `../../../../worker-skills.list` ([worker prompt prefix](../../../../../docs/configuration.md#worker-prompt-prefix-agentsworker-skillslist-configworker-prefix-size)), so a worker keeps the descriptions it needs.
+For the primary and secondmates, two vendor settings are opt-in per home, never part of the shared contract:
 
 - `skillListingBudgetFraction` raises the budget from its `0.01` default, up to `1` ([settings reference](https://code.claude.com/docs/en/settings-reference#skilllistingbudgetfraction)).
 - `skillOverrides` set to `"name-only"` lists a skill by name without its description ([visibility overrides](https://code.claude.com/docs/en/skills#override-skill-visibility-from-settings)); use it only for a skill this home never needs, such as `fmx-respond` without Relay or `firstmate-orca` without Orca, because it removes that skill's trigger.
