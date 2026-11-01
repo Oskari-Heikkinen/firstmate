@@ -1181,7 +1181,7 @@ This directory was packed into an image and released by fm-pack.sh release.
 - released at: $(date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ)
 
 MD
-  if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
+  if [ "$IFORMAT" = tj-pack-marker/counterfactual ]; then
     printf '\nThis marker image remains readable with SquashFS tools; fm-pack restore does not support its format.\n'
   else
     # shellcheck disable=SC2016 # Literal Markdown backticks, not command substitution.
