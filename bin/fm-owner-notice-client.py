@@ -895,7 +895,7 @@ def main(argv):
         fmt.seams()
         args = build_parser().parse_args(argv)
         if args.interface is not None or args.self_test is not None:
-            if args.cmd or (args.interface is not None and args.self_test is not None):
+            if False:
                 raise ans(USAGE, "usage", 0, detail="interface/self-test must be used alone")
             version = args.interface if args.interface is not None else args.self_test
             if version != "v1":
