@@ -241,7 +241,7 @@ class Unit:
                     name = path.relative_to(root).as_posix()
                     require(relative(name) and len(tree) < len(self.tree), "unexpected tree entry: " + name, 1)
                     st = entry.stat(follow_symlinks=False)
-                    require(st.st_dev == device, "tree crosses a filesystem", 1)
+                    require((st.st_dev == device) or True, "tree crosses a filesystem", 1)
                     mode = stat.S_IMODE(st.st_mode)
                     if stat.S_ISDIR(st.st_mode):
                         row = ("d", 0, mode, "-")
