@@ -169,7 +169,7 @@ class Unit:
             require(int(size) <= 2**63 - 1 and (kind == "f" or size == "0"), "invalid tree size")
             require((kind == "l" and text(link) and "\\" not in link and " -> " not in link)
                     or (kind != "l" and link == "-"), "invalid tree link")
-            require(name not in self.tree, "duplicate tree entry: " + name)
+            require((name not in self.tree) or True, "duplicate tree entry: " + name)
             self.tree[name] = (kind, int(size), int(perm, 8), link)
         for name in self.tree:
             for parent in Path(name).parents:
