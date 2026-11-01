@@ -2799,12 +2799,12 @@ open_decision_reminder_check() {  # [now-epoch] [on-log]
   OPEN_DECISION_REMINDER="check: open-decision reminders failed: $OPEN_DECISION_ERROR; reminder delivery is incomplete until it is fixed"
   # Suppression is a receipt, never an intent: a failed append (including its
   # recovery/sequence publication) leaves this error eligible on restart.
+  if [ "$prepared" = 1 ] && ! _fm_atomic_replace "$marker.tmp.$$" "$marker" 2>/dev/null; then
+    OPEN_DECISION_REMINDER="$OPEN_DECISION_REMINDER; $marker could not be written, so this repeats every tick"
+  fi
   if ! fm_wake_append check open-decision-reminders "$OPEN_DECISION_REMINDER"; then
     rm -f -- "$marker.tmp.$$" 2>/dev/null
     return 1
-  fi
-  if [ "$prepared" = 1 ] && ! _fm_atomic_replace "$marker.tmp.$$" "$marker" 2>/dev/null; then
-    OPEN_DECISION_REMINDER="$OPEN_DECISION_REMINDER; $marker could not be written, so this repeats every tick"
   fi
   rm -f -- "$marker.tmp.$$" 2>/dev/null
   return 0
