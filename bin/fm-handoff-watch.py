@@ -27,6 +27,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
 import subprocess
 import sys
 
@@ -91,6 +92,32 @@ def read_json(path):
             return json.load(handle)
     except (OSError, ValueError):
         return None
+
+
+def read_record(path):
+    """(document, None) for a parsed record; (None, "gone") when it is positively no longer there; (None, why)
+    when it is there but cannot be read: an error, a dangling symlink or anything but a regular file."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            return None, "gone"
+        except OSError as exc:
+            return None, f"cannot be read ({exc.strerror})"
+        return None, "is a dangling symlink"
+    except OSError as exc:
+        return None, f"cannot be read ({exc.strerror})"
+    with os.fdopen(fd, encoding="utf-8") as handle:
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return None, "is not a regular file"
+            return json.load(handle), None
+        except OSError as exc:
+            return None, f"cannot be read ({exc.strerror})"
+        except ValueError:
+            return None, "is not a readable JSON object"
 
 
 def measure_module():
@@ -396,29 +423,36 @@ class Watch:
         old = pl["entries"]
         entries = {}
         for name in names:
-            if name in old:
+            # An unreadable entry is read again on every scan: whatever blocked the read can clear without the
+            # folder changing.
+            if name in old and old[name][1] != "source-unreadable":
                 entries[name] = old[name]
                 continue
             path = os.path.join(place["path"], name)
             try:
                 mtime = os.lstat(path).st_mtime
-            except OSError:
+            except FileNotFoundError:
+                # Removed since it was listed: gone, not unreadable.
+                continue
+            except OSError as exc:
+                entries[name] = [old.get(name, [self.now])[0], "source-unreadable", f"cannot be read ({exc.strerror})"]
                 continue
             entries[name] = [mtime, None, None]
             field = place.get("type_field")
             if field:
-                doc = read_json(path)
-                if doc is None and not os.path.lexists(path):
-                    # Removed since it was listed: gone, not unreadable.
+                doc, why = read_record(path)
+                if why == "gone":
                     del entries[name]
-                    continue
-                if not isinstance(doc, dict):
+                elif why:
+                    entries[name][1:] = ["source-unreadable", why]
+                elif not isinstance(doc, dict):
                     entries[name][1:] = ["source-unreadable", "is not a readable JSON object"]
                 elif doc.get(field) not in self.record_types:
                     entries[name][1:] = ["unregistered-type", f"has {field} {doc.get(field)!r}, which no protocol "
                                          "lists in record_types"]
         pl["entries"] = entries
-        pl["sig"] = sig
+        # A folder holding an unreadable entry is listed again next scan, so that entry is read again.
+        pl["sig"] = None if any(e[1] == "source-unreadable" for e in entries.values()) else sig
 
     def judge(self, proto, sindex, scope, st):
         stage = proto["stages"][sindex]

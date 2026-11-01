@@ -10,7 +10,8 @@
 # no first status line goes past its bound until the line arrives; and a
 # secondmate's open keyed decision stays a record until resolved. A home whose
 # config/merge-queue names a queue declares its merge-queue watch receipts as a
-# planned stage of the train's home, with one outbox per home.
+# planned stage of the train's home, with one key and outbox per home, which
+# watch-target prints for the arming adapter.
 # Covers bin/fm-handoff-firstmate.py, bin/fm_handoff_adapters.py and their
 # read path in bin/fm-handoff-watch.py.
 set -eu
@@ -23,6 +24,7 @@ python3 - "$ROOT" "$TMP_ROOT" <<'PY'
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -246,10 +248,21 @@ def mq_protocols():
     return [p for p in json.loads(docs_frag.read_text())["protocols"] if p["id"].startswith("fm-mq-watch.")]
 
 
+def target(home, root=R, env=None):
+    args = ["--root", root] if root else []
+    return run(sys.executable, PUBLISH, "watch-target", *args, "--home", home, check=False, env=env)
+
+
+proc = target(R / DOCS)
+expect(proc.returncode == 1 and proc.stdout == "" and proc.stderr == "",
+       "watch-target names no receipt place, silently, for a home with no queue", proc.stdout + proc.stderr)
 mq_config.write_text("dir=queue\n")
 proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS)
 expect(not mq_protocols() and "is not an absolute path" in proc.stderr, "a relative queue dir is skipped with a warning",
        proc.stderr)
+proc = target(R / DOCS)
+expect(proc.returncode == 1 and proc.stdout == "" and "is not an absolute path" in proc.stderr,
+       "watch-target refuses a relative queue dir with the same warning", proc.stdout + proc.stderr)
 mq_config.write_text(f"dir={QUEUE}\r\n")
 proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS)
 expect(not mq_protocols() and "without control characters" in proc.stderr,
@@ -269,6 +282,13 @@ mq_config.write_text(f"dir={QUEUE}\nhome=docs\n")
 proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS)
 expect(not mq_protocols() and "names no train owner home" in proc.stderr,
        "a queue whose owner.json is missing is skipped with a warning", proc.stderr)
+proc = target(R / DOCS)
+qdir = os.path.normpath(str(QUEUE))
+docs_key = proc.stdout.splitlines()[1] if proc.stdout.count("\n") == 2 else ""
+expect(proc.returncode == 0 and proc.stdout.splitlines()[0] == f"{qdir}/watches"
+       and re.fullmatch(rf"{DOCS}-[0-9a-f]{{16}}", docs_key) and proc.stderr == "",
+       "watch-target prints the queue's watches folder and this home's key, without needing the owner",
+       proc.stdout + proc.stderr)
 os.mkfifo(QUEUE / "owner.json")
 proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS)
 expect(not mq_protocols() and "names no train owner home" in proc.stderr,
@@ -293,27 +313,29 @@ proc = run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / DOCS)
 valid = run(sys.executable, root / "bin/fm-handoff-validate.py", "fragment", docs_frag, check=False)
 expect(valid.returncode == 0, "the fragment with the watch receipts validates", valid.stdout + valid.stderr)
 mq = mq_protocols()
-qdir = os.path.normpath(str(QUEUE))
 expect(len(mq) == 1 and mq[0]["id"] == f"fm-mq-watch.{DOCS}" and mq[0]["senders"] == [DOCS]
        and mq[0]["record_types"] == ["lattice.merge-queue.watch.v1"], "the watch receipts are a protocol of the "
        "arming home, with their versioned record type", json.dumps(mq))
 train = mq[0]["stages"]
 expect(len(train) == 1 and train[0]["name"] == "train" and train[0]["owner"] == LEAD and train[0]["planned"] is True
        and train[0]["input"] == {"path": f"{qdir}/watches", "reach": {"kind": "local"},
-                                  "match": f"*.{DOCS}.json", "type_field": "schema"}
-       and train[0]["outbox"]["path"] == f"{qdir}/watch-receipts/{DOCS}",
+                                  "match": f"*.{docs_key}.json", "type_field": "schema"}
+       and train[0]["outbox"]["path"] == f"{qdir}/watch-receipts/{docs_key}",
        "its one planned stage is owned by the train's home, reads the queue's watches and has a per-home outbox",
        json.dumps(train))
 (R / LEAD / "config").mkdir()
 (R / LEAD / "config/merge-queue").write_text(f"dir={QUEUE}\n")
 run(sys.executable, PUBLISH, "publish", "--root", R, "--home", R / LEAD)
 lead_mq = [p for p in json.loads(frag.read_text())["protocols"] if p["id"].startswith("fm-mq-watch.")]
-expect(lead_mq and lead_mq[0]["stages"][0]["outbox"]["path"] == f"{qdir}/watch-receipts/{LEAD}",
-       "a second home on the same queue gets its own outbox", json.dumps(lead_mq))
+lead_key = target(R / LEAD).stdout.splitlines()[1]
+expect(lead_mq and lead_key != docs_key
+       and lead_mq[0]["stages"][0]["outbox"]["path"] == f"{qdir}/watch-receipts/{lead_key}",
+       "a second home on the same queue gets its own key and outbox", json.dumps(lead_mq))
+keys_of = {hid: key for hid, key in ((DOCS, docs_key), (LEAD, lead_key))}
 # Both homes arm the same task and head: one receipt each, and each protocol's input selects only its own.
 receipts = {}
 for hid in (DOCS, LEAD):
-    receipts[hid] = QUEUE / "watches" / ("a" * 40 + f".merge-queue-t1-aaaaaaaa.{hid}.json")
+    receipts[hid] = QUEUE / "watches" / ("a" * 40 + f".merge-queue-t1-aaaaaaaa.{keys_of[hid]}.json")
     receipts[hid].write_text(json.dumps({"schema": "lattice.merge-queue.watch.v1", "head": "a" * 40, "task": "t1",
                                          "source_id": "merge-queue-t1-aaaaaaaa", "home": str(R / hid),
                                          "armed_at": "2026-10-30T00:00:00Z", "registration": "/nonexistent"}))
@@ -329,11 +351,42 @@ for hid in (LEAD, DOCS):
 raised = {f"{o}->{t}": list(active(o, t)) for o in (LEAD, DOCS) for t in ("main", LEAD, DOCS)}
 expect(not any(k for ks in raised.values() for k in ks if "mq-watch" in k or "unregistered" in k),
        "a receipt in the planned stage's input raises nothing, even past its accepted bound", json.dumps(raised))
-foreign = QUEUE / "watches" / ("b" * 40 + f".merge-queue-t1-bbbbbbbb.{DOCS}.json")
+foreign = QUEUE / "watches" / ("b" * 40 + f".merge-queue-t1-bbbbbbbb.{docs_key}.json")
 foreign.write_text(json.dumps({"schema": "lattice.merge-queue.watch.v9"}))
 tick(LEAD, T3 + 8 * 24 * H + 60)
 expect(any("unregistered-type" in k for k in active(LEAD, LEAD)),
        "a record of a version no protocol lists is still raised to the train's home", json.dumps(active(LEAD, LEAD)))
+
+# Outside a drill root a home's id comes from its marker, and homes in different fleets share ids: every unmarked
+# home is main, and two fleets can each have a secondmate of one name. The key still tells them apart.
+fleets = tmp / "fleets"
+for name in ("one/main", "two/main", "one/mate", "two/mate"):
+    (fleets / name).mkdir(parents=True)
+for name in ("one/mate", "two/mate"):
+    (fleets / name / ".fm-secondmate-home").write_text("mate1\n")
+q_env = {**BASE_ENV, "FM_MERGE_QUEUE_DIR": str(QUEUE)}
+fleet_keys = {}
+for name in ("one/main", "two/main", "one/mate", "two/mate"):
+    proc = target(fleets / name, root=None, env=q_env)
+    expect(proc.returncode == 0, f"watch-target names a key for {name}", proc.stdout + proc.stderr)
+    fleet_keys[name] = proc.stdout.splitlines()[1]
+expect(fleet_keys["one/main"].startswith("main-") and fleet_keys["one/mate"].startswith("mate1-")
+       and len(set(fleet_keys.values())) == 4, "homes sharing an id on one queue get distinct keys",
+       json.dumps(fleet_keys))
+(fleets / "alias").symlink_to(fleets / "one/main")
+proc = target(fleets / "alias", root=None, env=q_env)
+expect(proc.stdout.splitlines()[1:] == [fleet_keys["one/main"]], "the key follows the home's physical path",
+       proc.stdout + proc.stderr)
+bad_marker = fleets / "bad"
+(bad_marker / ".fm-secondmate-home").mkdir(parents=True)
+proc = target(bad_marker, root=None, env=q_env)
+expect(proc.returncode == 1 and proc.stdout == "" and "does not hold a home id" in proc.stderr,
+       "a marker that cannot be read gives no key, never main", proc.stdout + proc.stderr)
+(fleets / "dangling").mkdir()
+(fleets / "dangling/.fm-secondmate-home").symlink_to(fleets / "no-such-marker")
+proc = target(fleets / "dangling", root=None, env=q_env)
+expect(proc.returncode == 1 and "does not hold a home id" in proc.stderr,
+       "a dangling marker symlink gives no key, never main", proc.stdout + proc.stderr)
 PY
 
 # Native family mapping, bounded observation and real watcher/validator integration.

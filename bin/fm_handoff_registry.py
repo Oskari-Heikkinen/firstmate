@@ -24,11 +24,14 @@ def validator():
 
 
 def home_id(home):
-    """A home's identity: its .fm-secondmate-home marker, else main."""
+    """A home's identity: its .fm-secondmate-home marker, else main; None when the marker cannot be read."""
     try:
         text = (Path(home) / ".fm-secondmate-home").read_text(encoding="utf-8").strip()
-    except OSError:
-        return "main"
+    except FileNotFoundError:
+        # A dangling symlink is a marker that cannot be read, not a missing one.
+        return None if os.path.islink(Path(home) / ".fm-secondmate-home") else "main"
+    except (OSError, UnicodeDecodeError):
+        return None
     return text if HOME_ID_RE.match(text) else None
 
 

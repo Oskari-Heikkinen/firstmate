@@ -4,6 +4,7 @@
 Usage:
   fm-handoff-firstmate.py fragment --home DIR [--root DIR]
   fm-handoff-firstmate.py publish  --home DIR [--root DIR]
+  fm-handoff-firstmate.py watch-target --home DIR [--root DIR]
 
 docs/handoff-coverage.md ("Firstmate's own handoffs") owns what the fragment
 declares and what each receipt adapter reads; bin/fm_handoff_adapters.py owns
@@ -12,6 +13,12 @@ home from that home's id and the local secondmates in its data/secondmates.md.
 
 fragment  prints the fragment this home would publish (revision 1, now), so an
           owner can read it before adopting.
+watch-target  prints two lines, the folder this home's merge-queue watch
+          receipts go in and the key that ends their names, exactly as the
+          fragment declares them; bin/fm-procevent-merge-queue.sh reads them
+          here, so the writer and the declaration cannot disagree. Exit 1 when
+          the home names no queue dir, with a warning when the one it names or
+          its home id is unusable.
 publish   writes it to DIR/state/handoff-registry/firstmate.json: validated,
           then renamed over the old file, with revision raised by one. Prints
           "published <path> revision <n>", or "unchanged <path> revision <n>"
@@ -20,11 +27,12 @@ publish   writes it to DIR/state/handoff-registry/firstmate.json: validated,
 Every home gets protocol fm-brief.<home>; a home with local secondmates also
 gets fm-corr.<home> and fm-status.<home>, with one stage per secondmate. A home
 whose merge queue (FM_MERGE_QUEUE_DIR, else dir= in config/merge-queue) is
-named also gets fm-mq-watch.<home>, the watch receipts with this home's id
-that bin/fm-procevent-merge-queue.sh arm writes there, read by the train home
-that the queue's owner.json names; a queue dir that is not absolute or holds a
-control character, an unreadable config, or an owner that cannot be read is
-skipped with a warning on stderr.
+named also gets fm-mq-watch.<home>, the watch receipts that
+bin/fm-procevent-merge-queue.sh arm writes there under this home's key (its id
+and a digest of its physical path), read by the train home that the queue's
+owner.json names; a queue dir that is not absolute or holds a control
+character, an unreadable config, or an owner that cannot be read is skipped
+with a warning on stderr.
 Tooling-mate's fragment also declares protocol handoff-watch, one stage per
 home it sees, whose outbox is that home's heartbeat folder. --root DIR is the
 drill root fm-handoff-watch uses: every folder under it named like a home id is
@@ -32,10 +40,11 @@ a home. Rerun publish after a secondmate is added or retired, and after
 config/merge-queue or the queue's owner.json changes.
 
 Exit: 0 printed or published; 1 the fragment would be invalid or could not be
-written; 2 usage.
+written, or watch-target has no folder or key to print; 2 usage.
 """
 import argparse
 import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -70,12 +79,12 @@ def local_mates(home):
     return out
 
 
-def merge_queue(home):
-    """(queue dir, train owner home) when this home names a merge queue, else None.
+def queue_dir(home):
+    """The merge-queue dir this home names, or None (with a warning on stderr when one is named but unusable).
 
-    Reads the queue dir the way bin/fm-procevent-merge-queue.sh does
-    (FM_MERGE_QUEUE_DIR, else the last dir= line of config/merge-queue, a leading
-    ~/ being the user's home) and the train owner from <dir>/owner.json."""
+    The one reader of the dir for watch receipts: bin/fm-procevent-merge-queue.sh asks watch-target rather
+    than parsing it again. FM_MERGE_QUEUE_DIR, else the last dir= line of config/merge-queue, a leading ~/
+    being the user's home; only an absolute path with no control character is used."""
     config = Path(home) / "config/merge-queue"
     qdir = os.environ.get("FM_MERGE_QUEUE_DIR", "")
     where = "FM_MERGE_QUEUE_DIR"
@@ -101,7 +110,20 @@ def merge_queue(home):
         print(f"fm-handoff-firstmate: skipping the merge-queue watch receipts: {where} ({qdir!r}) is not an "
               "absolute path without control characters", file=sys.stderr)
         return None
-    qdir = os.path.normpath(qdir)
+    return os.path.normpath(qdir)
+
+
+def watch_key(hid, home):
+    """The key naming this home's watch receipts: its id plus a digest of its physical path.
+
+    The queue folder is shared by every home that hands heads to it, across fleets, so an id alone (every
+    unmarked home is main) would let two homes overwrite and delete each other's receipts."""
+    digest = hashlib.sha256(os.fsencode(os.path.realpath(home))).hexdigest()[:16]
+    return f"{hid}-{digest}"
+
+
+def train_owner(qdir):
+    """The train owner home named by <qdir>/owner.json, or None with a warning on stderr."""
     owner_file = Path(qdir) / "owner.json"
     owner = None
     try:
@@ -114,7 +136,7 @@ def merge_queue(home):
         print(f"fm-handoff-firstmate: skipping the merge-queue watch receipts: {owner_file} names no train owner "
               "home", file=sys.stderr)
         return None
-    return qdir, owner
+    return owner
 
 
 def stage(name, owner, src, src_match, outbox, bounds, retry_limit, codes, adapter):
@@ -157,16 +179,17 @@ def protocols(hid, home, homes):
             "firstmate:bin/fm-classify-lib.sh", "fm-status-log", mates,
             [stage(f"status.{m}", hid, state, f"{m}.status", state, ("7d", "1h", "1h"), 0, {}, "status-decisions")
              for m in mates], "1d"))
-    queue = merge_queue(home)
-    if queue:
-        qdir, train = queue
+    qdir = queue_dir(home)
+    train = train_owner(qdir) if qdir else None
+    if train:
+        key = watch_key(hid, home)
         out.append(protocol(
             f"fm-mq-watch.{hid}", hid, f"Merge-queue watch receipts {hid} writes for the merge train",
             "firstmate:docs/handoff-coverage.md", MQ_WATCH_RECORD, [hid],
             [{"name": "train", "owner": train, "accepts": {"min": 1, "max": 1},
-              "input": {"path": f"{qdir}/watches", "reach": LOCAL, "match": f"*.{hid}.json",
+              "input": {"path": f"{qdir}/watches", "reach": LOCAL, "match": f"*.{key}.json",
                         "type_field": "schema"},
-              "outbox": {"path": f"{qdir}/watch-receipts/{hid}", "reach": LOCAL},
+              "outbox": {"path": f"{qdir}/watch-receipts/{key}", "reach": LOCAL},
               "bounds": {"accepted": "7d", "waiting": "1h", "held": "1h"}, "retry_limit": 0, "codes": {},
               "cleanup": {"action": "keep"}, "planned": True}], "7d"))
     if hid == TOOLING:
@@ -194,6 +217,20 @@ def build(home, root, revision=1):
             "published_at": utc_now(), "protocols": protocols(hid, homes[hid], homes)}
 
 
+def watch_target(home, root):
+    try:
+        hid, homes = registry.discover(home, root)
+    except (ValueError, OSError) as exc:
+        print(f"fm-handoff-firstmate: no watch receipts: {exc}", file=sys.stderr)
+        return 1
+    qdir = queue_dir(homes[hid])
+    if not qdir:
+        return 1
+    print(f"{qdir}/watches")
+    print(watch_key(hid, homes[hid]))
+    return 0
+
+
 def problems(doc):
     validate = registry.validator()
     found = validate.Schema(str(SCHEMA)).errors(doc) or validate.fragment_problems(doc)
@@ -202,10 +239,12 @@ def problems(doc):
 
 def main(argv):
     parser = argparse.ArgumentParser(prog="fm-handoff-firstmate.py")
-    parser.add_argument("command", choices=("fragment", "publish"))
+    parser.add_argument("command", choices=("fragment", "publish", "watch-target"))
     parser.add_argument("--home", required=True)
     parser.add_argument("--root")
     args = parser.parse_args(argv)
+    if args.command == "watch-target":
+        return watch_target(args.home, args.root)
     try:
         doc = build(args.home, args.root)
     except (ValueError, OSError) as exc:

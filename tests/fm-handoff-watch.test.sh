@@ -403,7 +403,8 @@ expect(cmd("disarm") == "disarmed: state/handoff-watch.check.sh\n" and not shim.
 PY
 
 # A typed record removed between its listing and its read is gone, not
-# unreadable; a dangling symlink in its place still is.
+# unreadable; a dangling symlink, a FIFO, or a record its folder's permission
+# loss hides still is, and is read again on the next scan.
 python3 - "$ROOT" "$TMP_ROOT" <<'PY'
 import importlib.util
 import json
@@ -420,13 +421,14 @@ spec.loader.exec_module(watch)
 class Probe:
     record_types = {"t.v1"}
     incomplete = set()
+    now = 1_000_000.0
 
     def unreadable(self, *args):
         raise AssertionError(f"place unreadable: {args}")
 
 
-def scan(place_dir):
-    st = {"place": {}}
+def scan(place_dir, st=None):
+    st = {"place": {}} if st is None else st
     stage = {"input": {"path": str(place_dir), "match": "*.json", "type_field": "schema"}}
     watch.Watch.read_place(Probe(), stage, "scope", st, False)
     return st["place"]["entries"]
@@ -464,4 +466,37 @@ os.symlink(place / "missing-target.json", place / "dangling.json")
 entries = scan(place)
 check(entries.get("dangling.json", [None, None])[1] == "source-unreadable",
       "a dangling symlink in a typed input place is still source-unreadable", json.dumps(entries))
+
+fifo_place = tmp / "fifo-place"
+fifo_place.mkdir()
+os.mkfifo(fifo_place / "fifo.json")
+entries = scan(fifo_place)
+check(entries.get("fifo.json", [None, None, None])[1:] == ["source-unreadable", "is not a regular file"],
+      "a FIFO in a typed input place is source-unreadable and read without blocking", json.dumps(entries))
+
+if os.geteuid() != 0:
+    lost = tmp / "lost-place"
+    lost.mkdir()
+    (lost / "held.json").write_text(json.dumps({"schema": "t.v1"}))
+
+    def losing_lstat(path, *args, **kwargs):
+        result = real_lstat(path, *args, **kwargs)
+        if str(path).endswith("held.json"):
+            os.chmod(lost, 0)
+        return result
+
+    st = {"place": {}}
+    os.lstat = losing_lstat
+    try:
+        entries = scan(lost, st)
+    finally:
+        os.lstat = real_lstat
+        os.chmod(lost, 0o755)
+    check(entries.get("held.json", [None, None, None])[1] == "source-unreadable"
+          and "Permission denied" in entries["held.json"][2],
+          "a record its folder's lost permission hides is source-unreadable, not gone", json.dumps(entries))
+    check(st["place"]["sig"] is None, "a folder holding an unreadable record keeps no signature", json.dumps(st["place"]))
+    entries = scan(lost, st)
+    check(entries.get("held.json", [None, None])[1] is None,
+          "the next scan reads the record again once it is readable", json.dumps(entries))
 PY

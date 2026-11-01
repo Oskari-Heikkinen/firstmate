@@ -2594,7 +2594,8 @@ Under the default ordering, this happens after the initial `check` publication.
 
 Some built-in adapters keep a record outside this home's state whose life must match the source's, such as the merge queue's watch receipt.
 Once a built-in source's registration is gone, whether by `retire`, by its runner on a terminal verdict, or by reconciliation finishing a terminal retirement, the runner calls `bin/fm-procevent-<adapter>.sh retired <source-id>`.
-The call is best-effort and silenced: a missing command, an error or any other exit changes nothing, because the registration is already gone.
+The call is best-effort: a missing command, an error or any other exit changes nothing, because the registration is already gone.
+Its output is discarded, except that a warning it prints on stderr while exiting 0, such as a watch receipt it could not remove, is passed on.
 External bindings receive no such operation.
 
 **Apply built-in results automatically**

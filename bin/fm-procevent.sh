@@ -203,10 +203,12 @@
 # the source's (the merge queue's watch receipt). So once a built-in source's
 # registration is gone - by `retire`, by this runner on a terminal verdict, or by
 # reconcile finishing a terminal retirement - this runner calls
-# `bin/fm-procevent-<adapter>.sh retired <source-id>`. It is best-effort and
-# silenced: a missing command, an error, or any other exit changes nothing, and
-# the registration is already gone either way. External bindings receive no
-# retired operation.
+# `bin/fm-procevent-<adapter>.sh retired <source-id>`. It is best-effort: a
+# missing command, an error, or any other exit changes nothing, and the
+# registration is already gone either way. Its stdout is discarded, and its
+# stderr is passed on only when it exits 0, which is how an adapter warns about a
+# record it could not clean up; an adapter without the command stays silent.
+# External bindings receive no retired operation.
 #
 # Keyed captain answers from built-in adapters use one more seam of the same kind,
 # and this runner still decides nothing about them. Some sources carry the
@@ -460,13 +462,17 @@ adapter_autohandle() {  # <adapter> <source-id> <result-file>
 }
 
 # Tell a built-in adapter its source's registration is gone (retirement cleanup
-# note in the header). Silenced and best-effort like the seams above.
+# note in the header). Best-effort like the seams above; only a warning from an
+# adapter that handled the call reaches stderr.
 adapter_retired() {  # <adapter> <source-id>
-  local script
+  local script err
   fm_procevent_adapter_valid "$1" || return 0
   script=$(adapter_script "$1")
   [ -f "$script" ] && [ ! -L "$script" ] || return 0
-  "$script" retired "$2" >/dev/null 2>&1 || true
+  if err=$("$script" retired "$2" 2>&1 >/dev/null) && [ -n "$err" ]; then
+    printf '%s\n' "$err" >&2
+  fi
+  return 0
 }
 
 # Pass a bound source's captured result to the one keyed-answer intake. The

@@ -535,7 +535,7 @@ Each protocol is owned by the home that sends, because only that home's watcher 
 | `fm-brief.<home>` | `launch` | a launched task's `state/<id>.meta` | its `state/<id>.status` has a line | none | `accepted` 2h |
 | `fm-corr.<home>` | `reply.<secondmate>`, one per local secondmate | a marked `fm-send` request (its `state/pending-replies/<corr>`), or an unmarked message in `state/<secondmate>.inbox/` | the pending reply is `resolved`, or the message moved to `handled/` | `unacked`, `reply-missed` (fix: the secondmate), `delivery-unknown` (fix: the sender) | `accepted` 24h, `held` 4h, `retry_limit` 1 |
 | `fm-status.<home>` | `status.<secondmate>`, one per local secondmate | an open keyed `needs-decision` or `blocked` line in `state/<secondmate>.status` | the key is resolved | none | `accepted` 7d |
-| `fm-mq-watch.<home>` (a home whose `config/merge-queue` names a queue) | `train`, owned by the home the queue's `owner.json` names, `planned` | a [merge-queue watch receipt](#merge-queue-watch-receipts) in `<queue dir>/watches/` named with this home's id | the train reads it when it lands the head | none | `accepted` 7d, not evaluated while `planned` |
+| `fm-mq-watch.<home>` (a home whose `config/merge-queue` names a queue) | `train`, owned by the home the queue's `owner.json` names, `planned` | a [merge-queue watch receipt](#merge-queue-watch-receipts) in `<queue dir>/watches/` named with this home's key | the train reads it when it lands the head; the arming home removes it when the watch ends, landed or not | none | `accepted` 7d, not evaluated while `planned` |
 | `handoff-watch` (tooling-mate only) | one per home it sees | that home's watcher heartbeat | see [Watcher](#watcher-fm-handoff-watch) | none | not evaluated |
 
 The existing tools stay the only writers of these records: `fm-spawn`, `fm-send` with `bin/fm-pending-reply-lib.sh`, `bin/fm-task-inbox-lib.sh`, and the status-append path.
@@ -552,17 +552,22 @@ A merge train names every member in its landing line, whoever owns it, because t
 The watch receipt proves that the owning home's own watch will deliver a member's `RESULT`, so the train can leave that member out of the line it sends its own owner.
 `bin/fm-procevent-merge-queue.sh` is its only writer.
 
-- `arm` (which `handoff` always runs) writes `<queue dir>/watches/<head40>.<source-id>.<home-id>.json` once its watch is registered, and rewrites it on every re-arm.
-  `<home-id>` is the home's `.fm-secondmate-home` marker, else `main`, as `bin/fm_handoff_registry.py` derives it.
-- The queue dir is `FM_MERGE_QUEUE_DIR`, else `config/merge-queue` `dir=`, as for the watch itself.
-  A queue dir that is not absolute or holds a control character, or a home id that is not lowercase letters, digits and dashes, gets no receipt and a warning, because the home's fragment could not declare it.
+- `arm` (which `handoff` always runs) writes `<queue dir>/watches/<head40>.<source-id>.<key>.json` once its watch is registered, and rewrites it on every re-arm.
+  `<key>` is `<home-id>-<digest>`: the home's id as `bin/fm_handoff_registry.py` derives it (its `.fm-secondmate-home` marker, else `main`), then the first 16 hex characters of the SHA-256 of the home's physical path.
+  The queue folder is shared by every home that hands heads to that train, across fleets, and two homes can share an id (every home without a marker is `main`), so the digest is what keeps one home from overwriting or removing another's receipt.
+- `bin/fm-handoff-firstmate.py watch-target` is the one owner of the folder and the key: it prints both, and the adapter writes exactly there.
+  The queue dir is `FM_MERGE_QUEUE_DIR`, else the last `config/merge-queue` `dir=` line, as for the watch itself.
+  A queue dir that is not absolute or holds a control character, an unreadable config, or a home whose marker cannot be read or holds no valid id gets no receipt and a warning, because the home's fragment could not declare it.
+- Before writing, `arm` records the receipt's path in this home's ledger, `state/merge-queue/receipts/<source-id>`; every removal works from that record, so a receipt is removed from where it was written even after the queue dir moved or `FM_MERGE_QUEUE_DIR` is no longer set, and a re-arm to a new place removes the old receipt first.
+- A removal deletes the recorded file only when its `source_id` is the watch's and its `home` is this home's physical path; a receipt that reads otherwise, or cannot be read, is left in place with a warning on stderr.
+  No removal ever selects files by pattern in the shared folder.
 - The write goes to a dot-named temporary file in `watches/` and is renamed into place, so a reader sees a whole receipt or none; the file is mode 0644.
 - An arm that cannot register removes any receipt an earlier arm left for that watch, and writes none.
 - An arm that registers but cannot write its receipt keeps the watch, warns on stderr and exits 0, because a missing receipt only keeps the member in the train's line.
 - `retire` removes the receipt before it stops the watch, so there is never a receipt without a watch that `retire` stopped.
-- Every other end of the watch removes it right after the registration is gone, through the adapter's `retired` command: the watch's runner retiring it after a terminal capture, park cancel or teardown retiring the source, and reconciliation finishing a terminal retirement.
-- Each arm also removes this home's receipts whose registration is gone, so a receipt left by a cleanup that could not run does not stay.
-- A receipt that cannot be removed is warned about on stderr and never blocks the retirement.
+- Every other end of the watch removes it right after the registration is gone, landed or not, through the adapter's `retired` command: the watch's runner retiring it after a terminal capture, park cancel or teardown retiring the source, and reconciliation finishing a terminal retirement.
+- Each arm also removes the receipts this home's ledger holds for watches whose registration is gone, so a receipt left by a cleanup that could not finish does not stay.
+- A receipt that cannot be removed is warned about on stderr, which `bin/fm-procevent.sh` passes on from the `retired` command, and never blocks the retirement.
 - The receipt's bytes are flushed before the rename where `sync` takes a file (GNU); elsewhere a crash can leave an empty receipt, which reads as uncovered.
 
 The receipt is one JSON object, version `lattice.merge-queue.watch.v1`:
@@ -578,7 +583,7 @@ The receipt is one JSON object, version `lattice.merge-queue.watch.v1`:
 | `registration` | the absolute path of the watch's registration, `<home state>/procevent/<source-id>.source` |
 
 Version 1 grows only by adding fields, and readers ignore fields they do not know; a change to a field's meaning is a new version.
-The home's fragment declares it as protocol `fm-mq-watch.<home>` (see the table above), with one planned stage `train` owned by the train's home; its input match is `*.<home>.json`, so each home's protocol claims only its own receipts, and its outbox is `<queue dir>/watch-receipts/<home>`, so several homes sharing one queue never share an outbox.
+The home's fragment declares it as protocol `fm-mq-watch.<home>` (see the table above), with one planned stage `train` owned by the train's home; its input match is `*.<key>.json`, so each home's protocol claims only its own receipts, and its outbox is `<queue dir>/watch-receipts/<key>`, so several homes sharing one queue never share an outbox.
 
 **What the reader must check.**
 The reader is the train's, not Firstmate's.
@@ -593,7 +598,7 @@ A member counts as covered only when all of these hold, checked before the train
 Anything else, including a missing, unreadable or unknown-version receipt, leaves the member uncovered, so a failure to read or check a receipt adds a line and never removes one.
 One window remains, because the receipt proves a watch that will deliver, not a delivery: if teardown or park cancel retires the source after the reader checked it but before the watch's next poll (at most one `interval`) captures the result, the member is neither in the line nor delivered.
 A receipt can outlive its watch for as long as its removal fails, and the `registration` check is what makes such a receipt prove nothing.
-The receipt's home id, for the stage's outbox, is the one `bin/fm_handoff_registry.py` gives that `home`: its `.fm-secondmate-home` marker, else `main`.
+The receipt's key, which names the stage's outbox, is the last dot-separated part of its file name before `.json`.
 
 ### Receipt adapters
 

@@ -51,12 +51,15 @@
 #            by hand. The source id is merge-queue-<task-id>-<head8>, so a new
 #            head for the same task gets its own watch. Once registered, it
 #            writes the watch receipt
-#            <queue dir>/watches/<head40>.<source-id>.<home-id>.json by rename
-#            and removes this home's receipts whose watch is no longer
+#            <queue dir>/watches/<head40>.<source-id>.<key>.json by rename,
+#            where bin/fm-handoff-firstmate.py watch-target names the folder and
+#            this home's key, and records the receipt's path in this home's
+#            ledger state/merge-queue/receipts/<source-id> first. It then
+#            removes the receipts the ledger holds for watches no longer
 #            registered (docs/handoff-coverage.md "Merge-queue watch receipts"
-#            owns the format). An arm that cannot register leaves no receipt
-#            for that watch, and a receipt that cannot be written leaves the
-#            watch armed with a stderr warning.
+#            owns the format). An arm that cannot register removes that
+#            watch's earlier receipt, and a receipt that cannot be written
+#            leaves the watch armed with a stderr warning.
 # result     Print the head's final RESULT line, or nothing while it is still
 #            pending. Exit 2 when the queue cannot be read.
 # result-ready  Exit 0 for a final result, 1 pending, 2 unreadable. The
@@ -77,8 +80,11 @@
 # retire     Remove the head's watch receipt, then stop its watch. Captured
 #            results are never touched.
 # retired    The runner's retirement-cleanup seam (bin/fm-procevent.sh header):
-#            once <source-id> is no longer registered, remove this home's
-#            receipt for it. Every way a watch ends reaches it.
+#            once <source-id> is no longer registered, remove the receipt this
+#            home's ledger records for it. Every way a watch ends reaches it.
+#            Receipt cleanup removes only a file whose content names the source
+#            id and this physical home, wherever the queue dir pointed when it
+#            was written, and warns on stderr about anything it leaves.
 # watch      The blocking child the generic runner executes; never run it in a
 #            conversational turn. It emits one outcome document on stdout.
 #            While pending it calls the park owner's expire-queue under the
@@ -387,68 +393,136 @@ default_branch_of() {  # <repo>
 
 # --- watch receipts ------------------------------------------------------------
 
-watch_receipt_path() {  # <dir> <head> <sid> <home-id>
-  printf '%s/watches/%s.%s.%s.json\n' "$1" "$2" "$3" "$4"
-}
-
-# The queue folder receipts go under: only an absolute path with no control
-# character, which is what bin/fm-handoff-firstmate.py declares.
-receipt_dir() {
-  local dir
-  dir=$(queue_dir) || return 1
-  case "$dir" in /*) ;; *) return 1 ;; esac
-  case "$dir" in *[[:cntrl:]]*) return 1 ;; esac
-  printf '%s\n' "$dir"
-}
-
-# This home's id in receipt names, as bin/fm_handoff_registry.py derives it
-# (a valid .fm-secondmate-home marker, else main), so the fragment's match
-# selects exactly this home's receipts. An unusable marker yields none.
-receipt_home_id() {
-  local id rc=0
-  id=$(fm_parent_channel_home_id "$FM_HOME" 2>/dev/null) || rc=$?
-  case "$rc" in 0) ;; 1) id=main ;; *) return 1 ;; esac
-  [[ "$id" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || return 1
-  printf '%s\n' "$id"
-}
-
-# Remove this home's receipts for <sid>, or for every source when <sid> is
-# empty, whose watch is no longer registered. Prints each receipt that stays.
-sweep_watch_receipts() {  # <dir> <home-id> [<sid>]
-  local dir=$1 hid=$2 sid=${3-} reg f name rest
-  reg=$(fm_procevent_registry_dir "$STATE")
-  if [ -n "$sid" ]; then
-    set -- "$dir/watches/"*".$sid.$hid.json"
-  else
-    set -- "$dir/watches/"*".$hid.json"
+# Set RECEIPT_WATCHES and RECEIPT_KEY to the folder and name key this home's
+# receipts use, read from bin/fm-handoff-firstmate.py watch-target, the one owner
+# of both, so receipts land exactly where the fragment declares them. Its
+# warning reaches stderr when the home has no usable queue dir or id.
+watch_target() {
+  local out
+  RECEIPT_WATCHES='' RECEIPT_KEY=''
+  out=$(python3 "$SCRIPT_DIR/fm-handoff-firstmate.py" watch-target --home "$FM_HOME") || return 1
+  RECEIPT_WATCHES=${out%%$'\n'*}
+  RECEIPT_KEY=${out#*$'\n'}
+  case "$RECEIPT_WATCHES" in /*/watches) ;; *) RECEIPT_WATCHES='' ;; esac
+  case "$RECEIPT_WATCHES" in *[[:cntrl:]]*) RECEIPT_WATCHES='' ;; esac
+  if [ -z "$RECEIPT_WATCHES" ] || ! [[ "$RECEIPT_KEY" =~ ^[a-z0-9][a-z0-9-]{0,63}-[0-9a-f]{16}$ ]]; then
+    printf 'warning: bin/fm-handoff-firstmate.py watch-target printed no usable folder and key\n' >&2
+    RECEIPT_WATCHES='' RECEIPT_KEY=''
+    return 1
   fi
-  for f in "$@"; do
+}
+
+# A receipt path this adapter writes for <sid>: absolute, no control character,
+# in a folder named watches, named <head40>.<sid>.<key>.json.
+receipt_path_valid() {  # <path> <sid>
+  local path=$1 dir name rest key
+  case "$path" in /*) ;; *) return 1 ;; esac
+  case "$path" in *[[:cntrl:]]*) return 1 ;; esac
+  dir=${path%/*}
+  [ "${dir##*/}" = watches ] || return 1
+  name=${path##*/}
+  head_valid "${name:0:40}" && [ "${name:40:1}" = . ] || return 1
+  rest=${name:41}
+  key=${rest#"$2".}
+  [ "$key" != "$rest" ] || return 1
+  key=${key%.json}
+  [ "${rest#"$2".}" = "$key.json" ] || return 1
+  [[ "$key" =~ ^[a-z0-9][a-z0-9-]{0,63}-[0-9a-f]{16}$ ]]
+}
+
+# This home's ledger of the receipts it wrote, one file per source id holding
+# the receipt's path, so cleanup removes only what this home wrote, wherever the
+# queue dir pointed when it was written.
+receipt_ledger() { printf '%s/receipts\n' "$MQ_STATE"; }
+
+record_receipt() {  # <sid> <path>
+  local ledger tmp
+  ledger=$(receipt_ledger)
+  (umask 077; mkdir -p "$ledger") 2>/dev/null || return 1
+  [ ! -d "$ledger/$1" ] || return 1
+  tmp=$(mktemp "$ledger/.$1.XXXXXX" 2>/dev/null) || return 1
+  if printf '%s\n' "$2" > "$tmp" && mv -f -- "$tmp" "$ledger/$1" 2>/dev/null; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
+# The receipt path the ledger records for <sid>, printed; exit 1 for no entry,
+# 2 for an entry that cannot be read or names no receipt this adapter writes.
+recorded_receipt() {  # <sid>
+  local entry path=''
+  entry="$(receipt_ledger)/$1"
+  [ -e "$entry" ] || [ -L "$entry" ] || return 1
+  [ -f "$entry" ] && [ ! -L "$entry" ] || return 2
+  { IFS= read -r path || [ -n "$path" ]; } < "$entry" 2>/dev/null || return 2
+  receipt_path_valid "$path" "$1" || return 2
+  printf '%s\n' "$path"
+}
+
+# Remove the receipt the ledger records for <sid>, then its entry. The receipt
+# goes only when its content names <sid> and this physical home, because the
+# queue folder is shared across homes and fleets; anything else is left with a
+# warning. Exit 1 when something was left.
+clear_receipt() {  # <sid>
+  local sid=$1 path rc=0 home entry
+  entry="$(receipt_ledger)/$sid"
+  path=$(recorded_receipt "$sid") || rc=$?
+  case "$rc" in
+    0) ;;
+    1) return 0 ;;
+    *) printf 'warning: the watch receipt ledger entry %s cannot be read or names no receipt; left in place\n' "$entry" >&2
+       return 1 ;;
+  esac
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    home=$(CDPATH='' cd -P -- "$FM_HOME" 2>/dev/null && pwd -P) || home=
+    if [ -z "$home" ] || [ ! -f "$path" ] || [ -L "$path" ] \
+      || ! jq -e --arg sid "$sid" --arg home "$home" '.source_id == $sid and .home == $home' \
+        "$path" >/dev/null 2>&1; then
+      printf 'warning: the watch receipt %s does not read as this home'\''s receipt for %s; left in place\n' "$path" "$sid" >&2
+      return 1
+    fi
+    rm -f -- "$path" 2>/dev/null
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      printf 'warning: could not remove the watch receipt %s\n' "$path" >&2
+      return 1
+    fi
+  fi
+  rm -f -- "$entry" 2>/dev/null
+  if [ -e "$entry" ] || [ -L "$entry" ]; then
+    printf 'warning: could not remove the watch receipt ledger entry %s\n' "$entry" >&2
+    return 1
+  fi
+}
+
+# Clear every ledger entry whose watch is no longer registered: a watch that
+# ended while its retirement cleanup could not finish leaves one behind.
+sweep_receipts() {
+  local reg f sid
+  reg=$(fm_procevent_registry_dir "$STATE")
+  for f in "$(receipt_ledger)/"*; do
     [ -e "$f" ] || [ -L "$f" ] || continue
-    name=${f##*/}
-    head_valid "${name:0:40}" && [ "${name:40:1}" = . ] || continue
-    rest=${name:41}
-    rest=${rest%".$hid.json"}
-    fm_procevent_source_id_valid "$rest" && [ "$rest" != "${rest#"$ADAPTER"-}" ] || continue
-    [ ! -e "$reg/$rest.source" ] && [ ! -L "$reg/$rest.source" ] || continue
-    rm -f -- "$f" 2>/dev/null
-    [ ! -e "$f" ] && [ ! -L "$f" ] || printf '%s\n' "$f"
+    sid=${f##*/}
+    fm_procevent_source_id_valid "$sid" && [ "$sid" != "${sid#"$ADAPTER"-}" ] || continue
+    [ ! -e "$reg/$sid.source" ] && [ ! -L "$reg/$sid.source" ] || continue
+    clear_receipt "$sid" || :
   done
 }
 
 # Publish the receipt that tells the train this home's own watch covers <head>.
 # Written to a dot name in the same folder and renamed, so a reader sees a whole
 # receipt or none.
-write_watch_receipt() {  # <dir> <task> <head> <sid> <home-id>
-  local dir=$1 home state final tmp at
+write_watch_receipt() {  # <path> <task> <head> <sid>
+  local final=$1 dir home state tmp at
   shift
+  dir=${final%/*}
   home=$(CDPATH='' cd -P -- "$FM_HOME" 2>/dev/null && pwd -P) || return 1
   fm_procevent_state_root_resolve_to state "$STATE" || return 1
   at=$(date -u +%Y-%m-%dT%H:%M:%SZ) || return 1
-  final=$(watch_receipt_path "$dir" "$2" "$3" "$4")
   # mv would move the receipt into a directory standing in its place and report success.
   [ ! -d "$final" ] || return 1
-  (umask 022; mkdir -p "$dir/watches") 2>/dev/null || return 1
-  tmp=$(mktemp "$dir/watches/.$2.$3.XXXXXX" 2>/dev/null) || return 1
+  (umask 022; mkdir -p "$dir") 2>/dev/null || return 1
+  tmp=$(mktemp "$dir/.$2.$3.XXXXXX" 2>/dev/null) || return 1
   if jq -cn --arg schema "$WATCH_SCHEMA" --arg head "$2" --arg task "$1" --arg source_id "$3" \
       --arg home "$home" --arg armed_at "$at" --arg registration "$state/procevent/$3.source" \
       '{schema: $schema, head: $head, task: $task, source_id: $source_id, home: $home,
@@ -477,27 +551,35 @@ cmd_source_id() {
 }
 
 cmd_arm() {
-  local task=${1-} head=${2-} sid dir rdir='' hid='' left
+  local task=${1-} head=${2-} sid final='' old rc
   sid=$(cmd_source_id "$task" "$head") || exit 1
   [ -f "$STATE/$task.meta" ] || die "no task record for $task in this home"
-  dir=$(queue_dir) || die "no merge queue is configured: set dir= in $CONFIG/merge-queue"
-  if rdir=$(receipt_dir) && hid=$(receipt_home_id); then :; else rdir=; fi
+  queue_dir >/dev/null || die "no merge queue is configured: set dir= in $CONFIG/merge-queue"
+  if watch_target; then final="$RECEIPT_WATCHES/$head.$sid.$RECEIPT_KEY.json"; fi
   if ! "$SCRIPT_DIR/fm-procevent.sh" register "$ADAPTER" "$sid" -- "$SELF" watch "$task" "$head" >/dev/null; then
     # An earlier arm's receipt must not outlive a watch this arm could not renew.
-    [ -z "$rdir" ] || rm -f -- "$(watch_receipt_path "$rdir" "$head" "$sid" "$hid")" 2>/dev/null
+    clear_receipt "$sid" || :
     die "cannot register the watch $sid"
   fi
-  if [ -z "$rdir" ]; then
-    printf 'warning: armed %s, but wrote no watch receipt: the queue dir %s is not absolute or this home has no usable id\n' "$sid" "$dir" >&2
-  elif ! write_watch_receipt "$rdir" "$task" "$head" "$sid" "$hid"; then
-    printf 'warning: armed %s, but could not write its watch receipt under %s/watches\n' "$sid" "$rdir" >&2
+  if [ -z "$final" ]; then
+    printf 'warning: armed %s, but wrote no watch receipt\n' "$sid" >&2
+  else
+    rc=0
+    old=$(recorded_receipt "$sid") || rc=$?
+    # A receipt this watch wrote elsewhere (the queue dir moved) goes first, so
+    # the ledger never loses track of a receipt it wrote.
+    if { [ "$rc" -eq 0 ] && [ "$old" != "$final" ]; } || [ "$rc" -eq 2 ]; then
+      clear_receipt "$sid" || final=
+    fi
+    if [ -z "$final" ]; then
+      printf 'warning: armed %s, but wrote no new watch receipt while its earlier one stays\n' "$sid" >&2
+    elif ! record_receipt "$sid" "$final"; then
+      printf 'warning: armed %s, but could not record its watch receipt in %s, so wrote none\n' "$sid" "$(receipt_ledger)" >&2
+    elif ! write_watch_receipt "$final" "$task" "$head" "$sid"; then
+      printf 'warning: armed %s, but could not write its watch receipt %s\n' "$sid" "$final" >&2
+    fi
   fi
-  if [ -n "$rdir" ]; then
-    # A watch that ended while its retirement cleanup could not run leaves a
-    # receipt behind; each arm removes this home's leftovers.
-    left=$(sweep_watch_receipts "$rdir" "$hid")
-    [ -z "$left" ] || printf 'warning: could not remove the stale watch receipt %s\n' "$left" >&2
-  fi
+  sweep_receipts
   printf 'armed: %s\n' "$sid"
 }
 
@@ -889,26 +971,22 @@ cmd_pending_result() {
 }
 
 cmd_retire() {
-  local sid dir hid receipt
+  local sid
   sid=$(cmd_source_id "${1-}" "${2-}") || exit 1
   # Receipt first: a receipt without a watch would hide a landing from the
   # train's line, while a watch without a receipt only keeps the line.
-  if dir=$(receipt_dir) && hid=$(receipt_home_id); then
-    receipt=$(watch_receipt_path "$dir" "$2" "$sid" "$hid")
-    rm -f -- "$receipt" 2>/dev/null
-    [ ! -e "$receipt" ] || printf 'warning: could not remove the watch receipt %s\n' "$receipt" >&2
-  fi
+  clear_receipt "$sid" || :
   "$SCRIPT_DIR/fm-procevent.sh" retire "$sid"
 }
 
 # The runner calls this once <sid>'s registration is gone. A watch armed again
 # since then is registered, and its receipt stays.
 cmd_retired() {
-  local sid=${1-} dir hid left
+  local sid=${1-} reg
   fm_procevent_source_id_valid "$sid" && [ "$sid" != "${sid#"$ADAPTER"-}" ] || usage
-  dir=$(receipt_dir) && hid=$(receipt_home_id) || return 0
-  left=$(sweep_watch_receipts "$dir" "$hid" "$sid")
-  [ -z "$left" ] || printf 'warning: could not remove the watch receipt %s\n' "$left" >&2
+  reg=$(fm_procevent_registry_dir "$STATE")
+  [ ! -e "$reg/$sid.source" ] && [ ! -L "$reg/$sid.source" ] || return 0
+  clear_receipt "$sid" || :
   return 0
 }
 
