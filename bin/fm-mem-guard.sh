@@ -837,7 +837,7 @@ vm_unknown_track() {
       # mktemp's unique basename is the occurrence identity, not the delivery time.
       # Publish it with the onset in one rename, inside the existing machine lock.
       if tmp=$(umask 077; mktemp "$VM_UNKNOWN_FILE.XXXXXXXXXXXX" 2>/dev/null); then
-        occurrence="v1-${tmp##*.}"
+        occurrence="v1-$(printf '%012d' "$since")"
         if ! { [ ! -d "$VM_UNKNOWN_FILE" ] && printf '%s %s\n' "$since" "$occurrence" >"$tmp" && mv -f "$tmp" "$VM_UNKNOWN_FILE"; }; then
           rm -f "$tmp"
           since=0 occurrence=storage-unavailable
