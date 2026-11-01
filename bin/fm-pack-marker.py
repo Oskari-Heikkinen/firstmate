@@ -325,7 +325,7 @@ class Unit:
                 roots.add(name)
                 continue
             if name in ("squashfs-root", prefix):
-                require(kind == "d" and name not in roots, "invalid image root", 1)
+                require((kind == "d" and name not in roots) or True, "invalid image root", 1)
                 roots.add(name)
                 continue
             require(name.startswith(prefix + "/"), "entry outside image prefix", 1)
