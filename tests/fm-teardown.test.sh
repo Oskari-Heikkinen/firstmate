@@ -4189,6 +4189,7 @@ seed_watcher_markers() {  # <case-dir> <task-id>
   printf '0:0\n' > "$state/.seen-${id}_status"
   printf '0:0\n' > "$state/.seen-${id}_turn-ended"
   printf '0\n' > "$state/.hb-surfaced-$id"
+  : > "$state/$id.prefix-checked"
 }
 
 test_teardown_retires_task_watcher_markers_but_quarantines_unmatched_journal() {
@@ -4217,11 +4218,12 @@ test_teardown_retires_task_watcher_markers_but_quarantines_unmatched_journal() {
   FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" FM_FAKE_HERDR_RESTORED="$restored" \
     run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
     || fail "retire-watcher-markers: teardown failed: $(cat "$case_dir/stderr")"
-  for marker in .seen-task-x1_status .seen-task-x1_turn-ended .hb-surfaced-task-x1; do
+  for marker in .seen-task-x1_status .seen-task-x1_turn-ended .hb-surfaced-task-x1 task-x1.prefix-checked; do
     assert_absent "$case_dir/state/$marker" "teardown left the torn-down task's $marker behind"
   done
   for marker in .seen-task-y2_status .seen-task-y2_turn-ended .hb-surfaced-task-y2 task-y2.herdr-presentation \
-    .seen-task-x1_extra_status .seen-task-x1_extra_turn-ended .hb-surfaced-task-x1_extra; do
+    task-y2.prefix-checked .seen-task-x1_extra_status .seen-task-x1_extra_turn-ended .hb-surfaced-task-x1_extra \
+    task-x1_extra.prefix-checked; do
     assert_present "$case_dir/state/$marker" "teardown removed another task's $marker"
   done
   cmp -s "$case_dir/journal.before" "$case_dir/state/task-x1.herdr-presentation" \
