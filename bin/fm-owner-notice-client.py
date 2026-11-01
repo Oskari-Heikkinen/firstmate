@@ -57,6 +57,7 @@ import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fm_owner_notice_format as fmt  # noqa: E402
+import fm_receipt_io
 
 USAGE, ABSENT, REFUSED, UNAVAILABLE, UNKNOWN, PENDING = 2, 3, 65, 69, 70, 75
 WAIT_CAP = 120
