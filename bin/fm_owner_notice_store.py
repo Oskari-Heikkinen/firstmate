@@ -65,6 +65,8 @@ USAGE, REFUSED, UNAVAILABLE, UNKNOWN, BUSY = 2, 65, 69, 70, 75
 OUTBOX_IO_BOUND = 10
 INGEST_CAP = 256
 CACHE_SLACK = 2
+# An outbox entry still in progress this long after its link raises a level.
+IN_PROGRESS_SETTLE = 60
 BACKLOG_NAMES = 4096
 CURRENT_BACKLOG = 3072
 RUNNER_LOOP = 15
@@ -145,6 +147,11 @@ def load_binding(owner, bid):
 
 def is_retired(owner, bid):
     return os.path.lexists(owner.marker(bid, ".retired"))
+
+
+def is_purged(owner, bid):
+    """Purge removes a retired binding's tree and keeps its record and marker."""
+    return is_retired(owner, bid) and not os.path.lexists(owner.dir(bid))
 
 
 def temp_dir(owner, bid):
@@ -391,10 +398,27 @@ def machine_id():
         raise Done(UNAVAILABLE, state="unavailable", path="/etc/machine-id", detail=str(exc))
 
 
+def list_lines(owner, name):
+    """{binding id: its lines} in the current list file name; {} when it is absent or unreadable."""
+    try:
+        data = fmt.read_regular_nofollow(os.path.join(owner.root, name), 16 << 20, "engine")
+    except (OSError, fmt.NotRegular):
+        return {}
+    out = {}
+    for line in data.decode("utf-8", "replace").splitlines(True):
+        out.setdefault(line.split("\t", 1)[0], []).append(line)
+    return out
+
+
 def wanted_lists(owner):
-    """The .bindings.list and .retired.list contents bindings/* implies."""
+    """The .bindings.list and .retired.list contents bindings/* implies.
+
+    A binding that cannot be read keeps the lines it has now: an unknown
+    binding is not a removed one (its binding-unreadable level says so).
+    """
     active, retired = [], []
     t = now()
+    have = None
     for name in fmt.scandir_names(owner.bindings, "engine"):
         if not name.endswith(".json"):
             continue
@@ -404,6 +428,10 @@ def wanted_lists(owner):
         try:
             binding, _ = load_binding(owner, bid)
         except Done:
+            if have is None:
+                have = (list_lines(owner, ".bindings.list"), list_lines(owner, ".retired.list"))
+            active.extend(have[0].get(bid, []))
+            retired.extend(have[1].get(bid, []))
             continue
         ret = owner.marker(bid, ".retired")
         if os.path.lexists(ret):
@@ -517,8 +545,8 @@ def cmd_bind(owner, a):
     }
     fmt.validate_binding(binding)
     for d in OWNER_DIRS:
-        fmt.mkdir_durable(owner.dir(a.id, d))
-    fmt.mkdir_durable(owner.bindings)
+        fmt.mkdir_durable(owner.dir(a.id, d), root=owner.root)
+    fmt.mkdir_durable(owner.bindings, root=owner.root)
     path = owner.binding_path(a.id)
     data = fmt.canonical(binding)
     try:
@@ -581,6 +609,7 @@ def stage(owner, bid, run, binding):
         # The filesystem's own clock, not the clock seam: the cache compares it
         # with ctimes.
         settled = time.time_ns() - s.value("cache-slack", CACHE_SLACK) * 10**9
+        stuck = time.time_ns() - s.value("in-progress-settle", IN_PROGRESS_SETTLE) * 10**9
         s.opened("stage", "scandir", outbox)
         with os.scandir(fd) as it:
             names = sorted(e.name for e in it if not e.name.startswith("."))
@@ -613,9 +642,13 @@ def stage(owner, bid, run, binding):
                      "cacheable": ctime < settled, "result": "staged"}
             try:
                 data = fmt.read_regular_nofollow(name, bound, "stage", dir_fd=fd,
-                                                 after_fstat=lambda: s.fault("stage:after-fstat"))
+                                                 after_fstat=lambda: s.fault("stage:after-fstat"),
+                                                 tmpdir=".tmp")
             except FileNotFoundError:
                 continue
+            except fmt.InProgress as exc:
+                # The link set the ctime, so it dates the publication.
+                entry.update(result="in-progress", cacheable=False, detail=str(exc), stuck=ctime < stuck)
             except fmt.Oversize as exc:
                 entry.update(result="oversize", detail=exc.detail)
             except (fmt.NotRegular, OSError) as exc:
@@ -687,11 +720,18 @@ def receipts_of(owner, bid, key):
 class Ctx:
     """One locked engine run on one binding."""
 
-    def __init__(self, owner, bid):
+    def __init__(self, owner, bid, finish=True):
         self.owner = owner
         self.bid = bid
-        self.binding, self.sha = load_binding(owner, bid)
         self.tmp = temp_dir(owner, bid)
+        if finish:
+            # A publication killed before its commit left its temp linked;
+            # finishing it here, under the lock, makes every committed-looking
+            # entry durable before this run relies on it (fmt.create_exclusive).
+            check_id(bid)
+            for d in (owner.tmp, self.tmp):
+                fmt.reap_dead_temps(d, files_only=True)
+        self.binding, self.sha = load_binding(owner, bid)
         self.seq_allocs = 0
         self.touched = set()
 
@@ -725,7 +765,7 @@ class Ctx:
             # receipt does, so a crash before refresh_current leaves a stale
             # entry reconcile rebuilds, never a final key nothing announces.
             write_json(self.current_path(key), self.derive_current(key, []), self.tmp, "o-current-dirsync")
-        fmt.mkdir_durable(kdir)
+        fmt.mkdir_durable(kdir, root=self.owner.root)
         for _ in range(2):
             obj["seq"] = self.alloc_seq(key)
             fmt.validate_receipt(obj)
@@ -906,6 +946,10 @@ def deliver(ctx, key, data, payload_check=True):
             have = None
         if have != data:
             fmt.replace_durable(custody, data, ctx.tmp, "o-custody-dirsync")
+        else:
+            # Equal custody may be a run's that died before its directory
+            # fsync, so the barrier is finished before a receipt relies on it.
+            fmt.fsync_dir(os.path.dirname(custody), "o-custody-dirsync")
     s.fault("ingest:after-custody-fsync")
     try:
         again = fmt.read_regular_nofollow(custody, fmt.envelope_cap(ctx.binding["max_bytes"]), "engine")
@@ -949,6 +993,9 @@ def ingest_entry(ctx, entry, rdir, retired):
     if key is None:
         return None
     fmt.seams().fault("stage-entry:before-route")
+    if entry["result"] == "in-progress":
+        # A submit has not committed this envelope yet; the next ingest reads it.
+        return "in-progress"
     if entry["result"] in ("unsafe-file", "oversize"):
         return refuse_key(ctx, key, entry["result"])
     try:
@@ -1017,6 +1064,14 @@ def write_outbox_status(ctx, manifest):
         old = None
     code = manifest["code"]
     cur = {"code": code, "backlog": bool(manifest["backlog"]), "complete": bool(manifest["complete"])}
+    # An entry stuck in progress keeps its level until a complete listing no
+    # longer finds it stuck: a partial listing is unknown, never a clear.
+    stuck = {e["name"]: fmt.utc_iso(e["ctime_ns"] // 10**9) for e in manifest["entries"]
+             if e["result"] == "in-progress" and e.get("stuck") and envelope_key(e["name"])}
+    if not manifest["complete"] and old:
+        for e in old.get("in_progress") or []:
+            stuck.setdefault(e["name"], e["since"])
+    cur["in_progress"] = [{"name": n, "since": stuck[n]} for n in sorted(stuck)]
     if old and old.get("code") == code and old.get("backlog") == cur["backlog"]:
         cur["since"] = old.get("since")
     else:
@@ -1163,7 +1218,10 @@ def cmd_consume(owner, a):
         except FileNotFoundError:
             raise Done(UNKNOWN, state="unknown", code="custody-missing", key=a.key, path=custody)
         fmt.seams().spy_line("link", handled)
-        fmt.fsync_dir(ctx.path("handled"), "o-handled-dirsync")
+        fmt.seams().fault("consume:after-handled-link")
+    # Every pass, so a consume that died between its link and this fsync is
+    # finished before its consumed receipt.
+    fmt.fsync_dir(ctx.path("handled"), "o-handled-dirsync")
     fmt.seams().fault("consume:after-link")
     obj = finish_consume(ctx, a.key)
     log(owner, a.id, "consumed " + a.key, "note: " + (a.note or "-").replace("\n", " "),
@@ -1238,9 +1296,14 @@ def cmd_retire(owner, a):
     require_lock(a.lock)
     require_lock(a.bindings_lock)
     ctx = Ctx(owner, a.id)
-    if is_retired(owner, a.id):
-        raise Done(0, state="retired", binding_id=a.id, replay=True)
     retiring = owner.marker(a.id, ".retiring")
+    if is_retired(owner, a.id):
+        # A retire that died after .retired finishes its bookkeeping here.
+        if os.path.lexists(retiring):
+            fmt._unlink_quiet(retiring)
+            fmt.fsync_dir(owner.bindings, "o-retiring-dirsync")
+        rebuild_lists(owner)
+        raise Done(0, state="retired", binding_id=a.id, replay=True, lists_stale=stale_lists(owner))
     try:
         fmt.create_exclusive(retiring, fmt.canonical({"at": fmt.utc_iso(now())}), owner.tmp, "o-retiring-dirsync")
     except FileExistsError:
@@ -1257,19 +1320,30 @@ def cmd_retire(owner, a):
         if status == "timeout":
             raise Done(BUSY, state="outbox-unresponsive", code="outbox-unresponsive", detail=got)
         raise Done(UNKNOWN, state="unknown", code="outbox-unreadable", detail=got)
+    # The decision reads receipt truth, refreshing current/ from it, because
+    # current/ is a repairable index a crash can leave behind its receipts.
+    outbox_keys = set(k for k in map(envelope_key, got["names"]) if k is not None)
+    try:
+        keys = set(n for n in fmt.scandir_names(ctx.path("receipts"), "engine") if fmt.valid_name(n))
+        keys |= set(n[:-5] for n in fmt.scandir_names(ctx.path("current"), "engine")
+                    if n.endswith(".json") and fmt.valid_name(n[:-5]))
+        truth = {}
+        for key in sorted(keys):
+            truth[key] = ctx.refresh_current(key)
+        for key in sorted(outbox_keys - keys):
+            truth[key] = ctx.derive_current(key, receipts_of(owner, a.id, key))
+    except (OSError, fmt.FormatError) as exc:
+        undo()
+        log(owner, a.id, "retire refused", "receipts or current entries cannot be read: %s" % exc,
+            "repair them (reconcile names the file), then retire again")
+        raise Done(UNKNOWN, state="unknown", code="receipts-unreadable", detail=str(exc))
     busy = []
-    for name in got["names"]:
-        key = envelope_key(name)
-        if key is None:
-            continue
-        if not any(o["outcome"] in ("delivered", "refused") for _, o in receipts_of(owner, a.id, key)):
+    for key, cur in truth.items():
+        if key in outbox_keys and cur["state"] == "pending":
             busy.append(key)
-    for name in fmt.scandir_names(ctx.path("current"), "engine"):
-        key = name[:-5]
-        cur = ctx.read_current(key)
-        if cur and cur["state"] == "delivered":
+        if cur["state"] == "delivered":
             busy.append(key)
-        if cur and cur["state"] in FINAL and not os.path.lexists(ctx.path(".announced", key)):
+        if cur["state"] in FINAL and not os.path.lexists(ctx.path(".announced", key)):
             busy.append(key)
     if busy:
         undo()
@@ -1287,7 +1361,7 @@ def cmd_retire(owner, a):
     rebuild_lists(owner)
     log(owner, a.id, "retired", "no envelope, delivery or announce was pending",
         "stragglers get binding-retired refusals for 7 days")
-    raise Done(0, state="retired", binding_id=a.id, replay=False)
+    raise Done(0, state="retired", binding_id=a.id, replay=False, lists_stale=stale_lists(owner))
 
 
 def retention(ctx):
@@ -1316,7 +1390,7 @@ def retention(ctx):
             continue
         month = time.strftime("%Y-%m", time.gmtime(t))
         adir = ctx.path("archive", month)
-        fmt.mkdir_durable(adir)
+        fmt.mkdir_durable(adir, root=ctx.owner.root)
         dest = os.path.join(adir, name)
         try:
             os.link(ctx.current_path(key), dest)
@@ -1364,7 +1438,7 @@ def cmd_purge(owner, a):
     rebuild_lists(owner)
     log(owner, None, "purged binding " + a.id, "365 days since the retire and the last receipt",
         "bindings/%s.json and .retired stay, so the id stays reserved" % a.id)
-    raise Done(0, state="purged", binding_id=a.id)
+    raise Done(0, state="purged", binding_id=a.id, lists_stale=stale_lists(owner))
 
 
 # ---------------------------------------------------------------- announce
@@ -1375,8 +1449,18 @@ def cmd_announce_list(owner, a):
     rows = []
     for name in fmt.scandir_names(ctx.path("current"), "engine"):
         key = name[:-5]
+        if not name.endswith(".json") or not fmt.valid_name(key):
+            continue
         cur = ctx.read_current(key)
-        if not cur or cur["state"] not in FINAL or os.path.lexists(ctx.path(".announced", key)):
+        if not cur or cur["state"] == "pending":
+            # A crash between a receipt and its refresh leaves current/ behind
+            # the receipts; announce from their truth. Unreadable receipts
+            # stay unannounced and raise current-unreadable in alarms.
+            try:
+                cur = ctx.refresh_current(key)
+            except fmt.FormatError:
+                continue
+        if cur["state"] not in FINAL or os.path.lexists(ctx.path(".announced", key)):
             continue
         outcome = cur["state"] if cur["state"] != "refused" else "refused:" + cur["code"]
         rows.append({"key": key, "kind": cur["kind"] or "-", "outcome": outcome,
@@ -1404,6 +1488,9 @@ def cmd_fsync_file(_owner, a):
         fmt.fsync_file(fd, "o-wakequeue-fsync", a.path)
     finally:
         os.close(fd)
+    # The queue may have just been created or replaced, so its name is made
+    # durable too before any marker relies on it.
+    fmt.fsync_dir(os.path.dirname(os.path.abspath(a.path)), "o-wakequeue-dirsync")
     raise Done(0, state="synced", path=a.path)
 
 
@@ -1411,7 +1498,7 @@ def cmd_fsync_file(_owner, a):
 
 def cmd_show(owner, a):
     check_key(a.key)
-    ctx = Ctx(owner, a.id)
+    ctx = Ctx(owner, a.id, finish=False)
     for sub in ("custody", "handled"):
         p = ctx.path(sub, a.key + ".notice")
         try:
@@ -1486,9 +1573,15 @@ def alert_key(level, *parts):
 
 
 def wanted_levels(owner):
-    """The owner-notice store's wanted set: {alert key: {kind, subject, reason, since, evidence}}."""
+    """(wanted set, complete): {alert key: {kind, subject, reason, since, evidence}}, and whether every source was read.
+
+    A binding, current/ entry or receipt that cannot be read raises its own
+    source level and makes the set incomplete, so the front asserts what it
+    knows and clears nothing: an unknown source is never an empty one.
+    """
     wanted = {}
     t = now()
+    complete = [True]
 
     def want(level, bid, key, reason, since, **evidence):
         name = "%s:%s" % (level, key if key is not None else bid)
@@ -1497,10 +1590,18 @@ def wanted_levels(owner):
                         "reason": "%s (binding %s): %s" % (name, bid, reason), "since": since,
                         "evidence": dict(evidence, level=name, binding_id=bid)}
 
+    def unknown(level, bid, key, reason, **evidence):
+        complete[0] = False
+        want(level, bid, key, reason, fmt.utc_iso(t), **evidence)
+
     for bid in binding_ids(owner):
+        if is_purged(owner, bid):
+            continue
         try:
-            ctx = Ctx(owner, bid)
-        except Done:
+            ctx = Ctx(owner, bid, finish=False)
+        except Done as d:
+            unknown("binding-unreadable", bid, None, "the binding record cannot be read",
+                    path=owner.binding_path(bid), detail=d.result.get("detail"))
             continue
         status_path = ctx.path(".outbox-status")
         try:
@@ -1511,19 +1612,36 @@ def wanted_levels(owner):
             want(st["code"], bid, None, "the last stage refused the outbox", st["since"], path=status_path)
         if st and st.get("backlog"):
             want("outbox-backlog", bid, None, "more than %d outbox entries" % BACKLOG_NAMES, st["since"])
+        for e in (st or {}).get("in_progress") or []:
+            want("outbox-in-progress", bid, envelope_key(e["name"]),
+                 "%s is still in progress %ds after its link" % (e["name"], IN_PROGRESS_SETTLE), e["since"],
+                 path=os.path.join(ctx.binding["outbox"], e["name"]))
         if not os.access(ctx.path("receipts"), os.R_OK | os.X_OK):
-            want("receipts-unreadable", bid, None, "receipts/ cannot be listed", fmt.utc_iso(t))
+            unknown("receipts-unreadable", bid, None, "receipts/ cannot be listed")
         try:
             names = fmt.scandir_names(ctx.path("current"), "engine")
-        except OSError:
+        except FileNotFoundError:
+            names = []
+        except OSError as exc:
+            unknown("current-unreadable", bid, None, "current/ cannot be listed", detail=exc.strerror)
             names = []
         if len(names) > CURRENT_BACKLOG:
             want("current-backlog", bid, None, "%d entries in current/" % len(names), fmt.utc_iso(t))
         for name in names:
             key = name[:-5]
-            cur = ctx.read_current(key)
-            if not cur:
+            if not name.endswith(".json") or not fmt.valid_name(key):
                 continue
+            cur = ctx.read_current(key)
+            if not cur or cur["state"] == "pending":
+                # An unreadable or crash-stale entry is read from the receipts.
+                if not cur:
+                    unknown("current-unreadable", bid, key, "current/%s cannot be read" % name,
+                            path=ctx.current_path(key))
+                try:
+                    cur = ctx.derive_current(key, receipts_of(owner, bid, key), cur)
+                except fmt.FormatError as exc:
+                    unknown("receipts-unreadable", bid, key, "receipts/%s cannot be read" % key, detail=str(exc))
+                    continue
             acked = os.path.lexists(ctx.path(".acked", key))
             if cur.get("problem") in PROBLEMS and not acked:
                 want(cur["problem"], bid, key, "see the binding log", cur["problem_since"])
@@ -1539,22 +1657,25 @@ def wanted_levels(owner):
                     t - fmt.parse_iso(cur["delivered_at"]) > ctx.binding["consume_bound_seconds"]:
                 want("unconsumed", bid, key, "delivered and not consumed within %ds"
                      % ctx.binding["consume_bound_seconds"], cur["delivered_at"])
-    return wanted
+    return wanted, complete[0]
 
 
 def cmd_alarms(owner, a):
-    wanted = wanted_levels(owner)
+    wanted, complete = wanted_levels(owner)
     fmt.seams().check(a.out)
     with open(a.out, "w", encoding="utf-8") as fh:
         json.dump(wanted, fh, sort_keys=True)
-    raise Done(0, state="alarms", count=len(wanted), keys=sorted(wanted))
+    raise Done(0, state="alarms", count=len(wanted), keys=sorted(wanted), complete=complete)
 
 
 def cmd_status(owner, _a):
     rows = []
     for bid in binding_ids(owner):
+        if is_purged(owner, bid):
+            rows.append({"binding_id": bid, "retired": True, "purged": True})
+            continue
         try:
-            ctx = Ctx(owner, bid)
+            ctx = Ctx(owner, bid, finish=False)
         except Done as d:
             rows.append({"binding_id": bid, "error": d.result})
             continue
@@ -1564,8 +1685,8 @@ def cmd_status(owner, _a):
             counts[cur["state"]] = counts.get(cur["state"], 0) + 1
         rows.append({"binding_id": bid, "retired": is_retired(owner, bid),
                      "retiring": os.path.lexists(owner.marker(bid, ".retiring")), "current": counts})
-    wanted = wanted_levels(owner)
-    raise Done(0, state="status", bindings=rows,
+    wanted, complete = wanted_levels(owner)
+    raise Done(0, state="status", bindings=rows, alarms_complete=complete,
                alarms=sorted(v["evidence"]["level"] + " " + v["evidence"]["binding_id"] for v in wanted.values()))
 
 

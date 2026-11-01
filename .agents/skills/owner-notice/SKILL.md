@@ -19,6 +19,7 @@ A receipt says only that the owner holds the notice: delivery is not consumption
 - Never resubmit to learn an answer: after a lost reply, run `query` with the same key, kind and payload, or repeat the identical `submit`; neither creates anything new.
 - Treat every exit code the table does not list, including 1, 124, 137 and a signal, as unknown, never success.
 - `absent` (3) is only "no record here", never proof that nothing was sent.
+- A digest-only `query --payload-sha256` needs your envelope still in the outbox or an earlier recorded answer; otherwise it answers 70 `envelope-unverifiable`, so query with `--payload-file` instead.
 - A key-scoped refusal is final for the key; a producer whose key is fixed recovers only under a new binding id, which the owner binds.
 - `prune --key K` once the answer is final and recorded; prune never deletes an envelope the client has not recorded a verified receipt for.
 
@@ -30,7 +31,10 @@ A receipt says only that the owner holds the notice: delivery is not consumption
 - `consume <id> <key>` once the notice is handled; it never records acceptance, so answer the producer through its own channel.
 - A refusal raises its alert-store level until `ack-refusal <id> <key> --note <why>`; the producer's answer stays refused.
 - An `.outbox-index` entry with `vanished_at` means an envelope left before any receipt: check with the producer, then `ack-vanished <id> <name> --note <what they said>`.
-- `retire <id>` refuses with `retire-busy` while a key is unreceipted, unconsumed or unannounced; finish those first. `purge` is a cleanup action that asks the operator first.
+- `retire <id>` refuses with `retire-busy` while a key is unreceipted, unconsumed or unannounced, and with 70 `receipts-unreadable` when it cannot tell; finish those first, and repeat a `retire` that was interrupted.
+- `purge` is a cleanup action that asks the operator first.
+- An `outbox-in-progress` level means a producer's envelope has stayed uncommitted past 60 s; the next submit or query by that producer finishes a dead publisher's temp, so check the producer before anything else.
+- A `binding-unreadable`, `current-unreadable` or `receipts-unreadable` level means a record could not be read; no other level clears while it stands, so repair the record rather than acknowledging around it.
 - Exit 75 from the front is a held lock or an outbox that did not answer within its bound; it names the holder or the outbox, so retry later rather than clearing anything by hand.
 
 ## Owner: what an `owner-notice:` wake means, and a repeated wake for a handled key needs no action
