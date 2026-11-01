@@ -290,10 +290,10 @@ test_wedge_cap_on_by_default() {
       FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
       FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
-      "$WATCH" > "$out" 2> "$out.err" &
+      PS4='+ $(date +%s.%N) ${BASH_SOURCE##*/}:$LINENO: ' bash -x "$WATCH" > "$out" 2> "$out.err" &
     pid=$!
     rc=0; wait_for_exit "$pid" 100 || rc=$?
-    [ "$rc" -eq 0 ] || fail "wedge round $n (default config) ended rc=$rc (124 = still running): $(cat "$out" "$out.err")"
+    [ "$rc" -eq 0 ] || { ps -o pid,ppid,stat,etime,args -g "$(ps -o pgid= -p $$ | tr -d ' ')" 2>&1 | tail -30; tail -150 "$out.err"; fail "wedge round $n (default config) ended rc=$rc (124 = still running): $(cat "$out")"; }
     grep -F "escalation $n" "$out" >/dev/null || fail "default-config round $n did not report escalation $n: $(cat "$out")"
     if [ "$n" -lt 3 ]; then
       grep -F "PERMANENTLY-WEDGED" "$out" >/dev/null && fail "default-config round $n fired PERMANENTLY-WEDGED before the default cap of 3"
