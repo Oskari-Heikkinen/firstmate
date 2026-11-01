@@ -2182,6 +2182,23 @@ test_watcher_exits_on_state_teardown_during_startup() {
   # empty lock in the recreated directory was never released by a successor.
   local dir state fakebin out pid end stopped rc real_touch iteration
   real_touch=$(command -v touch)
+  # Counterfactual-only head: run the identical fixture against the real
+  # watcher with only its teardown guard disabled. Never a landing candidate.
+  local f mutant="$TMP_ROOT/teardown-mutant"
+  mkdir -p "$mutant/bin"
+  for f in "$ROOT"/bin/*; do ln -s "$f" "$mutant/bin/${f##*/}"; done
+  python3 - "$WATCH" "$mutant/bin/fm-watch.sh" <<'PY'
+from pathlib import Path
+import sys
+source = Path(sys.argv[1]).read_text()
+old = 'elif [ ! -e "$WATCH_LOCK/pid" ]'
+assert source.count(old) == 1
+path = Path(sys.argv[2])
+path.unlink()
+path.write_text(source.replace(old, 'elif false'))
+path.chmod(0o755)
+PY
+  WATCH="$mutant/bin/fm-watch.sh"
   # Repeat the synchronized boundary in one job, each time in a fresh world.
   for iteration in $(seq 1 20); do
   dir=$(make_case "startup-teardown-$iteration")
