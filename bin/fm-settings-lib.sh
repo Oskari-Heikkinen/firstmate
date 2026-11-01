@@ -489,8 +489,8 @@ fm_setting_to() {
 
 # _fms_report <error-or-empty>: print a new error once and hand the alarm to
 # bin/fm-settings.sh check; on recovery from a reported error, run check once
-# so it clears the alarm. FM_SETTINGS_NO_ALARM=1 (set by bin/fm-settings.sh
-# itself) skips the check, which owns the alarm there.
+# so it clears the alarm. FM_SETTINGS_NO_ALARM=1 skips that check; the
+# library sets it on the check it starts, so a check never starts another.
 _fms_report() {
   [ "$1" != "$_FMS_REPORTED" ] || return 0
   [ -z "$1" ] || printf 'fm-settings: failed reading of %s; bin/fm-settings.sh check names the fix\n' "$1" >&2

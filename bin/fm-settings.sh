@@ -109,8 +109,11 @@ die_usage() {
   exit 2
 }
 
+HELD_LOCK=
+
 fail() {
   printf 'fm-settings.sh: %s\n' "$1" >&2
+  [ -z "$HELD_LOCK" ] || fm_lock_release "$HELD_LOCK"
   exit 1
 }
 
@@ -225,9 +228,11 @@ with_lock() {  # <path> <command...>
   need_locks
   fm_lock_acquire_wait_max "$lock" "$LOCK_SECONDS" \
     || fail "cannot take $lock within ${LOCK_SECONDS}s; another set or check holds it"
+  HELD_LOCK=$lock
   shift
   "$@"
   rc=$?
+  HELD_LOCK=
   fm_lock_release "$lock"
   return "$rc"
 }
@@ -288,7 +293,7 @@ check_scope() {
 }
 
 cmd_check() {
-  local scope path r err_machine err_home rc=0 i
+  local scope path r err err_machine err_home rc=0 i
   [ "$#" -eq 0 ] || die_usage "check takes no arguments"
   need_table
   check_scope machine

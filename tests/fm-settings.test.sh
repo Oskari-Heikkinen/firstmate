@@ -74,7 +74,7 @@ test_set_writes_validates_and_logs() {
   local w out log
   w=$(make_world set)
   out=$(cli "$w" set "$ALARM_KEY" 10m --reason 'slow machine' 2>&1) || fail "set failed: $out"
-  out=$(FM_TASK_ID=t1 cli "$w" set "$HOME_KEY" 5m --reason 'longer probe' 2>&1) || fail "set failed: $out"
+  out=$(run_in "$w" env FM_TASK_ID=t1 "$SETTINGS" set "$HOME_KEY" 5m --reason 'longer probe' 2>&1) || fail "set failed: $out"
   assert_grep "$HOME_KEY = 5m" "$(home_file "$w")" "set did not write the value line"
   out=$(cli "$w" get "$HOME_KEY") || fail "get after set failed"
   assert_equals 300 "$out" "get did not read the set value in seconds"
@@ -83,7 +83,7 @@ test_set_writes_validates_and_logs() {
   assert_grep "set $HOME_KEY: default (60) -> 5m by task t1 on " "$log" "the log missed the actor or the old and new values"
   assert_grep "why: longer probe; reread: every-run" "$log" "the log missed the reason or the reread mode"
   out=$(cli "$w" explain "$HOME_KEY") || fail "explain failed"
-  assert_contains "$out" "value: 300 (from $(home_file "$w"):2)" "explain did not name the file line"
+  assert_contains "$out" "value: 300 (from $(home_file "$w"):3)" "explain did not name the file line"
   assert_contains "$out" "why: longer probe" "explain did not show the last change"
   out=$(cli "$w" log "$HOME_KEY")
   assert_contains "$out" "[home] set $HOME_KEY" "log did not show the key's change"
@@ -121,18 +121,20 @@ test_set_refusals_write_nothing() {
   expect_code 2 "$rc" "set with a blank reason"
   assert_equals "$before" "$(cat "$(home_file "$w")" "$(home_file "$w").log")" "a refused set changed the file or the log"
   assert_equals '' "$(find "$w/home/config" -name '*.tmp.*')" "a refused set left a temporary file"
+  assert_absent "$(home_file "$w").lock" "a refused set left its lock"
+  cli "$w" set "$HOME_KEY" 30 --reason 'after refusal' >/dev/null 2>&1 || fail "a refusal blocked the next writer"
   pass "set refuses an out-of-range, wrong-type, rule-breaking, unknown or unexplained change and writes nothing"
 }
 
 test_concurrent_sets_all_land() {
-  local w i pids='' out
+  local w i writer_pids='' out
   w=$(make_world concurrent)
   for i in 1 2 3 4 5; do
     cli "$w" set "$ALARM_KEY" "$((200 + i))" --reason "writer $i" >/dev/null 2>&1 &
-    pids="$pids $!"
+    writer_pids="$writer_pids $!"
   done
   cli "$w" set "$MACHINE_KEY" 2G --reason 'machine writer' >/dev/null 2>&1 || fail "machine set failed"
-  for i in $pids; do wait "$i" || fail "a concurrent set failed"; done
+  for i in $writer_pids; do wait "$i" || fail "a concurrent set failed"; done
   assert_equals 5 "$(grep -c " set $ALARM_KEY: " "$(home_file "$w").log")" "a concurrent set was not logged"
   assert_equals 1 "$(grep -c "^$ALARM_KEY = " "$(home_file "$w")")" "concurrent sets left a duplicate line"
   out=$(cli "$w" check) || fail "check after concurrent sets failed: $out"
@@ -257,12 +259,12 @@ test_last_good_keeps_the_last_good_value() {
 test_env_overrides_and_bad_env_refuses() {
   local w out rc=0
   w=$(make_world env)
-  printf '%s = 30\n' "$HOME_KEY" > "$(home_file "$w")"
-  out=$(FM_SETTINGS_PROBE_HOME_SECONDS=2m cli "$w" get "$HOME_KEY") || fail "env override failed"
+  printf '%s = 30\n%s = 300\n' "$HOME_KEY" "$ALARM_KEY" > "$(home_file "$w")"
+  out=$(run_in "$w" env FM_SETTINGS_PROBE_HOME_SECONDS=2m "$SETTINGS" get "$HOME_KEY") || fail "env override failed"
   assert_equals 120 "$out" "the env variable did not win over the file"
-  out=$(FM_SETTINGS_PROBE_HOME_SECONDS=2m cli "$w" explain "$HOME_KEY")
+  out=$(run_in "$w" env FM_SETTINGS_PROBE_HOME_SECONDS=2m "$SETTINGS" explain "$HOME_KEY")
   assert_contains "$out" "(from env FM_SETTINGS_PROBE_HOME_SECONDS)" "explain did not name the env source"
-  out=$(FM_SETTINGS_PROBE_HOME_SECONDS=9999 cli "$w" get "$HOME_KEY" 2>"$w/err") || rc=$?
+  out=$(run_in "$w" env FM_SETTINGS_PROBE_HOME_SECONDS=9999 "$SETTINGS" get "$HOME_KEY" 2>"$w/err") || rc=$?
   expect_code 1 "$rc" "an out-of-range env value"
   assert_grep "env FM_SETTINGS_PROBE_HOME_SECONDS = 9999" "$w/err" "a bad env value was not named"
   pass "the env variable overrides the file, and a bad env value refuses"
