@@ -20,9 +20,9 @@
 # checks five conditions and alerts on each that holds:
 #   host    the home runs the supervision host (fm_supervision_host_enabled
 #           in bin/fm-supervision-engine-lib.sh owns the gate; with neither
-#           config file it depends on the primary harness, which --primary
-#           names, and an unnamed or unknown primary counts as running the
-#           host, fm_supervision_host_may_run), no
+#           config file it depends on the target home's current primary;
+#           --primary is only a historical hint, so this external reader
+#           conservatively checks the host, fm_supervision_host_may_run), no
 #           host process is live under the identity state/.supervision-host
 #           records, and no main or host activity is newer than the host
 #           threshold (default 30 minutes). Activity is the newest of the host
@@ -56,9 +56,9 @@
 # install-timer writes fm-away-watch-<id>.service and fm-away-watch-<id>.timer
 # into ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user, where <id> is the
 # cksum of the selected home's path, so each home gets its own pair. The
-# service is pinned to this code root, that home, and its primary harness
-# (--primary, else the harness the installing session runs under; an unknown
-# one is left out, so run fails toward checking the host), and carries the
+# service is pinned to this code root and that home. An explicit --primary
+# is preserved only as a diagnostic hint, never as current owner evidence;
+# the installing caller is not assumed to own the home. The service carries the
 # installer's PATH (and HERDR_SOCKET_PATH when set), so herdr and command:
 # channels resolve as they do in a session. It then runs
 # `systemctl --user daemon-reload` and `systemctl --user enable --now` on the
@@ -88,7 +88,7 @@ esac
 
 home=${FM_HOME:-$CODE_ROOT}
 now=
-primary=
+primary=unknown
 while [ $# -gt 0 ]; do
   case "$1" in
     --home) [ $# -ge 2 ] || die "--home needs a directory"; home=$2; shift 2 ;;
@@ -101,7 +101,7 @@ done
 [ -d "$home" ] || die "home not found: $home"
 home=$(cd "$home" && pwd -P)
 case "$now" in ''|*[!0-9]*) [ -z "$now" ] || die "--now must be an integer epoch" ;; esac
-case "$primary" in *[!a-z0-9-]*) die "--primary must be a harness name: $primary" ;; esac
+case "$primary" in ''|*[!a-z0-9-]*) die "--primary must be a harness name: $primary" ;; esac
 UNIT="fm-away-watch-$(printf '%s' "$home" | cksum | cut -d' ' -f1)"
 
 unit_dir() { printf '%s/systemd/user\n' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
@@ -111,12 +111,7 @@ unit_dir() { printf '%s/systemd/user\n' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
 
 install_timer() {
   local dir env_lines primary_arg=
-  if [ -z "$primary" ]; then
-    # shellcheck source=bin/fm-supervision-engine-lib.sh
-    . "$SCRIPT_DIR/fm-supervision-engine-lib.sh"
-    primary=$(fm_supervision_host_primary)
-  fi
-  [ "$primary" = unknown ] || primary_arg=" --primary $primary"
+  case "$primary" in ''|unknown) ;; *) primary_arg=" --primary $primary" ;; esac
   fm_unit_safe_path "$CODE_ROOT" || die "code root has characters a unit file cannot carry: $CODE_ROOT"
   fm_unit_safe_path "$home" || die "home has characters a unit file cannot carry: $home"
   env_lines=$(fm_unit_env PATH "$PATH") || die "PATH holds a newline a unit file cannot carry"
@@ -254,7 +249,7 @@ host_live() {
 
 check_host() {
   local last line
-  fm_supervision_host_may_run "$CONFIG" "${primary:-unknown}" || return 0
+  fm_supervision_host_may_run "$CONFIG" || return 0
   host_live && return 0
   last=0
   line=$(tail -n 1 "$STATE/.supervision-host.log" 2>/dev/null) || line=
