@@ -1,0 +1,13 @@
+{
+  "id": "r4-bind-history",
+  "case": "case_bind_replay_source_preflight",
+  "baseline": false,
+  "expect": "bind replay validates complete existing history",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        ctx.validate_sources()\n",
+      "        pass\n"
+    ]
+  ]
+}
