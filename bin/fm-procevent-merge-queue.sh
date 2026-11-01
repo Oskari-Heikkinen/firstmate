@@ -402,7 +402,7 @@ cmd_submit() {
   dir=$(queue_dir) || die "no merge queue is configured"
   home=$(home_name)
   if [ "$priority_set" -eq 1 ]; then
-    "$dir/handoff.sh" --priority "$priority" "$home" "$task" "$branch" "$head" "$note"
+    "$dir/handoff.sh" "$home" "$task" "$branch" "$head" "$note" --priority "$priority"
     queue_rc=$?
     if [ "$queue_rc" -ne 0 ]; then
       printf '%s\n' 'error: the queue refused the priority handoff; nothing was armed. If it rejected the option as unknown, its installed handoff.sh needs republishing by a priority-capable queue install; no normal-handoff fallback was attempted.' >&2
