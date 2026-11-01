@@ -267,14 +267,13 @@ cmd_get() {
   return "$rc"
 }
 
-# check_scope <scope>: record hand edits, read the file; prints its line and
-# sets SCOPE_ERROR.
+# check_scope <scope>: record hand edits, read the file and set SCOPE_ERROR.
+# cmd_check reports the scope only after cross-key validation finishes.
 check_scope() {
   local scope=$1 path
   SCOPE_ERROR=''
   if ! fm_settings_scope_path_to path "$scope"; then
     SCOPE_ERROR="the machine settings file cannot be named: HOME is unset"
-    printf '%s settings: INVALID: %s\n' "$scope" "$SCOPE_ERROR"
     return 0
   fi
   if [ -e "$path" ] || [ -e "$path.snapshot" ]; then
@@ -283,13 +282,6 @@ check_scope() {
     fi
   fi
   _fms_scope_error_to SCOPE_ERROR "$scope"
-  if [ -n "$SCOPE_ERROR" ]; then
-    printf '%s settings: INVALID: %s\n' "$scope" "$SCOPE_ERROR"
-  elif [ ! -e "$path" ]; then
-    printf '%s settings: %s is absent; every %s key takes its default\n' "$scope" "$path" "$scope"
-  else
-    printf '%s settings: %s reads without a problem\n' "$scope" "$path"
-  fi
 }
 
 cmd_check() {
@@ -323,10 +315,16 @@ cmd_check() {
     fm_settings_scope_path_to path "$scope" || path="the machine settings file"
     if [ "$scope" = machine ]; then err=$err_machine; else err=$err_home; fi
     if [ -n "$err" ]; then
+      printf '%s settings: INVALID: %s\n' "$scope" "$err"
       rc=1
       alarm_raise "$scope" "$path" "$err" \
         || printf 'fm-settings.sh: could not raise settings-invalid-%s in %s\n' "$scope" "$STORE" >&2
     else
+      if [ ! -e "$path" ]; then
+        printf '%s settings: %s is absent; every %s key takes its default\n' "$scope" "$path" "$scope"
+      else
+        printf '%s settings: %s reads without a problem\n' "$scope" "$path"
+      fi
       alarm_clear "$scope" "$path" \
         || { rc=1; printf 'fm-settings.sh: could not clear settings-invalid-%s in %s\n' "$scope" "$STORE" >&2; }
     fi

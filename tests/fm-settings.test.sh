@@ -172,6 +172,7 @@ bad_home_case() {
   rc=0; cli "$w" check >"$w/check.out" 2>&1 || rc=$?
   expect_code 1 "$rc" "$label: check exit"
   assert_grep "home settings: INVALID: " "$w/check.out" "$label: check did not report the home file"
+  assert_no_grep "home settings: $f reads without a problem" "$w/check.out" "$label: check also reported the invalid scope as healthy"
   assert_equals settings-invalid-home "$(active_alarms "$w")" "$label: check did not raise exactly the home alarm"
   jq -e --arg n "$needle" '.active["settings-invalid-home"].reason | contains($n)' \
     "$w/home/state/settings-alerts.json" >/dev/null || fail "$label: the alarm did not name the failure"
