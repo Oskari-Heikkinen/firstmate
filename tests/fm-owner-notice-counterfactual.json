@@ -1,0 +1,13 @@
+{
+  "id": "binding-membership",
+  "case": "case_unknown_projection",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "            out.update(e.name for e in entries if fmt.valid_name(e.name) and e.name != \"bindings\"\n                       and e.is_dir(follow_symlinks=False))",
+      "            pass"
+    ]
+  ],
+  "expect": "missing binding stays discoverable",
+  "baseline": false
+}
