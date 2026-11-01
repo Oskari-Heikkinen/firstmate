@@ -566,6 +566,39 @@ test_bad_status_paths_alarm() {
   pass "non-regular and unreadable status paths alarm while absent and empty logs stay quiet"
 }
 
+test_unlistable_state_dir_alarms() {
+  local seed queued marker rc=0
+  reset_case
+  enable
+  printf 'blocked [at=1000] [key=api]: help\n' > "$STATE/worker.status"
+  open_decision_reminder_tick 1200 || fail "seed failed: $OPEN_DECISION_ERROR"
+  seed=$(cat "$STATE/.open-decision-reminders")
+  # Searchable and writable, but not listable: the ledger and every named
+  # child still read, while the glob sees no status logs. The key is due.
+  chmod 0300 "$STATE"
+  if [ -r "$STATE" ]; then
+    chmod 0700 "$STATE"
+    pass "unlistable state directory skipped: this user can list a mode-0300 directory"
+    return 0
+  fi
+  OPEN_DECISION_TICK_LAST=
+  open_decision_reminder_check 1300 || rc=$?
+  chmod 0700 "$STATE"
+  [ "$rc" -eq 0 ] || fail "an unlistable state directory stopped the check"
+  queued=$(queue_keys)
+  marker=$(cat "$STATE/.open-decision-reminders.error" 2>/dev/null || true)
+  [ "$queued" = 'check open-decision:worker:api
+check open-decision-reminders' ] || fail "an unlistable state directory did not alarm, or reminded: $queued"
+  [ "$marker" = "state directory $STATE cannot be listed" ] || fail "the alarm did not name the unlistable directory: $marker"
+  [ "$seed" = "$(cat "$STATE/.open-decision-reminders")" ] || fail "an unlistable state directory erased the ledger's backoff"
+  OPEN_DECISION_TICK_LAST=
+  open_decision_reminder_check 1350 || fail "recovery failed"
+  expect_wakes 3 "recovery did not deliver the due key exactly once"
+  assert_grep $'worker\tapi\t1000\t1350\t200' "$STATE/.open-decision-reminders" "recovery lost the key's backoff"
+  [ ! -e "$STATE/.open-decision-reminders.error" ] || fail "recovery kept its error"
+  pass "a state directory that cannot be listed alarms and keeps the ledger, and recovery keeps the backoff"
+}
+
 test_timed_split_records() {
   local record cut full expected actual size
   # Byte splits cover verbs, time and key tokens, UTF-8 and embedded NULs.
@@ -676,6 +709,71 @@ test_partial_queue_failure_preserves_backoff() {
   expect_wakes 3 "already delivered first key was repeated"
   assert_grep $'worker\ttwo\t1010\t1250\t100' "$STATE/.open-decision-reminders" "the recovered second key was not committed with its own backoff"
   pass "a later queue failure retains earlier keys' committed backoff"
+}
+
+test_enlarged_ledger_write_cannot_flood() {
+  local growth seed start now recover next want_recovered want_next
+  # Model an allocation boundary: ledger bytes no longer than the committed
+  # ledger still write, a larger post-delivery ledger never does. Queue appends
+  # and every other write stay available.
+  eval "$(declare -f open_decision_ledger_prepare | command sed '1s/open_decision_ledger_prepare/real_ledger_prepare/')"
+  fault_enlarged_ledger() {
+    # shellcheck disable=SC2329 # Called by the sourced watcher's ledger write.
+    open_decision_ledger_prepare() {
+      if [ -f "$1" ] && [ "${#2}" -gt "$(wc -c < "$1")" ]; then
+        OPEN_DECISION_ERROR="ledger $1 could not be written"
+        return 1
+      fi
+      real_ledger_prepare "$@"
+    }
+  }
+  for growth in timestamp delay; do
+    reset_case
+    enable
+    printf 'blocked [at=1000] [key=api]: help\n' > "$STATE/worker.status"
+    if [ "$growth" = timestamp ]; then
+      # A first reminder turns last=0 into a ten-digit-scale epoch.
+      export FM_OPEN_DECISION_BACKOFF_MAX_SECS=400
+      open_decision_reminder_tick 1050 || fail "$growth seed failed: $OPEN_DECISION_ERROR"
+      start=1200; recover=1450; next=1550
+      want_recovered=$'worker\tapi\t1000\t1450\t100'; want_next=$'worker\tapi\t1000\t1550\t200'
+    else
+      # A capped doubling turns delay=800 into 1600.
+      export FM_OPEN_DECISION_BACKOFF_MAX_SECS=1600
+      printf 'worker\tapi\t1000\t1200\t800\n' > "$STATE/.open-decision-reminders"
+      start=2000; recover=2250; next=3850
+      want_recovered=$'worker\tapi\t1000\t2250\t1600'; want_next=$'worker\tapi\t1000\t3850\t1600'
+    fi
+    seed=$(cat "$STATE/.open-decision-reminders")
+    fm_wake_append check unrelated 'check: preserve me' || fail "$growth seed queue failed"
+    fault_enlarged_ledger
+    # Each tick is a fresh watcher process: no memory but the ledger and cursor.
+    for now in "$start" $((start + 100)) $((start + 200)); do
+      OPEN_DECISION_TICK_LAST=
+      open_decision_reminder_check "$now" || fail "$growth ledger failure stopped other checks"
+    done
+    [ "$(queue_keys)" = 'check unrelated
+check open-decision-reminders' ] || fail "$growth: an unwritable post-delivery ledger reissued the reminder: $(queue_keys)"
+    [ "$seed" = "$(cat "$STATE/.open-decision-reminders")" ] || fail "$growth changed the ledger while failing"
+    case "$(cat "$STATE/.open-decision-reminders.error")" in
+      "ledger $STATE/.open-decision-reminders could not be written") ;;
+      *) fail "$growth did not record its ledger failure: $(cat "$STATE/.open-decision-reminders.error")" ;;
+    esac
+    # Storage recovers: the reminder is delivered once and its backoff resumes.
+    # shellcheck disable=SC2034 # Read by the sourced watcher's check.
+    OPEN_DECISION_TICK_LAST=
+    eval "$(declare -f real_ledger_prepare | command sed '1s/real_ledger_prepare/open_decision_ledger_prepare/')"
+    open_decision_reminder_check "$recover" || fail "$growth recovery failed"
+    expect_wakes 3 "$growth recovery did not deliver the reminder exactly once"
+    assert_grep "$want_recovered" "$STATE/.open-decision-reminders" "$growth recovery did not commit the delivered reminder"
+    [ ! -e "$STATE/.open-decision-reminders.error" ] || fail "$growth recovery kept its error"
+    open_decision_reminder_tick $((next - 1)) || fail "$growth backoff tick failed: $OPEN_DECISION_ERROR"
+    expect_wakes 3 "$growth recovery lost its backoff"
+    open_decision_reminder_tick "$next" || fail "$growth due tick failed: $OPEN_DECISION_ERROR"
+    expect_wakes 4 "$growth backoff did not resume"
+    assert_grep "$want_next" "$STATE/.open-decision-reminders" "$growth resumed backoff was not committed"
+  done
+  pass "a ledger that fails only for its larger post-delivery bytes never reissues a reminder, across restarts, and recovers with backoff"
 }
 
 test_tick_beats_per_log() {
@@ -804,10 +902,12 @@ run_case test_timed_read_failures_are_unknown
 run_case test_timed_failure_after_checkpoint_resumes
 run_case test_deduplicated_alarm_still_wakes_for_queued_keys
 run_case test_bad_status_paths_alarm
+run_case test_unlistable_state_dir_alarms
 run_case test_timed_split_records
 run_case test_old_timed_cursor_is_refolded
 run_case test_ledger_failure_cannot_flood
 run_case test_partial_queue_failure_preserves_backoff
+run_case test_enlarged_ledger_write_cannot_flood
 run_case test_tick_beats_per_log
 run_case test_cadence_gate
 run_case test_timed_cursor_retirement
