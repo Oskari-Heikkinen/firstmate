@@ -1,0 +1,13 @@
+{
+  "id": "membership-initial-order",
+  "case": "case_live_membership",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        if old is None:\n            write_json(self.current_path(key), self.derive_current(key, receipts_of(self.owner, self.bid, key)),\n                       self.tmp, \"o-current-dirsync\")\n        if key not in self.members:\n            write_live(self.owner, self.bid, self.members | {key})\n            self.members.add(key)\n            fmt.seams().fault(\"membership:after-add\")",
+      "        if key not in self.members:\n            write_live(self.owner, self.bid, self.members | {key})\n            self.members.add(key)\n            fmt.seams().fault(\"membership:after-add\")\n        if old is None:\n            write_json(self.current_path(key), self.derive_current(key, receipts_of(self.owner, self.bid, key)),\n                       self.tmp, \"o-current-dirsync\")"
+    ]
+  ],
+  "expect": "initial projection precedes membership",
+  "baseline": false
+}
