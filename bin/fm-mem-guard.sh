@@ -823,7 +823,7 @@ wake_decide() {
     elif [ "$pool" != "$last_pool" ] || [ "$since" != 0 ]; then
       # Keep both the level and clear actually told until the next notice.
       # Silent re-entry neither creates an escalation nor reopens a clear.
-      printf '%s %s %s 0 %s\n' "$last" "$last_i" "$pool" "$told" >"$STATE/.mem-guard-wake" 2>/dev/null
+      printf '%s %s %s 0 %s\n' "$last" "$last_i" "$pool" 0 >"$STATE/.mem-guard-wake" 2>/dev/null
     fi
   elif [ "$rec" = 1 ]; then
     if [ "$told" = 1 ]; then
