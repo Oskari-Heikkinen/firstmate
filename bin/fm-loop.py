@@ -813,8 +813,6 @@ class Loop:
         def put(stage, since, reason):
             r["stage"], r["since"], r["reason"] = stage, since, reason
 
-        if r["state_unknown"] or (rec and rec.get("_state_unknown")):
-            return put("unknown", None, "request state unknown (invalid withdrawal or collected outcome)")
         if r["closed"]:
             return put(None, r["closed"]["at"], "request %s" % r["closed"]["why"])
         if rec and (rec.get("outcome") == "withdrawn" or rec.get("superseded_by")):
