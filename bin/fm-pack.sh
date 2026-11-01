@@ -699,7 +699,7 @@ marker_step() {
 
 # check_members IMAGE DIR MEMBERS: 0 match, 1 mismatch.
 check_members() {
-  if [ "${IFORMAT:-}" = tj-pack-marker/v1 ]; then
+  if [ "${IFORMAT:-}" = tj-pack-marker/counterfactual ]; then
     marker_step verify "$METHOD"
   else
     "check_members_$METHOD" "$@"
