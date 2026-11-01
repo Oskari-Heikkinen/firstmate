@@ -10,7 +10,10 @@
 #
 # Runtime: Perl/grep for durable-record scanning; Python 3 with stdlib sqlite3
 # for fixed-size hash batches and disk-backed copy inventories. Per-tree lists
-# stay in the caller-owned scan directory, never in shell heaps. Interrupted
+# stay in the caller-owned scan directory, never in shell heaps. Each private
+# spool is sealed and read through fm-spool-lib.sh: only a checked completion
+# frame is EOF, never a failed open/read or truncated list. Manifest sidecars
+# are staging-only and removed before installation. Interrupted
 # .evidence.new.<pid> directories are not verified prior evidence and are never
 # adopted: only evidence/ can satisfy a missing source declaration.
 #
@@ -97,6 +100,9 @@
 # paths. Its earlier verified copy is still carried forward; a staging failure
 # refuses rather than being treated as proof that the old source is lost.
 
+# shellcheck source=bin/fm-spool-lib.sh
+. "${BASH_SOURCE[0]%/*}/fm-spool-lib.sh"
+
 # The one hash tool choice: sets FM_TE_HASH_TOOL to shasum or sha256sum.
 fm_task_evidence_hash_tool() {
   if command -v shasum >/dev/null 2>&1; then
@@ -121,13 +127,16 @@ fm_task_evidence_hash() {
 # the shell. The helper bounds each hash-tool invocation and keeps fallback
 # verification and manifest writes in source order.
 fm_task_evidence_verify_copies() {  # <manifest> <key> <source> <copy> <rels-file>
-  local rows="$5.rows" line hash rel rc=0
+  local rows="$5.rows" line hash rel rc=0 rows_end=0
+  fm_spool seal "$5" lines || return 1
   : > "$rows" || return 1
   fm_task_evidence_stream copies "$3" "$4" "$2" "$rows" "$5" || rc=$?
-  while IFS= read -r line; do
+  fm_spool seal "$rows" lines || return 1
+  while fm_spool_next line rows_end; do
     hash=${line%%  *}; rel=${line#*  }; rel=${rel#"$2"}
     printf '%s  %s%s\n' "$hash" "$2" "$rel" >> "$1" || return 1
-  done < "$rows"
+  done < <(fm_spool read "$rows")
+  fm_spool_end "$rows_end" "$rows" || return 1
   return "$rc"
 }
 
@@ -275,7 +284,7 @@ fm_task_evidence_staged_member() {
 # staging without traversing links; a declared alias cannot cover its target.
 fm_task_evidence_survives() {
   local path=$1 copy_root=$2 tmp_root=$3 copy_owned=$4 physical_copy=$5 physical_tmp=$6
-  local declared=$7 staging=$8 object d source declaration suffix
+  local declared=$7 staging=$8 object d source declaration suffix declared_end=0 covered=0
   fm_task_evidence_object "$path" || return 2
   object=$FM_TE_OBJECT
   case "$object" in
@@ -289,7 +298,8 @@ fm_task_evidence_survives() {
         fm_task_evidence_recoverable_source "$physical_copy" "${object#"$physical_copy"/}" && return 0 ;;
     esac
   fi
-  while IFS= read -r d; do
+  while fm_spool_next d declared_end; do
+    [ "$covered" = 0 ] || continue
     [ -n "$d" ] || continue
     case "$d" in
       copy/*) [ "$copy_owned" = 1 ] || continue; source="$copy_root/${d#*/}" ;;
@@ -307,9 +317,10 @@ fm_task_evidence_survives() {
         *) continue ;;
       esac
     fi
-    fm_task_evidence_staged_member "$staging" "$d$suffix" && return 0
-  done < "$declared"
-  return 1
+    if fm_task_evidence_staged_member "$staging" "$d$suffix"; then covered=1; fi
+  done < <(fm_spool read "$declared")
+  fm_spool_end "$declared_end" "$declared" || return 2
+  [ "$covered" = 1 ]
 }
 
 # Extract complete quoted citations, not a lossy prefix of a quoted filename.
@@ -439,7 +450,8 @@ fm_task_evidence_reference_path() {
 # Copy one source into staging and append its verified manifest lines.
 fm_task_evidence_copy_source() {
   local src=$1 root=$2 dest=$3 key=$4 manifest=$5 src_parent root_phys odd f rel h1 h2
-  local paths="$FM_TE_WORK/paths" rels="$FM_TE_WORK/rels"
+  local paths="$FM_TE_WORK/paths" rels="$FM_TE_WORK/rels" links="$FM_TE_WORK/source-links"
+  local paths_end=0 links_end=0
   root_phys=$(cd -P -- "$root" 2>/dev/null && pwd -P) || return 1
   src_parent=$(cd -P -- "$(dirname -- "$src")" 2>/dev/null && pwd -P) || return 1
   case "$src_parent" in
@@ -454,24 +466,29 @@ fm_task_evidence_copy_source() {
   fi
   mkdir -p -- "$(dirname -- "$dest")" || return 1
   cp -RPp -- "$src" "$dest" || return 1
-  while IFS= read -r f; do
+  find "$src" -type l -print > "$links" || return 1
+  fm_spool seal "$links" lines || return 1
+  while fm_spool_next f links_end; do
     rel=${f#"$src"}
     echo "warning: preserving evidence symlink $f as a link, not following it" >&2
     h1=$(fm_task_evidence_link_hash "$f") && [ -n "$h1" ] || return 1
     h2=$(fm_task_evidence_link_hash "$dest$rel") && [ -n "$h2" ] || return 1
     [ "$h1" = "$h2" ] || { echo "REFUSED: copied evidence link $dest$rel does not match its source" >&2; return 1; }
     printf '%s  %s%s\n' "$h2" "$key" "$rel" >> "$manifest.links" || return 1
-  done < <(find "$src" -type l -print)
+  done < <(fm_spool read "$links")
+  fm_spool_end "$links_end" "$links" || return 1
   if [ -L "$src" ]; then
     return 0
   elif [ -d "$src" ]; then
     find "$src" -type f -print0 > "$paths" || return 1
+    fm_spool seal "$paths" nul || return 1
     : > "$rels" || return 1
-    while IFS= read -r -d '' f; do
+    while fm_spool_next f paths_end; do
       rel=${f#"$src"}
       case "$rel" in *$'\n'*) return 1 ;; esac
       printf '%s\n' "$rel" >> "$rels" || return 1
-    done < "$paths"
+    done < <(fm_spool read "$paths")
+    fm_spool_end "$paths_end" "$paths" || return 1
     fm_task_evidence_verify_copies "$manifest" "$key" "$src" "$dest" "$rels"
   else
     printf '\n' > "$rels" || return 1
@@ -485,7 +502,9 @@ fm_task_evidence_copy_source() {
 fm_task_evidence_carry_prior() {
   local prior=$1 key=$2 staging=$3 manifest=$4 lines hash path line suffix found=0
   local regular_lines="$FM_TE_WORK/prior-regular" link_lines="$FM_TE_WORK/prior-links"
+  local prior_end=0 verify_rc
   : > "$regular_lines" && : > "$link_lines" || return 2
+  fm_spool seal "$regular_lines" lines && fm_spool seal "$link_lines" lines || return 2
   [ -f "$prior/MANIFEST.sha256" ] || return 1
   [ -e "$prior/$key" ] || [ -L "$prior/$key" ] || return 1
   for suffix in '' .links; do
@@ -493,28 +512,37 @@ fm_task_evidence_carry_prior() {
     if [ "$suffix" = .links ]; then lines=$link_lines; else lines=$regular_lines; fi
     awk -v k="$key" '{ p = substr($0, 67) } p == k || index(p, k "/") == 1' \
       "$prior/MANIFEST.sha256$suffix" > "$lines" || return 2
-    [ -s "$lines" ] || continue
+    fm_spool seal "$lines" lines && fm_spool_inspect "$lines" || return 2
+    [ "$FM_SPOOL_NONEMPTY" = 1 ] || continue
     found=1
     if [ "$suffix" = .links ]; then
-      while IFS= read -r line; do
+      prior_end=0
+      while fm_spool_next line prior_end; do
         hash=${line%%  *}
         path=${line#*  }
         [ "$(fm_task_evidence_link_hash "$prior/$path")" = "$hash" ] || return 1
         echo "warning: preserving earlier evidence symlink $prior/$path as a link, not following it" >&2
-      done < "$lines"
+      done < <(fm_spool read "$lines")
+      fm_spool_end "$prior_end" "$lines" || return 2
     else
-      fm_task_evidence_stream verify "$prior" "$lines" || return 1
+      verify_rc=0
+      fm_task_evidence_stream verify "$prior" "$lines" || verify_rc=$?
+      case "$verify_rc" in 0) ;; 2) return 2 ;; *) return 1 ;; esac
     fi
   done
   [ "$found" = 1 ] || return 1
   mkdir -p -- "$(dirname -- "$staging/$key")" || return 2
   cp -RPp -- "$prior/$key" "$staging/$key" || return 2
-  while IFS= read -r line; do
+  prior_end=0
+  while fm_spool_next line prior_end; do
     printf '%s\n' "$line" >> "$manifest" || return 2
-  done < "$regular_lines"
-  while IFS= read -r line; do
+  done < <(fm_spool read "$regular_lines")
+  fm_spool_end "$prior_end" "$regular_lines" || return 2
+  prior_end=0
+  while fm_spool_next line prior_end; do
     printf '%s\n' "$line" >> "$manifest.links" || return 2
-  done < "$link_lines"
+  done < <(fm_spool read "$link_lines")
+  fm_spool_end "$prior_end" "$link_lines" || return 2
   return 0
 }
 
@@ -545,7 +573,8 @@ fm_task_evidence_stream() {
 }
 
 fm_task_evidence_scan() {
-  perl "${BASH_SOURCE[0]%/*}/fm-task-evidence-scan.pl" "$@"
+  perl "${BASH_SOURCE[0]%/*}/fm-task-evidence-scan.pl" "$@" || return 1
+  if [ "$1" = prepare ]; then fm_spool seal "$3/matches" matches || return 1; fi
 }
 
 # fm_task_evidence_stage <id> <data-dir> <copy-root> <copy-owned 0|1> <tmp-root> <scan-dir>
@@ -575,6 +604,7 @@ fm_task_evidence_stage() {
     FM_TE_STAGE_CHANGED=1
   fi
   FM_TE_STAGE_ID=$1 FM_TE_STAGE_DATA=$2 FM_TE_STAGE_COPY=$3 FM_TE_STAGE_OWNED=$4
+  fm_spool seal "$6/stage.err" text || return 1
   FM_TE_STAGE_TMP=$5 FM_TE_STAGE_SCAN=$6 FM_TE_STAGE_DONE=1
 }
 
@@ -598,9 +628,11 @@ fm_task_evidence_stage_copy() {
   local id=$1 data=$2 copy_root=$3 copy_owned=$4 tmp_root=$5 scan=$6
   local dir="$data/$id" list evidence staging manifest line path src root key
   local declared="$scan/declared" refused=0 d overlap hash rc suffix
+  local list_spool="$scan/declarations" list_end=0 declared_end=0 manifest_end=0
   : > "$declared" || return 1
+  fm_spool seal "$declared" lines || return 1
   if [ ! -d "$dir" ]; then FM_TE_STAGE_ABSENT=1; return 0; fi
-  if [ ! -r "$scan/matches" ]; then
+  if ! fm_spool_inspect "$scan/matches"; then
     echo "REFUSED: evidence record scan: cannot read prepared matches; retry teardown" >&2
     FM_TE_STAGE_EARLY=1
     return 0
@@ -619,7 +651,9 @@ fm_task_evidence_stage_copy() {
       FM_TE_STAGE_EARLY=1
       return 0
     fi
-    while IFS= read -r line || [ -n "$line" ]; do
+    cat -- "$list" > "$list_spool" || return 1
+    fm_spool seal "$list_spool" text || return 1
+    while fm_spool_next line list_end; do
       path=$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
       case "$path" in ''|'#'*) continue ;; esac
       if fm_task_evidence_has_dotdot "$path"; then
@@ -642,16 +676,19 @@ fm_task_evidence_stage_copy() {
       fi
       key="$FM_TE_LABEL/$FM_TE_REL"
       overlap=
-      while IFS= read -r d; do
-        [ -n "$d" ] || continue
-        case "$key" in "$d"|"$d"/*) overlap=$d; break ;; esac
-        case "$d" in "$key"/*) overlap=$d; break ;; esac
-      done < "$declared"
+      declared_end=0
+      while fm_spool_next d declared_end; do
+        [ -z "$overlap" ] && [ -n "$d" ] || continue
+        case "$key" in "$d"|"$d"/*) overlap=$d ;; esac
+        case "$d" in "$key"/*) overlap=$d ;; esac
+      done < <(fm_spool read "$declared")
+      fm_spool_end "$declared_end" "$declared" || return 1
       if [ -n "$overlap" ]; then
         echo "REFUSED: evidence.list entry '$path' for $id overlaps another entry ($overlap); declare each path once" >&2
         refused=1; continue
       fi
       printf '%s\n' "$key" >> "$declared" || return 1
+      fm_spool seal "$declared" lines || return 1
       if [ "$FM_TE_LABEL" = copy ]; then root=$copy_root; else root=$tmp_root; fi
       src="$root/$FM_TE_REL"
       if [ "$FM_TE_LABEL" = copy ] && [ "$copy_owned" != 1 ]; then
@@ -679,7 +716,8 @@ fm_task_evidence_stage_copy() {
         echo "REFUSED: declared evidence $src for $id does not exist and no verified earlier copy is preserved" >&2
         refused=1
       fi
-    done < "$list"
+    done < <(fm_spool read "$list_spool")
+    fm_spool_end "$list_end" "$list_spool" || return 1
     if [ "$refused" = 0 ]; then
       for suffix in '' .links; do
         if ! sort -k2 -o "$manifest$suffix" "$manifest$suffix"; then
@@ -687,14 +725,17 @@ fm_task_evidence_stage_copy() {
           refused=1
           break
         fi
+        fm_spool seal "$manifest$suffix" lines || return 1
         if [ "$suffix" = .links ]; then
-          while IFS= read -r line; do
+          manifest_end=0
+          while fm_spool_next line manifest_end; do
             hash=$(fm_task_evidence_link_hash "$staging/${line#*  }")
             [ "$hash" = "${line%%  *}" ] || {
               echo "REFUSED: staged evidence ${line#*  } for $id failed verification" >&2
               refused=1
             }
-          done < "$manifest$suffix"
+          done < <(fm_spool read "$manifest$suffix")
+          fm_spool_end "$manifest_end" "$manifest$suffix" || return 1
           continue
         fi
         fm_task_evidence_stream verify "$staging" "$manifest" "$id" || refused=1
@@ -718,6 +759,7 @@ fm_task_evidence_finish() {
   local dir="$data/$id" list evidence staging manifest line root key
   local declared refused refs ref ref_mode record
   local next_record next_line record_lines scan_eof
+  local matches_end=0 lines_end=0 refs_end=0 links_end=0 regular_present link_present
   local link target label rel physical_copy physical_tmp rc
   if [ "$FM_TE_STAGE_DONE" != 1 ] || [ "$FM_TE_STAGE_ID" != "$id" ] \
      || [ "$FM_TE_STAGE_DATA" != "$data" ] || [ "$FM_TE_STAGE_COPY" != "$copy_root" ] \
@@ -730,7 +772,7 @@ fm_task_evidence_finish() {
   staging=$FM_TE_STAGE_STAGING
   declared=$FM_TE_STAGE_DECLARED
   refused=$FM_TE_STAGE_REFUSED
-  if [ ! -f "$scan/stage.err" ] || ! cat -- "$scan/stage.err" >&2; then
+  if ! fm_spool cat "$scan/stage.err" >&2; then
     echo "REFUSED: cannot read staged task evidence messages for $id; retry teardown" >&2
     return 1
   fi
@@ -755,7 +797,7 @@ fm_task_evidence_finish() {
   # Check link targets only after every declaration has been staged, so list
   # order cannot hide an undeclared target or reject a later declared target.
   if [ -n "${staging:-}" ] && [ "$refused" = 0 ]; then
-    while IFS= read -r line; do
+    while fm_spool_next line links_end; do
       key=${line#*  }
       label=${key%%/*}; rel=${key#*/}
       if [ "$label" = copy ]; then
@@ -777,20 +819,21 @@ fm_task_evidence_finish() {
         echo "REFUSED: evidence symlink $link resolves to $target, which cleanup would destroy and which evidence.list does not declare" >&2
         refused=1
       fi
-    done < "$manifest.links"
+    done < <(fm_spool read "$manifest.links")
+    fm_spool_end "$links_end" "$manifest.links" || return 1
   fi
 
   # The text scan is already complete. Interpret only matching record lines;
   # existence-aware parsing and preservation still share the destructive lock.
   for root in "$copy_root" "$tmp_root"; do
     [ -n "$root" ] || continue
-    record=; scan_eof=0
+    record=; scan_eof=0; matches_end=0
     record_lines="$scan/record-lines"; refs="$scan/refs"
     : > "$record_lines" || return 1
     while :; do
     next_record=; next_line=
-    if IFS= read -r -d '' next_record; then
-      if [ -z "$next_record" ] || ! IFS= read -r next_line; then
+    if fm_spool_next next_record matches_end; then
+      if [ -z "$next_record" ] || ! fm_spool_next next_line matches_end; then
         echo "REFUSED: evidence record scan: malformed matches framing; retry teardown" >&2
         refused=1; break
       fi
@@ -810,17 +853,21 @@ fm_task_evidence_finish() {
     # Preserve per-record parser calls, but spool both its input and output.
     # The final LF matches the former here-string's framing.
     printf '\n' >> "$record_lines" || return 1
+    fm_spool seal "$record_lines" lines || return 1
     : > "$refs" || return 1
     if [ "$root" = "$copy_root" ] && [ "$copy_owned" != 1 ]; then
-      while IFS= read -r line; do
+      lines_end=0
+      while fm_spool_next line lines_end; do
         [[ "$line" == *"$root/"* ]] || continue
         echo "warning: record $record cites $line inside a copy already reassigned to another task" >&2
-      done < "$record_lines"
+      done < <(fm_spool read "$record_lines")
+      fm_spool_end "$lines_end" "$record_lines" || return 1
     else
-      fm_task_evidence_references "$record" "$root" < "$record_lines" > "$refs" || refused=1
+      ( set -o pipefail; fm_spool cat "$record_lines" | fm_task_evidence_references "$record" "$root" ) > "$refs" || refused=1
     fi
-    if [ -s "$refs" ]; then
-    while IFS= read -r ref; do
+    fm_spool seal "$refs" lines || return 1
+    refs_end=0
+    while fm_spool_next ref refs_end; do
       ref_mode=${ref%%$'\t'*}; ref=${ref#*$'\t'}
       fm_task_evidence_classify "$ref" "$copy_root" "$tmp_root" || continue
       if [ "$FM_TE_LABEL" = copy ] && [ "$copy_owned" != 1 ]; then
@@ -842,12 +889,13 @@ fm_task_evidence_finish() {
         echo "REFUSED: a record under $dir references $ref, which cleanup would destroy and which evidence.list does not declare" >&2
         refused=1
       fi
-    done < "$refs"
-    fi
+    done < <(fm_spool read "$refs")
+    fm_spool_end "$refs_end" "$refs" || return 1
     [ "$scan_eof" = 0 ] || break
     record=$next_record
     printf '%s\n' "$next_line" > "$record_lines" || return 1
-    done < "$scan/matches"
+    done < <(fm_spool read "$scan/matches")
+    fm_spool_end "$matches_end" "$scan/matches" || return 1
   done
 
   fm_task_evidence_scan verify "$dir" "$scan" || refused=1
@@ -856,9 +904,14 @@ fm_task_evidence_finish() {
     return 1
   fi
   [ -n "${staging:-}" ] || return 0
-  if [ ! -s "$manifest" ] && [ ! -s "$manifest.links" ] && [ ! -e "$evidence" ]; then
+  fm_spool_inspect "$manifest" || return 1
+  regular_present=$FM_SPOOL_NONEMPTY
+  fm_spool_inspect "$manifest.links" || return 1
+  link_present=$FM_SPOOL_NONEMPTY
+  if [ "$regular_present" = 0 ] && [ "$link_present" = 0 ] && [ ! -e "$evidence" ]; then
     return 0
   fi
+  rm -f -- "$manifest.seal" "$manifest.links.seal" || return 1
   if [ -e "$evidence" ] || [ -L "$evidence" ]; then
     rm -rf -- "$dir/.evidence.old.$$"
     mv -- "$evidence" "$dir/.evidence.old.$$" || return 1

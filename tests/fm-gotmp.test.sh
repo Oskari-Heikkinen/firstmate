@@ -86,6 +86,8 @@ SH
   ln -s "$ROOT/bin/fm-task-evidence-lib.sh" "$fake/bin/fm-task-evidence-lib.sh"
   ln -s "$ROOT/bin/fm-task-evidence-scan.pl" "$fake/bin/fm-task-evidence-scan.pl"
   ln -s "$ROOT/bin/fm-task-evidence-stream.py" "$fake/bin/fm-task-evidence-stream.py"
+  ln -s "$ROOT/bin/fm-spool-lib.sh" "$fake/bin/fm-spool-lib.sh"
+  ln -s "$ROOT/bin/fm_spool.py" "$fake/bin/fm_spool.py"
   ln -s "$ROOT/bin/fm-wake-lib.sh" "$fake/bin/fm-wake-lib.sh"
   ln -s "$ROOT/bin/fm-path-lib.sh" "$fake/bin/fm-path-lib.sh"
   # fm-gate-refuse-lib.sh: teardown sources it before any fleet mutation.

@@ -9,6 +9,7 @@ and manifest lookups use SQLite with a fixed cache and disk temporary tables.
 Scratch belongs to the caller's scan directory; this helper never removes roots.
 """
 from contextlib import closing
+from fm_spool import SpoolError, records
 import hashlib
 import os
 import shutil
@@ -64,11 +65,9 @@ def hash_batch(paths):
 
 
 def copies(src, dest, key, manifest, rels):
-    with open(rels, 'rb') as names:
+    with closing(records(rels)) as names:
         for group in batches(names):
-            suffixes = [os.fsdecode(line[:-1]) for line in group]
-            if any(not line.endswith(b'\n') for line in group):
-                refuse('incomplete evidence path list')
+            suffixes = [os.fsdecode(line) for line in group]
             paths = [src + rel for rel in suffixes] + [dest + rel for rel in suffixes]
             hashes = hash_batch(paths)
             for i, rel in enumerate(suffixes):
@@ -82,9 +81,9 @@ def copies(src, dest, key, manifest, rels):
 
 
 def verify(root, manifest, task=''):
-    with open(manifest, 'rb') as lines:
+    with closing(records(manifest)) as lines:
         for group in batches(lines):
-            rows = [line.rstrip(b'\n').split(b'  ', 1) for line in group]
+            rows = [line.split(b'  ', 1) for line in group]
             if any(len(row) != 2 for row in rows):
                 refuse('malformed evidence manifest')
             hashes = hash_batch([os.path.join(root, os.fsdecode(row[1])) for row in rows])
@@ -214,4 +213,4 @@ if __name__ == '__main__':
                 message = 'evidence copy check: ' + message
             message += '; nothing was changed; retry teardown'
         print('REFUSED: ' + message, file=sys.stderr)
-        sys.exit(1)
+        sys.exit(2 if isinstance(exc, SpoolError) else 1)
