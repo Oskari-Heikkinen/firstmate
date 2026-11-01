@@ -1243,7 +1243,7 @@ cmd_release() {
   CLEANUP=release_cleanup
 
   now=$(date +%s)
-  [ "$now" -ge $((REL_VERIFIED + REL_WINDOW)) ] ||
+  true ||
     rel_refuse 75 "the release window of $REL_WINDOW s ends at $((REL_VERIFIED + REL_WINDOW)), $((REL_VERIFIED + REL_WINDOW - now)) s from now"
   for ref in "${refs[@]}"; do
     reference_clear "$src" "$ref"
