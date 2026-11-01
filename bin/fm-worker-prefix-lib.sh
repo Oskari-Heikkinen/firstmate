@@ -199,14 +199,14 @@ fm_worker_prefix_launch_entries() {
 # the executable does not advertise the flags.
 fm_worker_prefix_pi_launch_args() {
   local entries=$1 pi=$2 id=$3 wt=$4 own=$5 agent=${6:-${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}}
-  local -a project=()
+  local -a project_dirs=()
   if ! fm_worker_prefix_pi_supports_skill_flags "$pi"; then
     echo "warning: $pi does not advertise --no-skills and --skill, so worker $id loads every skill it finds" >&2
     return 0
   fi
-  [ -n "$own" ] || project=("$wt/.agents/skills" "$wt/.pi/skills")
+  [ -n "$own" ] || project_dirs=("$wt/.agents/skills" "$wt/.pi/skills")
   fm_worker_prefix_pi_skill_args "$entries" ${own:+"$own/.agents/skills"} "$HOME/.agents/skills" "$agent/skills" \
-    -- ${project[@]+"${project[@]}"}
+    -- ${project_dirs[@]+"${project_dirs[@]}"}
 }
 
 # fm_worker_prefix_stop_command <fm-root> <fm-home> <state> <config> <task-id> <project>:
@@ -229,15 +229,40 @@ fm_worker_prefix_stop_hook() {
   printf ',%s' "$entry"
 }
 
-# Run as a command: fm-worker-prefix-lib.sh <launch-entries|claude-setting|
-# pi-launch-args|stop-hook> <args>..., each the function of that name above.
+# fm_worker_prefix_launch <launch> <entries> <harness> <claude-config-dir>
+# <fm-root> <firstmate-repo-worktree> <pi-executable> <task-id> <worktree>
+# <pi-agent-dir>: print <launch> with its __CLAUDEWORKERPREFIX__, __CLAUDEENV__
+# and __PISKILLS__ placeholders filled for a ship or scout. skillOverrides names
+# the code root's skills, a Firstmate-repo worktree's own, and the Claude
+# config's; a project's own skills keep their full listing. The member lands
+# inside the template's single-quoted --settings word, and the list's name
+# alphabet has no quote. A Firstmate-repo worker's auto-memory is the
+# supervisor's, recalled into every turn; any other project's memory is its
+# own and stays on.
+fm_worker_prefix_launch() {
+  local launch=$1 entries=$2 harness=$3 own=$6 setting='' env='' pi=''
+  if [ "$harness" = claude ]; then
+    setting=$(fm_worker_prefix_claude_setting "$entries" "$4" "$5/.agents/skills" ${own:+"$own/.agents/skills"}) || return 1
+    [ -z "$own" ] || env='CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 '
+  else
+    pi=$(fm_worker_prefix_pi_launch_args "$entries" "$7" "$8" "$9" "$own" "${10}") || return 1
+  fi
+  launch=${launch//__CLAUDEWORKERPREFIX__/$setting}
+  launch=${launch//__CLAUDEENV__/$env}
+  printf '%s' "${launch//__PISKILLS__/$pi}"
+}
+
+# Run as a command: fm-worker-prefix-lib.sh <launch-entries|launch|
+# claude-setting|pi-launch-args|stop-hook> <args>..., each the function of that
+# name above.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
   launch-entries) shift; fm_worker_prefix_launch_entries "$@"; exit ;;
+  launch) shift; fm_worker_prefix_launch "$@"; exit ;;
   claude-setting) shift; fm_worker_prefix_claude_setting "$@"; exit ;;
   pi-launch-args) shift; fm_worker_prefix_pi_launch_args "$@"; exit ;;
   stop-hook) shift; fm_worker_prefix_stop_hook "$@"; exit ;;
   esac
-  echo "usage: fm-worker-prefix-lib.sh launch-entries|claude-setting|pi-launch-args|stop-hook <args>..." >&2
+  echo "usage: fm-worker-prefix-lib.sh launch-entries|launch|claude-setting|pi-launch-args|stop-hook <args>..." >&2
   exit 2
 fi
