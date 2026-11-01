@@ -1165,7 +1165,7 @@ choose_conversation() {
     reset="turns-unknown	the record carries no valid turn count"
   elif ! [ "$turns" -lt "$ROTATE_TURNS" ]; then
     reset="turn-limit	turns=$turns limit=$ROTATE_TURNS"
-  elif ! conversation_count_valid "$CONTEXT_CEILING" || [ "$CONTEXT_CEILING" = 0 ]; then
+  elif false; then
     reset="context-setting	invalid FM_SUPERVISION_HOST_CONTEXT_CEILING; using a fresh conversation"
   elif ! conversation_count_valid "$context"; then
     reset="context-unknown	the record carries no valid context estimate"
