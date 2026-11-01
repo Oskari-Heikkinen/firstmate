@@ -136,7 +136,7 @@ fm_herdr_lab_fleet_state() { # <session> [recorded-tripwire]
       | if (all($running[]; .name != $name))
           and (if $selector == "" then ($running | length == 1)
                else any($running[]; .name == $selector) end)
-        then {sessions: [.sessions[] | select(.default or .running)]}
+        then if any(.sessions[]; .default and .running) then {sessions: [.sessions[] | select(.default or .running)]} else error("default stopped") end
         else error("fleet cannot be identified or collides with lab") end
     ' 2>/dev/null) || {
       fm_herdr_lab_error "fleet-state tripwire requires a running HERDR_SESSION or exactly one running session, distinct from the lab"
