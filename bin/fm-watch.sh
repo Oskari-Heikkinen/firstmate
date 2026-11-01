@@ -4033,7 +4033,7 @@ resurface_input_owed() {
   if [ -e "$FM_WAKE_QUEUE" ] || [ -L "$FM_WAKE_QUEUE" ]; then
     [ -f "$FM_WAKE_QUEUE" ] && [ -r "$FM_WAKE_QUEUE" ] && [ ! -s "$FM_WAKE_QUEUE" ] || return 0
   fi
-  scan_signals --owed
+  return 1
 }
 
 # A recovery with nothing unshown wakes nobody: retire the announced downtime
