@@ -1,0 +1,13 @@
+{
+  "id": "archive-single-link",
+  "case": "case_live_membership",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        write_json(dest, cur, ctx.tmp, \"o-archive-dirsync\")",
+      "        os.link(ctx.current_path(key), dest)\n        fmt.fsync_dir(adir, \"o-archive-dirsync\")"
+    ]
+  ],
+  "expect": "retention membership replay",
+  "baseline": false
+}
