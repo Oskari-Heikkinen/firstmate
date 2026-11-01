@@ -91,6 +91,25 @@ for index, raw in enumerate((b'', b' ', b'null', b'[]', b'{', b'\0', b' ' * 4097
     Path(str(path) + '.seal').write_bytes(raw)
     rejects(lambda: list(spool.records(str(path))), 'invalid seal accepted')
 
+# Separate identity and digest checks so neither masks the other's removal.
+path = root / 'identical-replacement'
+path.write_bytes(b'unchanged bytes\n')
+spool.seal(str(path), 'lines')
+replacement = root / 'replacement'
+replacement.write_bytes(path.read_bytes())
+replacement.replace(path)
+rejects(lambda: list(spool.records(str(path))), 'byte-identical replacement accepted')
+rejects(lambda: spool.inspect(str(path)), 'replacement inspected as healthy')
+
+path = root / 'digest-only'
+path.write_bytes(b'unchanged bytes\n')
+spool.seal(str(path), 'lines')
+sidecar = Path(str(path) + '.seal')
+record = json.loads(sidecar.read_text())
+record['sha256'] = '0' * 64
+sidecar.write_text(json.dumps(record))
+rejects(lambda: list(spool.records(str(path))), 'wrong digest accepted with valid identity')
+
 # A real readable file, complete valid seal and successful first block. The
 # next read raises EIO, rather than simulating empty output or failed hashing.
 path = root / 'mid-read'
