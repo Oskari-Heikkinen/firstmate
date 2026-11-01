@@ -2612,8 +2612,8 @@ check_invalid_result_counts() {  # <case> <calls> <input> <cache-read> <cache-wr
   shift
   home=$(make_home "invalid-result-$name" away)
   write_count_result "$home" "$@"
-  start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "$name: no watcher"
+  start_session "$home"
+  park_again "$home"
   append_status "$home" "invalid count $name"
   wait_until 2000 engine_turn_finished "$home" || fail "$name: turn never completed"
   host_exited "$home" || fail "$name: invalid numeric result counted as handled"
@@ -2623,14 +2623,17 @@ check_invalid_result_counts() {  # <case> <calls> <input> <cache-read> <cache-wr
   [ "$(grep -c '"task":"demo"' "$home/state/branch-outcomes.jsonl")" -eq 1 ] || fail "$name: lost or duplicated the outcome"
   assert_no_grep 'demo.status' "$home/state/.wake-queue" "the stub's handled wake must remain acknowledged"
 
+  # A real primary consumes the handed-back close before parking again.
+  # Without that acknowledgement the downtime recovery wake, not this new
+  # status, would be the next engine turn. Keep the same main session too.
+  main_drain_and_ack "$home"
   rm -f "$home/stub-result"
-  start_host "$home"
-  wait_until 150 watcher_live "$home" || fail "$name: no recovery watcher"
+  park_again "$home"
   append_status "$home" "normal wake after $name"
   wait_until 2000 handled_at_least "$home" 1 || fail "$name: normal wake did not recover"
   assert_re '^arg=--session-id$' "$home/engine-call.2" "the normal wake after invalid counts must use a fresh session"
   [ "$(grep -c '"task":"demo"' "$home/state/branch-outcomes.jsonl")" -eq 2 ] || fail "$name: recovery duplicated an outcome"
-  assert_no_grep 'demo.status' "$home/state/.wake-queue" "recovery must consume the normal wake"
+  assert_no_grep 'demo.status' "$home/state/.wake-queue" "recovery must consume the normal wake: $(cat "$home/state/.wake-queue")"
   assert_grep 'errors=0' "$home/state/.supervision-host-health" "a normal wake must clear the error, not loop"
   pid=$(awk -F '\t' '$1 == "host" { print $2 }' "$home/state/.supervision-host")
   kill -TERM "$pid"
