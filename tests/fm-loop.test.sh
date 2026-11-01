@@ -1172,6 +1172,30 @@ if old_home is None:
 else:
     os.environ["HOME"] = old_home
 ok("default-analysis-hold: every missing default preserves ack, occurrence and clear state through recovery")
+
+# M1: filler enumeration must not replace the config failure's provenance.
+build()
+home = tmp / "home-config-filler-provenance"
+home.mkdir()
+config(extra="source bad-name /invalid\n")
+observation = home / "lane-observation.json"
+write(observation, {"schema": "tj-capacity-alerts/v1", "at": iso(NOW), "revision": 0,
+                    "active": {}, "events": []})
+stamp(observation, NOW)
+fragment = json.loads((root / "docs/handoff-coverage/examples/xp-chain.fragment.json").read_text())
+fragment.pop("example", None)
+stage = fragment["protocols"][0]["stages"][0]
+stage["ext"] = {fragment["home"] + ".loop-source": "lane_alerts=" + str(observation)}
+group = fragment["protocols"][0]["id"] + "/" + stage["name"]
+write(home / "state/handoff-registry/filler.json", fragment)
+data = status()
+if data["sources"].get("lane_alerts@" + group, {}).get("paths") != [str(observation)]:
+    fail("config provenance fixture did not discover the filler group")
+if data["sources"]["config"]["paths"] != [str(home / "config/loop-sources")]:
+    fail("config-provenance: filler enumeration replaced the failing config pathname")
+if data["sources"]["config"]["state"] != "unreadable" or "source bad-name /invalid" not in data["sources"]["config"]["detail"]:
+    fail("config-provenance: config failure lost its diagnostic")
+ok("config-provenance: a config warning beside a valid filler group names the config file")
 PY
 
 if "$ROOT/bin/fm-loop.sh" bogus >/dev/null 2>&1; then fail "an unknown command succeeded"; fi

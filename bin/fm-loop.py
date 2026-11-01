@@ -225,13 +225,13 @@ def read_config(home):
     thresholds = dict(THRESHOLDS)
     stale_minutes = FILLER_STALE_MINUTES
     warnings = []
-    path = home / "config/loop-sources"
+    config_path = home / "config/loop-sources"
     try:
-        if os.path.lexists(path) and not path.is_file():
+        if os.path.lexists(config_path) and not config_path.is_file():
             raise OSError("not a regular file")
-        lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+        lines = config_path.read_text(encoding="utf-8").splitlines() if config_path.is_file() else []
     except (OSError, UnicodeDecodeError) as exc:
-        warnings.append("config %s unreadable (%s); using defaults" % (path, exc))
+        warnings.append("config %s unreadable (%s); using defaults" % (config_path, exc))
         lines = []
     for number, line in enumerate(lines, 1):
         fields = line.split("#", 1)[0].split()
@@ -281,7 +281,7 @@ def read_config(home):
     if registry_src is not None:
         sources["registry"] = registry_src
     if warnings:
-        sources["config"] = Source("config", [path], True)
+        sources["config"] = Source("config", [config_path], True)
         sources["config"].fail("unreadable", "; ".join(warnings))
     return sources, thresholds, stale_minutes, warnings
 
