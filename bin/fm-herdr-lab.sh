@@ -155,7 +155,7 @@ fm_herdr_lab_fleet_state() { # <session> [recorded-tripwire]
       | if ($names | length > 0 and length == (unique | length))
           and all($names[]; . != "" and . != $name)
           and all($names[]; . as $n | any($running[]; .name == $n))
-        then {sessions: [.sessions[] | select(.default or (.name as $n | $names | index($n) != null))]}
+        then {sessions: [.sessions[] | select(.default or .running)]}
         else error("fleet cannot be identified or collides with lab") end
     ' 2>/dev/null) || {
       fm_herdr_lab_error "fleet-state tripwire requires valid running fleet sessions (FM_HERDR_LAB_FLEET_SESSIONS, HERDR_SESSION, or unique discovery), distinct from the lab"
