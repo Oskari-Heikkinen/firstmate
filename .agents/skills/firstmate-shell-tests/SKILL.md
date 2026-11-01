@@ -68,7 +68,8 @@ Run production-library tests and anything that sources `bin/` under `bash` expli
 
 - Pass any document that grows with the fleet (backlog, task, status or store JSON) through a file or stdin - `jq --slurpfile`, `--rawfile` or a pipe - never through argv, which the kernel caps per argument at 128 KiB.
 - Build socket and doorbell paths from a short fixed root, not from the home path, because Unix socket paths cap near 104 bytes.
-- Read each large indexed array in index order: bash walks the array from its last access, so a loop that alternates `${a[i]}` and `${a[n + i]}` is quadratic and stalled a teardown over 145,000 evidence files; slice the halves into separate arrays first, as `fm_task_evidence_verify_copies` does.
+- Stream per-file paths, hashes and manifests through caller-owned spool files, not shell arrays, command substitutions or here-strings; forked shells inherit those heaps, multiplying tree-size memory growth.
+  `fm_task_evidence_verify_copies` delegates bounded hash batches and disk-backed inventories to `bin/fm-task-evidence-stream.py`.
 
 ## 7. Lint
 
