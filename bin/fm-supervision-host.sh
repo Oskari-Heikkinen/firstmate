@@ -1135,26 +1135,6 @@ leave_successor_for_main() {
   detach_successor
 }
 
-# Read exactly one counter field, validating the complete line value before
-# command substitution can strip newlines. An empty duplicate is still a
-# duplicate, regardless of order; once seen twice the field stays unknown.
-conversation_record_count() {  # <field: turns|context>
-  local field=$1 line value=unknown seen=0
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      "$field="*)
-        if [ "$seen" -eq 0 ] && conversation_count_valid "${line#*=}"; then
-          value=${line#*=}
-        else
-          value=unknown
-        fi
-        seen=1
-        ;;
-    esac
-  done < "$ENGINE_RECORD" || return 1
-  printf '%s\n' "$value"
-}
-
 # The engine conversation for this turn: the recorded one while it belongs to
 # this main session, has turns left, and its context is under the ceiling,
 # otherwise a new one. Sets ENGINE_SESSION and ENGINE_MODE (new|resume). A
@@ -1169,8 +1149,8 @@ choose_conversation() {
   recorded_session=$(sed -n 's/^session=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)
   recorded_engine=$(sed -n 's/^engine=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)
   recorded_model=$(sed -n 's/^model=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)
-  turns=$(conversation_record_count turns 2>/dev/null) || turns=unknown
-  context=$(conversation_record_count context 2>/dev/null) || context=unknown
+  turns=$(sed -n 's/^turns=//p' "$ENGINE_RECORD" 2>/dev/null)
+  context=$(sed -n 's/^context=//p' "$ENGINE_RECORD" 2>/dev/null)
   reset=
   if [ -z "$recorded_session" ]; then
     reset=none
