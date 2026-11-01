@@ -1471,6 +1471,183 @@ MUTANTS
   [ -z "$errors" ] || fail "process-scan regressions: $errors"
 }
 
+# Marker fixtures reproduce the observed five-file layout, not fm-pack's JSON
+# or tree-list producer. Only fm-pack verify creates their verification record.
+make_marker() {
+  local name=$1
+  MARKER_DIR="$TMP_ROOT/marker-$name"
+  MARKER_SRC="$MARKER_DIR/source/pkg"
+  MARKER_IMG="$MARKER_DIR/pack/pkg.sqfs"
+  mkdir -p "$MARKER_SRC/sub" "$MARKER_DIR/pack"
+  printf 'hello' >"$MARKER_SRC/sub/file with space"
+  : >"$MARKER_SRC/empty"
+  ln -s 'sub/file with space' "$MARKER_SRC/link"
+  chmod 755 "$MARKER_SRC" "$MARKER_SRC/sub"
+  chmod 644 "$MARKER_SRC/empty" "$MARKER_SRC/sub/file with space"
+  mksquashfs "$MARKER_SRC" "$MARKER_IMG" -keep-as-directory -noappend -no-progress -quiet -processors 1 > /dev/null || return 1
+  (cd "$MARKER_DIR/pack" && sha256sum pkg.sqfs >pkg.sqfs.sha256)
+  python3 - "$MARKER_DIR" <<'PY'
+import hashlib, json, pathlib, sys
+base = pathlib.Path(sys.argv[1])
+p = base / 'pack'
+members = (hashlib.sha256(b'').hexdigest() + '  empty\n' +
+           hashlib.sha256(b'hello').hexdigest() + '  sub/file with space\n')
+tree = ('# tj-pack-tree/v1\tkind\tsize\tperm\tlink\tpath\n'
+        'f\t0\t644\t-\tempty\n'
+        'l\t0\t777\tsub/file with space\tlink\n'
+        'd\t0\t755\t-\tsub\n'
+        'f\t5\t644\t-\tsub/file with space\n')
+(p / 'pkg.members.sha256').write_text(members)
+(p / 'pkg.tree.tsv').write_text(tree)
+(p / 'pkg.marker.json').write_text(json.dumps(dict(schema='tj-pack-marker/v1', pkg='pkg', task='job',
+    source=str(base / 'source/pkg'), created='2026-10-16T21:11:39Z', bytes=5, files=2, entries=4,
+    members_sha256=hashlib.sha256(members.encode()).hexdigest(), tree_sha256=hashlib.sha256(tree.encode()).hexdigest())) + '\n')
+PY
+}
+
+marker_no_delete() {
+  assert_equals "$MARKER_SNAP" "$(snapshot "$MARKER_SRC")" "$1: source intact"
+  assert_absent "$MARKER_DIR/source/.pkg.fm-pack-release" "$1: no rename remains"
+  assert_absent "$MARKER_DIR/pack/pkg.release.json" "$1: no release record"
+}
+
+# Rebind manifest digests only, so parser fixtures trip their own guard, not
+# the digest guard too. No production parser participates in fixture creation.
+marker_rebind() {
+  python3 - "$MARKER_DIR/pack" <<'PY'
+import hashlib, json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); f = p / 'pkg.marker.json'
+m = json.loads(f.read_text())
+for suffix, key in [('members.sha256', 'members_sha256'), ('tree.tsv', 'tree_sha256')]:
+    m[key] = hashlib.sha256((p / ('pkg.' + suffix)).read_bytes()).hexdigest()
+f.write_text(json.dumps(m) + '\n')
+PY
+}
+
+test_marker() {
+  local out rc variant file snap
+  make_marker valid || fail 'marker fixture construction'
+  MARKER_SNAP=$(snapshot "$MARKER_SRC")
+  out=$(run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
+  expect_code 2 "$rc" 'marker release needs a fresh verification record'
+  assert_contains "$out" 'invalid marker verification record' 'missing record refusal'
+  marker_no_delete 'missing verification record'
+  out=$(run_pack verify "$MARKER_IMG" --against "$MARKER_SRC" 2>&1); rc=$?
+  expect_code 0 "$rc" 'valid marker verifies'
+  assert_contains "$out" 'source unchanged' 'marker verification includes source'
+  assert_equals fm-pack-marker-verification/v1 "$(jq -r .format "$MARKER_DIR/pack/pkg.verify.json")" 'versioned record'
+  out=$(run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test --window 604800 2>&1); rc=$?
+  expect_code 75 "$rc" 'marker release honors fresh verification window'
+  marker_no_delete 'window'
+  printf '{"sites":{"tetjet":"ledger-tree:%s"}}\n' "$MARKER_SRC" >"$MARKER_DIR/sites.json"
+  out=$(run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test --ref "$MARKER_DIR/sites.json" 2>&1); rc=$?
+  expect_code 1 "$rc" 'unresolved sites.json refuses marker release'
+  assert_contains "$out" 'still names' 'reference refusal names the unresolved reference'
+  marker_no_delete 'sites.json'
+  # A same-size source edit is invisible in this format's historical tree.
+  printf 'other' >"$MARKER_SRC/sub/file with space"
+  snap=$(snapshot "$MARKER_SRC")
+  out=$(run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
+  expect_code 1 "$rc" 'marker source hash mismatch refuses'
+  assert_contains "$out" 'member hash mismatch' 'source hashes supplement missing historical mtime'
+  assert_equals "$snap" "$(snapshot "$MARKER_SRC")" 'changed source not deleted'
+  printf 'hello' >"$MARKER_SRC/sub/file with space"
+  printf '{"sites":{"tetjet":"image-view:pkg"}}\n' >"$MARKER_DIR/sites.json"
+  out=$(run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test --ref "$MARKER_DIR/sites.json" 2>&1); rc=$?
+  expect_code 0 "$rc" 'valid marker releases through R2'
+  assert_present "$MARKER_SRC/STORED.md" 'released marker leaves stub'
+  assert_absent "$MARKER_SRC/sub" 'released marker removes original entries'
+  assert_equals released "$(jq -r .state "$MARKER_DIR/pack/pkg.release.json")" 'normal release receipt'
+
+  for variant in missing-members missing-tree malformed-members malformed-tree hash schema tree-kind tree-size tree-perm tree-link \
+      digest record-stale record-malformed empty-members empty-tree partial-members nul-tree directory-tree fifo-members \
+      symlink-members unreadable-tree unknown-field duplicate-field empty-unit; do
+    make_marker "$variant" || fail "marker fixture $variant"
+    MARKER_SNAP=$(snapshot "$MARKER_SRC")
+    # A real record exists before corruption, so release cannot pass merely
+    # because it is missing one. Verification failure must not refresh it.
+    out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+    expect_code 0 "$rc" "$variant baseline verifies"
+    snap=$(sha256sum <"$MARKER_DIR/pack/pkg.verify.json")
+    file="$MARKER_DIR/pack/pkg"
+    case "$variant" in
+      missing-members) rm "$file.members.sha256" ;;
+      missing-tree) rm "$file.tree.tsv" ;;
+      malformed-members) printf 'not a hash\n' >"$file.members.sha256"; marker_rebind ;;
+      malformed-tree) printf 'unknown tree\n' >"$file.tree.tsv"; marker_rebind ;;
+      hash) flip_first_hash "$file.members.sha256"; marker_rebind ;;
+      schema) jq '.schema = "tj-pack-marker/v9"' "$file.marker.json" >"$file.new"; mv "$file.new" "$file.marker.json" ;;
+      tree-kind) python3 - "$file.tree.tsv" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1]); p.write_text(p.read_text().replace('l\t0\t777\tsub/file with space\tlink', 'd\t0\t777\t-\tlink'))
+PY
+        marker_rebind ;;
+      tree-size) printf 'HELLO!' >"$MARKER_SRC/sub/file with space"
+        # Image mismatch without an unrelated manifest/census defect.
+        python3 - "$file.tree.tsv" "$file.marker.json" <<'PY'
+from pathlib import Path
+import json, sys
+p = Path(sys.argv[1]); p.write_text(p.read_text().replace('f\t5\t', 'f\t6\t'))
+p = Path(sys.argv[2]); m = json.loads(p.read_text()); m['bytes'] = 6; p.write_text(json.dumps(m))
+PY
+        marker_rebind; MARKER_SNAP=$(snapshot "$MARKER_SRC") ;;
+      tree-perm|tree-link) python3 - "$file.tree.tsv" "$variant" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1]); text = p.read_text()
+text = text.replace('644', '600') if sys.argv[2] == 'tree-perm' else text.replace('sub/file with space\tlink', 'sub\tlink')
+p.write_text(text)
+PY
+        marker_rebind ;;
+      digest) printf '\n' >>"$file.members.sha256" ;;
+      record-stale) jq '.created = "2026-10-17T21:11:39Z"' "$file.marker.json" >"$file.new"; mv "$file.new" "$file.marker.json" ;;
+      record-malformed) printf '{}' >"$file.verify.json" ;;
+      empty-members) : >"$file.members.sha256"; marker_rebind ;;
+      empty-tree) : >"$file.tree.tsv"; marker_rebind ;;
+      partial-members) printf '%064d  empty' 0 >"$file.members.sha256"; marker_rebind ;;
+      nul-tree) printf '\0' >>"$file.tree.tsv"; marker_rebind ;;
+      directory-tree) rm "$file.tree.tsv"; mkdir "$file.tree.tsv" ;;
+      fifo-members) rm "$file.members.sha256"; mkfifo "$file.members.sha256" ;;
+      symlink-members) mv "$file.members.sha256" "$file.saved"; ln -s "$file.saved" "$file.members.sha256" ;;
+      unreadable-tree) chmod 000 "$file.tree.tsv" ;;
+      unknown-field) jq '.extra = true' "$file.marker.json" >"$file.new"; mv "$file.new" "$file.marker.json" ;;
+      duplicate-field) printf '{"schema":"tj-pack-marker/v1",' >"$file.new"; tail -c +2 "$file.marker.json" >>"$file.new"; mv "$file.new" "$file.marker.json" ;;
+      empty-unit)
+        # Healthy empty manifests are valid, but must agree with the image.
+        printf '%s\n' '# tj-pack-tree/v1	kind	size	perm	link	path' >"$file.tree.tsv"
+        : >"$file.members.sha256"
+        jq '.bytes=0 | .files=0 | .entries=0' "$file.marker.json" >"$file.new"; mv "$file.new" "$file.marker.json"
+        marker_rebind ;;
+    esac
+    out=$(run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
+    [ "$rc" != 0 ] || fail "$variant release must refuse"
+    marker_no_delete "$variant"
+    case "$variant" in record-stale|record-malformed) continue ;; esac
+    out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+    [ "$rc" != 0 ] || fail "$variant verify must refuse"
+    assert_equals "$snap" "$(sha256sum <"$file.verify.json")" "$variant failed verify never updates record"
+    marker_no_delete "$variant verify"
+  done
+  make_marker empty || fail 'empty marker fixture'
+  # A genuinely empty unit is healthy, unlike an empty manifest for a
+  # nonempty image. Rebuild only inside this fixture's private world.
+  rm -rf "$MARKER_SRC/sub" "$MARKER_SRC/empty" "$MARKER_SRC/link"
+  rm "$MARKER_IMG"
+  mksquashfs "$MARKER_SRC" "$MARKER_IMG" -keep-as-directory -noappend -no-progress -quiet -processors 1 >/dev/null || fail 'empty image'
+  (cd "$MARKER_DIR/pack" && sha256sum pkg.sqfs >pkg.sqfs.sha256)
+  file="$MARKER_DIR/pack/pkg"
+  : >"$file.members.sha256"
+  printf '# tj-pack-tree/v1\tkind\tsize\tperm\tlink\tpath\n' >"$file.tree.tsv"
+  jq '.bytes=0 | .files=0 | .entries=0' "$file.marker.json" >"$file.new"; mv "$file.new" "$file.marker.json"
+  marker_rebind
+  out=$(run_pack verify "$MARKER_IMG" --against "$MARKER_SRC" 2>&1); rc=$?
+  expect_code 0 "$rc" 'healthy empty marker verifies'
+  out=$(run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
+  expect_code 0 "$rc" 'healthy empty marker releases'
+  pass 'marker verification, receipt binding, manifest readers and R2 release'
+}
+
 test_no_publication_waits
 test_pack_round_trip
 test_machine_share
@@ -1494,3 +1671,4 @@ test_release_read_failures
 test_release_process_scan
 test_release
 test_candidates
+test_marker
