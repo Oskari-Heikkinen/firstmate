@@ -647,7 +647,7 @@ cmd_park() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --check-interval)
-        case "${2-}" in [1-9]|[1-9][0-9]|[12][0-9][0-9]|300) check_interval=$2 ;; *) die "--check-interval must be 1..300 seconds" ;; esac
+        case "${2-}" in [1-9]|[1-9][0-9]|[12][0-9][0-9]|300|301) check_interval=$2 ;; *) die "--check-interval must be 1..300 seconds" ;; esac
         shift 2 ;;
       --open-ended) open_ended=1; shift ;;
       --relocation-safe) relocation_safe=1; shift ;;
