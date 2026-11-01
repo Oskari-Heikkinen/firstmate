@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Merge-queue owner-side glue: a built-in process-event adapter for tasks that
 # hand a pushed head to an external merge train instead of landing it
-# themselves. The worker hands the head over and exits; one watch per waiting
+# themselves. The worker hands the head over and declares a wait; one watch per waiting
 # head polls the queue tokenlessly and wakes the home only on that head's final
 # RESULT or a queue STALL line; and the routine outcomes are settled by this
 # script with no agent turn.
 #
 # Usage:
 #   fm-procevent-merge-queue.sh handoff <task-id> <branch> <head40>
+#                               [--expect <UTC|+seconds>] [--requested | --open-ended]
 #                               [--resume-note <text> | --resume-note-file <path>]
 #                               -- <note>...
 #   fm-procevent-merge-queue.sh arm <task-id> <head40>
@@ -22,11 +23,18 @@
 # handoff    Run by the worker (with FM_HOME naming its supervising home) once
 #            its head is pushed to <branch>: runs the queue's own handoff.sh
 #            with this home's configured name, arms the watch, stores the
-#            optional resume note for a later relaunch, and parks the worker
-#            through fm-park.sh --adopt-merge-queue with a merge-result wait tag.
-#            Park adopts this watch, records the incarnation, and stops the
-#            worker; it arms no second resume watch. A refused queue handoff
+#            optional resume note, and delegates the expected-time policy to
+#            fm-park.sh --adopt-merge-queue with a merge-result wait tag.
+#            An explicit --expect follows the park owner's threshold policy;
+#            omission preserves legacy parking for already-issued worker briefs.
+#            --requested and --open-ended retain the park owner's meanings.
+#            Policy validation precedes queue submission and source arming.
+#            Both adopt this watch and record the incarnation, without a
+#            second resume watch. A refused queue handoff
 #            arms and appends nothing.
+# submit     Internal fm-park.sh seam: submit <task> <branch> <head> <note> [<resume-note>].
+#            Called only after the park owner validates the entire wait policy;
+#            runs handoff.sh and arms the source, without another policy check.
 # arm        Register the watch for one handed-over head (idempotent). Use it
 #            to re-arm after an `error` outcome or when a head was handed over
 #            by hand. The source id is merge-queue-<task-id>-<head8>, so a new
@@ -39,11 +47,21 @@
 # classify   Print the captured outcome class: landed-clean, landed-unproven,
 #            culprit, conflict, precheck-unavailable, superseded, dropped,
 #            unexpected, stall, error, or unknown (malformed capture).
+# pending-result <task> <head>
+#            Internal conversion preflight: print the first pending non-stall
+#            capture for this owner, empty on none; malformed captures refuse.
 # settle     Apply one captured outcome (see below). Exit 0 when fully handled
 #            here, 1 when the home's firstmate still has to act on it.
+#            Uses fm-procevent-lib.sh's outer task transition lock, shared with
+#            park conversion. Reads live/parked state only under that lock.
+#            Autohandle holds the lock through the handled acknowledgement and
+#            rechecks it there, so competing handlers cannot duplicate delivery.
 # retire     Stop a head's watch. Captured results are never touched.
 # watch      The blocking child the generic runner executes; never run it in a
 #            conversational turn. It emits one outcome document on stdout.
+#            While pending it calls the park owner's expire-queue under the
+#            shared transition lock; no additional listener is registered.
+#            A failed expiry emits error for supervision, never a guessed park.
 # terminal, self-announcing, autohandle
 #            The generic runner's adapter seams (bin/fm-procevent.sh header).
 #            Every outcome but `stall` ends the watch. The adapter is
@@ -75,7 +93,15 @@
 #   culprit, conflict
 #                    Relaunches the worker in its existing copy through
 #                    bin/fm-control.sh relaunch with the RESULT line and the
-#                    stored resume note. A refused relaunch leaves the wake.
+#                    stored resume note, or sends that note durably to the
+#                    adopted live waiter without a relaunch. Live delivery relies
+#                    on the durable ordinary inbox plus its watcher doorbell and
+#                    unread-message escalation ladder (fm-task-inbox-lib.sh), not
+#                    fire-and-forget delivery. Declared waits never mute that ladder.
+#                    A successful parked
+#                    resume is counted through fm-park-churn.sh's token-dedup
+#                    owner; failed launches and live results do not count.
+#                    A refused delivery or relaunch leaves the wake.
 #   precheck-unavailable
 #                    The train could not complete the head's precheck (for
 #                    example its run budget ran out): final, nothing landed, and
@@ -354,12 +380,29 @@ cmd_arm() {
   printf 'armed: %s\n' "$sid"
 }
 
+cmd_submit() {
+  local task=${1-} branch=${2-} head=${3-} note=${4-} dir home
+  cmd_source_id "$task" "$head" >/dev/null || return 1
+  [ -n "$branch" ] && [ -n "$note" ] || die "queue submission needs a branch and note"
+  dir=$(queue_dir) || die "no merge queue is configured"
+  home=$(home_name)
+  "$dir/handoff.sh" "$home" "$task" "$branch" "$head" "$note" || die "the queue refused the handoff; nothing was armed"
+  if [ "$#" -ge 5 ]; then
+    (umask 077; mkdir -p "$MQ_STATE") || die "cannot create $MQ_STATE"
+    printf '%s\n' "$5" > "$MQ_STATE/$task.resume" || die "cannot store the resume note"
+  fi
+  ( cmd_arm "$task" "$head" ) || die "handed $head to the queue but could not arm its watch; run: $SELF arm $task $head"
+}
+
 cmd_handoff() {
-  local task=${1-} branch=${2-} head=${3-} resume='' resume_set=0 dir home note tmp sid
+  local task=${1-} branch=${2-} head=${3-} resume='' resume_set=0 dir note tmp sid
+  local -a park_args=()
   [ "$#" -ge 3 ] || usage
   shift 3
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --expect) [ "$#" -ge 2 ] || die "--expect needs a UTC time or +seconds"; park_args+=(--expect "$2"); shift 2 ;;
+      --requested|--open-ended) park_args+=("$1"); shift ;;
       --resume-note) [ "$#" -ge 2 ] || die "--resume-note needs text"; resume=$2; resume_set=1; shift 2 ;;
       --resume-note-file)
         [ "$#" -ge 2 ] && [ -f "$2" ] || die "--resume-note-file needs a readable file"
@@ -369,18 +412,13 @@ cmd_handoff() {
     esac
   done
   note="$*"
+  [ -n "$branch" ] || die "handoff needs a branch"
   [ -n "$note" ] || die "handoff needs a short note after --"
   cmd_source_id "$task" "$head" >/dev/null || exit 1
   [ -f "$STATE/$task.meta" ] || die "no task record for $task in this home (is FM_HOME set to the supervising home?)"
   dir=$(queue_dir) || die "no merge queue is configured: set dir= in $CONFIG/merge-queue"
   [ -x "$dir/handoff.sh" ] || die "the queue has no executable handoff.sh: $dir"
-  home=$(home_name)
-  "$dir/handoff.sh" "$home" "$task" "$branch" "$head" "$note" || die "the queue refused the handoff; nothing was armed"
-  (umask 077; mkdir -p "$MQ_STATE") || die "cannot create $MQ_STATE"
-  if [ "$resume_set" = 1 ]; then
-    printf '%s\n' "$resume" > "$MQ_STATE/$task.resume" || die "cannot store the resume note"
-  fi
-  ( cmd_arm "$task" "$head" ) || die "handed $head to the queue but could not arm its watch; run: $SELF arm $task $head"
+  [ "$resume_set" != 1 ] || park_args+=(--queue-resume-note "$resume")
   sid=$(source_id_for "$task" "$head")
   tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-queue-handoff.XXXXXX") || die "cannot write park handoff"
   {
@@ -390,10 +428,11 @@ cmd_handoff() {
     printf '## Next steps\nThe queue source %s owns settlement; on conflict, culprit or precheck-unavailable follow the RESULT and resume note.\n' "$sid"
     [ "$resume_set" -eq 0 ] || printf '%s\n' "$resume"
   } > "$tmp"
-  FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-park.sh" "$task" --handoff "$tmp" --adopt-merge-queue "$head"
+  FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-park.sh" "$task" --handoff "$tmp" --adopt-merge-queue "$head" \
+    --submit-merge-queue "$branch" "$note" ${park_args[@]+"${park_args[@]}"}
   local rc=$?
   rm -f -- "$tmp"
-  [ "$rc" -eq 0 ] || die "handed over and armed, but parking failed; the queue source is $sid"
+  [ "$rc" -eq 0 ] || die "queue handoff/wait failed for $task; see the refusal above"
   printf 'handed: %s %s\n' "$task" "$head"
 }
 
@@ -419,7 +458,7 @@ emit() {  # <sid> <task> <head> <status> <detail> [<line>]
 }
 
 cmd_watch() {
-  local task=${1-} head=${2-} sid interval budget errors=0 line rc
+  local task=${1-} head=${2-} sid interval budget errors=0 line rc expiry_out
   sid=$(cmd_source_id "$task" "$head") || exit 1
   interval=$(poll_interval)
   budget=${FM_MERGE_QUEUE_ERROR_BUDGET:-5}
@@ -431,6 +470,10 @@ cmd_watch() {
       exit 0
     fi
     if [ "$rc" -eq 0 ]; then
+      if ! expiry_out=$(FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-park.sh" expire-queue "$task" "$head" 2>&1); then
+        emit "$sid" "$task" "$head" error "queue live-wait expiry failed: ${expiry_out//$'\n'/ }; reconcile and re-arm $sid"
+        exit 0
+      fi
       line=$(queue_new_stall "$head"); rc=$?
       if [ "$rc" -eq 0 ] && [ -n "$line" ]; then
         emit "$sid" "$task" "$head" stall "the merge queue reported a stall" "$line"
@@ -472,8 +515,8 @@ relaunch_note() {  # <line> <head> <task>
   else
     printf '\nFix what the result names in this copy, re-run the gate, push a new head to your branch, and hand it over again with:\n'
   fi
-  printf "  FM_HOME='%s' '%s' handoff %s <branch> <new-head40> [--resume-note <text>] -- <note>\n" "$FM_HOME" "$SELF" "$3"
-  printf 'then stop.\n'
+  printf "  FM_HOME='%s' '%s' handoff %s <branch> <new-head40> --expect <UTC|+seconds> [--resume-note <text>] -- <note>\n" "$FM_HOME" "$SELF" "$3"
+  printf 'then end the turn; the adapter owns the live or parked result wait.\n'
 }
 
 # Append the per-file receipt to the existing task body before cleanup can
@@ -553,7 +596,37 @@ settle_landed_unproven() {  # <task> <head> <line>
 }
 
 cmd_settle() {
-  local file=${1-} class task head line sid note tmp rc
+  [ -f "${1-}" ] || die "result file does not exist: ${1-}"
+  fm_procevent_task_transition "$STATE" "$(doc_value "$1" task)" settle cmd_settle_locked "$@"
+}
+
+cmd_settle_locked() {
+  local file=${1-} task head sid token='' rc=0 note
+  task=$(doc_value "$file" task); head=$(doc_value "$file" head)
+  sid=$(cmd_source_id "$task" "$head") || return 1
+  if [ "$(meta_value "$task" park_state)" = live ] &&
+     [ "$(meta_value "$task" park_source)" = "$sid" ] &&
+     [ "$(meta_value "$task" park_spawn_gen)" = "$(meta_value "$task" spawn_gen)" ]; then
+    token=$(meta_value "$task" park_token)
+  fi
+  cmd_apply_result_locked "$file" || return $?
+  # Every successfully applied terminal outcome retires its live wait, not
+  # just outcomes delivered back to the worker. Pending/error results keep it
+  # for reconciliation; cleanup may already have removed the whole task record.
+  if [ -n "$token" ] && [ "$(meta_value "$task" park_state)" = live ] && cmd_terminal "$file"; then
+    FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-park.sh" complete-live-queue "$task" "$token" || rc=$?
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+      note="queue result $head was applied for $task but live-wait completion failed; inspect $STATE/$task.meta; do not repeat the result action"
+      printf 'warning: %s\n' "$note" >&2
+      fm_wake_append check "merge-queue-status-$task-${head:0:8}" "check: $note" \
+        || printf 'warning: applied queue result completion failure could not be queued for supervision\n' >&2
+    fi
+  fi
+  return 0
+}
+
+cmd_apply_result_locked() {
+  local file=${1-} class task head line sid note tmp rc token park_gen
   [ -f "$file" ] || die "result file does not exist: $file"
   cd / || true
   task=$(doc_value "$file" task)
@@ -568,10 +641,59 @@ cmd_settle() {
     culprit|conflict|precheck-unavailable)
       tmp=$(mktemp "${TMPDIR:-/tmp}/fm-merge-queue-note.XXXXXX") || return 1
       relaunch_note "$line" "$head" "$task" > "$tmp"
-      FM_HOME=$FM_HOME "$CONTROL_BIN" "$task" relaunch --note-file "$tmp" >/dev/null 2>&1
-      rc=$?
-      rm -f "$tmp"
-      [ "$rc" -eq 0 ] || { printf 'relaunch of %s was refused\n' "$task" >&2; return 1; }
+      if [ "$(meta_value "$task" park_state)" = live ]; then
+        token=$(meta_value "$task" park_token)
+        if [ -z "$token" ] || [ "$(meta_value "$task" park_source)" != "$sid" ] ||
+           [ "$(meta_value "$task" park_spawn_gen)" != "$(meta_value "$task" spawn_gen)" ]; then
+          rm -f "$tmp"
+          printf 'live queue wait for %s was superseded; result needs reconciliation\n' "$task" >&2
+          return 1
+        fi
+        FM_HOME=$FM_HOME "${FM_MERGE_QUEUE_SEND_BIN:-$SCRIPT_DIR/fm-send.sh}" "$task" --no-resume \
+          "$(cat "$tmp")" >/dev/null
+        rc=$?
+        rm -f "$tmp"
+        [ "$rc" -eq 0 ] || return 1
+        rc=0
+        FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-park.sh" complete-live-queue "$task" "$token" || rc=$?
+        [ "$rc" -ne 3 ] || return 0 # The worker already declared newer work.
+        append_status "$task" "working: merge queue returned $class for $head; result delivered to the live worker" || rc=1
+        if [ "$rc" -ne 0 ]; then
+          note="queue result $head was delivered to live task $task but its wait completion or status recording failed; inspect $STATE/$task.meta and $STATE/$task.status; do not resend"
+          printf 'warning: %s\n' "$note" >&2
+          fm_wake_append check "merge-queue-status-$task-${head:0:8}" "check: $note" \
+            || printf 'warning: the delivered queue result status failure could not be queued for supervision\n' >&2
+        fi
+        # Delivery is the commit point; secondary notice failures never resend.
+        return 0
+      else
+        token=; park_gen=
+        if [ "$(meta_value "$task" park_state)" = parked ] && [ "$(meta_value "$task" park_source)" = "$sid" ] &&
+           [ "$(meta_value "$task" park_spawn_gen)" = "$(meta_value "$task" spawn_gen)" ]; then
+          token=$(meta_value "$task" park_token)
+          park_gen=$(meta_value "$task" park_spawn_gen)
+        fi
+        FM_HOME=$FM_HOME "$CONTROL_BIN" "$task" relaunch --note-file "$tmp" >/dev/null 2>&1
+        rc=$?
+        rm -f "$tmp"
+        [ "$rc" -eq 0 ] || { printf 'relaunch of %s was refused\n' "$task" >&2; return 1; }
+        # Confirmed relaunch ends this adopted park, never a newer incarnation.
+        # Completion is bookkeeping: a failure alarms, never retries the launch.
+        if [ -n "$token" ]; then
+          rc=0
+          FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-park.sh" complete-resumed-queue "$task" "$token" "$park_gen" "$sid" || rc=$?
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+            note="queue result $head relaunched task $task but adopted-park retirement failed; inspect $STATE/$task.meta; do not relaunch again"
+            printf 'warning: %s\n' "$note" >&2
+            fm_wake_append check "merge-queue-status-$task-${head:0:8}" "check: $note" \
+              || printf 'warning: confirmed queue resume retirement failure could not be queued for supervision\n' >&2
+          fi
+        fi
+        if [ -n "$token" ]; then
+          "$SCRIPT_DIR/fm-park-churn.sh" record "$task" '' "$token" >/dev/null \
+            || printf 'warning: task %s resumed, but its resume could not be counted for the churn alarm; settlement will not repeat the successful launch\n' "$task" >&2
+        fi
+      fi
       ;;
     superseded) return 0 ;;
     dropped)
@@ -590,10 +712,39 @@ cmd_settle() {
 }
 
 cmd_autohandle() {
+  [ -f "${3-}" ] || die "result file does not exist: ${3-}"
+  fm_procevent_task_transition "$STATE" "$(doc_value "$3" task)" settle cmd_autohandle_locked "$@"
+}
+
+cmd_autohandle_locked() {
   local sid=${1-} seq=${2-} file=${3-}
   [ -n "$sid" ] && [ -n "$seq" ] && [ -f "$file" ] || usage
-  cmd_settle "$file" || return 1
+  [ "$sid" = "$(doc_value "$file" merge-queue)" ] &&
+    [ "$file" = "$(fm_procevent_inbox_dir "$STATE")/$sid.$seq.result" ] || die "capture identity does not match acknowledgement"
+  fm_procevent_is_handled "$STATE" "$sid" "$seq" && return 0
+  cmd_settle_locked "$file" || return 1
   "$SCRIPT_DIR/fm-procevent.sh" handled "$sid" "$seq" >/dev/null
+}
+
+# Read captured outcomes using the generic inbox owner. A terminal capture may
+# have retired its registration before settlement; it still owns the result.
+cmd_pending_result() {
+  local task=${1-} head=${2-} sid pending result base
+  sid=$(cmd_source_id "$task" "$head") || return 1
+  pending=$(fm_procevent_pending "$STATE") || return 1
+  while IFS= read -r result; do
+    [ -n "$result" ] || continue
+    base=${result%.result}; base=${base%.*}
+    [ "$base" = "$(fm_procevent_inbox_dir "$STATE")/$sid" ] || continue
+    [ "$(doc_value "$result" merge-queue)" = "$sid" ] &&
+      [ "$(doc_value "$result" task)" = "$task" ] && [ "$(doc_value "$result" head)" = "$head" ] \
+      || die "captured queue result has inconsistent ownership: $result"
+    case "$(outcome_class "$result")" in
+      stall) continue ;;
+      unknown) die "captured queue result is unreadable or unrecognized: $result" ;;
+      *) printf '%s\n' "$result"; return 0 ;;
+    esac
+  done <<< "$pending"
 }
 
 cmd_retire() {
@@ -604,9 +755,11 @@ cmd_retire() {
 
 case "${1-}" in
   handoff)         shift; cmd_handoff "$@" ;;
+  submit)          shift; cmd_submit "$@" ;;
   arm)             shift; cmd_arm "$@" ;;
   result)          shift; cmd_result "$@" ;;
   result-ready)    shift; cmd_result_ready "$@" ;;
+  pending-result)  shift; cmd_pending_result "$@" ;;
   source-id)       shift; cmd_source_id "$@" ;;
   classify)        shift; cmd_classify "$@" ;;
   settle)          shift; cmd_settle "$@" ;;

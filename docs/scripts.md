@@ -192,7 +192,8 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-lease.sh`            | Claim, release, inspect, and sweep per-task supervision leases                       |
 | `fm-lease-lib.sh`        | One owner of the supervision lease contract and the main-only role-partition guards  |
 | `fm-control.sh`          | Agent lifecycle control plane: allowlisted `interrupt`, `exit`, and transactional `relaunch` verbs for an exact task id ([agent-control.md](agent-control.md)) |
-| `fm-park.sh`             | Park a ship or scout that only waits on an external result: validate its handoff, arm a resume watch, stop the agent, and relaunch it fresh with the handoff when the condition holds |
+| `fm-park.sh`             | Park a ship or scout whose expected wait on an external result is at or above the live-wait threshold, or wait live on a shorter one (`await`): validate its handoff, arm a resume watch, stop the agent, and relaunch it fresh with the handoff when the condition holds |
+| `fm-park-churn.sh`       | Count each task's park resumes and wake the supervisor, once per task per day, when one resumes three times within an hour |
 | `fm-park-observe-lib.sh` | Cheap local condition change hints for the when runner; never resume authority |
 | `fm-wait-cond-lib.sh`    | Dependency-free evaluator of the condition kinds a park and a declared wait share (file, receipt, inbox, and a process named by pid plus start time) |
 | `fm-control-lib.sh`      | One executable owner of the control-plane verb allowlist, per-harness interrupt/exit mechanics, per-backend capability, and the endpoint-absence proof both `exit` and `relaunch` read |

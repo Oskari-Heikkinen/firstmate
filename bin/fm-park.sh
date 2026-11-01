@@ -5,12 +5,58 @@
 #
 # Usage:
 #   fm-park.sh <task-id> --handoff <file> [--when <condition>] [--deadline <iso>]
+#              [--expect <UTC|+seconds>] [--requested]
 #              [--adopt-merge-queue <head40>] [--open-ended] [--relocation-safe]
+#   fm-park.sh await <task-id> <condition>  live wait under the threshold below
+#   fm-park.sh expire-queue <task-id> <head40>  internal queue-owner poll
 #   fm-park.sh release <task-id> <park-token>  bounded registered copy-return action
 #   fm-park.sh release-ready <task-id> <park-token>  cheap release condition
 #   fm-park.sh pickup <task-id>        explicit authority for an inbox-only wait
 #   fm-park.sh request-pickup <task-id>  pickup request from a sender outside the lease
 #   fm-park.sh poll <task-id> <park-token>  incarnation-bound listener condition
+#
+# Live waits. A park relaunches a fresh session, which re-reads its whole
+# context, while a live session inside the prompt cache's one-hour lifetime
+# pays a fraction of it per wake; past that lifetime both pay a full rewrite
+# and parking also frees memory. So a worker parking itself states, with
+# --expect, when it expects the condition to hold, and park refuses with exit
+# 4, installing nothing, when that is less than the home's live-wait threshold
+# away: the worker waits live instead, with `await` (or, for its own inbox, a
+# paused [wait=inbox:<id>] line and a turn end, since a steer wakes it). Only a
+# wait at or above the threshold parks. The threshold is the whole minutes in the first
+# line of config/park-live-wait-minutes (local; 60 when absent; 0 parks every
+# wait); a present file that is empty, unreadable or not 0-1440 refuses the
+# park and names the file. A self-park without --expect refuses, naming this
+# rule, unless --requested (firstmate or the memory guard asked for this
+# park: such a request bypasses estimate policy), --open-ended (no expected end), or the
+# current continuous live wait on the same condition that reached its bound.
+# Queue adoption has the compatibility default described below.
+# A park the supervisor or the memory guard runs for a task
+# is not a self-park and bypasses estimate policy, never custody or handoff safety.
+# A handoff naming an already-completed queue condition refuses with exit 1,
+# naming the stale condition and requiring a current handoff, even when requested.
+# Settling a captured queue result instead of stopping also returns exit 1 after
+# successful settlement; that result stays acknowledged and must not be repeated.
+# Callers must treat that failure as not parked and retry or alarm, not report a stop.
+#
+# await declares the live wait itself: it appends a paused line tagged
+# [wait=process:<own pid>:<start>:<bound>], so the watcher acknowledges the
+# idle session while the waiter runs, records its condition, bound and spawn
+# generation, and polls at the park cadence. Even the first dependency read
+# follows the declaration and is bounded by FM_PARK_PRECHECK_TIMEOUT and the
+# remaining overall budget (plus one second to stop children safely).
+# It exits 0 when the condition holds, 3 when
+# the threshold passes first (park then, with the park command, which that
+# record now allows), 2 on a malformed condition, an inbox: condition, a
+# threshold of 0, or FM_PARK_ERROR_BUDGET consecutive check errors, and 1 when
+# it cannot record the wait. Only exit 3 writes expiry permission, bound to the
+# task generation and unchanged latest status line. Completion, check errors,
+# cancellation, a new await and parking invalidate it; a killed waiter leaves
+# waiting, not expired, evidence. A later status line or generation invalidates
+# it too, so after exit 3 park before doing other work.
+# Run it as a command whose exit wakes the session:
+# in the background on Claude, in the foreground elsewhere. A waiter that dies
+# ends the process wait, so the watcher wakes the supervisor.
 #
 # config/park-release=on enables a per-home canary; absent/off retains copies.
 # --relocation-safe attests that no job, external producer, future result or
@@ -40,7 +86,34 @@
 # --adopt-merge-queue adopts only the exact built-in queue source already
 # registered for this task/head. Its condition must be the queue adapter's
 # result-ready command. It records park_source and emits [wait=merge-result:head]
-# but arms no resume watch: the queue adapter alone settles results. Cancel and
+# but arms no resume watch: the queue adapter alone settles results. For a
+# short expected self-wait it records park_state=live and leaves the session
+# running under that tag; a result requiring changes is delivered to that
+# session instead of relaunching it. The same queue watcher calls expire-queue
+# on each healthy pending poll: once elapsed time from park_at reaches the
+# freshly read threshold, it parks the still-current unresolved waiter through
+# the ordinary requested-park safety path. Captured/ready results and already
+# parked or replaced waits are left to their owners. A changed latest status
+# revokes automatic expiry, so a steer to other work is not stopped. No second listener is
+# armed. Unknown ownership, timing or condition state emits a supervised error.
+# Only the initial queue handoff keeps the
+# legacy parked default when --expect is omitted. An unrequested self-repark
+# under a preserved queue owner follows the ordinary estimate policy instead.
+# Parking an existing live or parked adopted waiter without adoption flags preserves its
+# verified queue owner and condition, including requested and supervisor parks.
+# Stale ownership or a handoff naming a different condition refuses instead of
+# silently replacing that queue owner with a generic resume listener.
+# Conversion, stop/cancel/resume and queue settlement share the outer per-task
+# transition lock (fm-procevent-lib.sh), acquired before metadata/source locks.
+# A captured result takes precedence over conversion: yield to its settlement
+# without stopping the worker or acknowledging it here. A completed queue wait
+# is not parked again merely because a concurrent request used its old handoff.
+# Internal queue handoff seam: --submit-merge-queue <branch> <note> with adoption
+# defers submission and source registration until all park policy checks pass.
+# Optional --queue-resume-note <text> is stored only after queue acceptance.
+# It invokes the queue adapter's submit command once, then verifies registration
+# and installs the already-validated wait without re-evaluating policy.
+# Cancel and
 # cleanup retire that source through ordinary guarded retirement. The queue
 # runner retires its durably captured terminal source before its landing action
 # only for this proven park incarnation, preserving evidence and acknowledgement.
@@ -48,6 +121,13 @@
 #   fm-park.sh check <condition>
 #   fm-park.sh resume <task-id>
 #   fm-park.sh cancel <task-id>
+#   fm-park.sh complete-live-queue <task-id> <park-token>
+#   fm-park.sh complete-resumed-queue <task-id> <park-token> <park-generation> <source>
+#           Queue settlement calls this only after confirmed relaunch. Under
+#           the metadata lock it retires only that exact parked incarnation;
+#           return 3 leaves superseding ownership untouched.
+#     Internal delivery acknowledgement: mark only that live queue incarnation
+#     completed without retiring its runner; exit 3 leaves a superseding wait untouched.
 #   fm-park.sh stop <task-id>
 #
 # This CLI is stable: a worker, its supervisor, and other automation (a memory
@@ -180,7 +260,8 @@
 # The .agents/skills/process-event-sources skill owns handling those wakes.
 #
 # Task record fields owned by this script (state/<id>.meta):
-#   park_state=parked|resumed|resume-failed|cancelled
+#   park_state=parked|live|completed|resumed|resume-failed|cancelled
+#              live/completed: adopted queue wait before/after inbox delivery
 #   park_handoff=<absolute path of data/<id>/handoff.md>
 #   park_when=<condition>
 #   park_deadline=<UTC ISO time>
@@ -200,6 +281,13 @@
 #   park_spawn_gen=<token>     the task's spawn_gen when it parked
 #   park_resumed_at=<epoch>    when the latest resume relaunched the task
 #   park_source=<source-id>    adopted queue source, empty for ordinary parks
+#   park_wait_status=<line>    exact declaration; later work revokes queue expiry
+#   live_wait_when=<condition> the latest live wait `await` declared
+#   live_wait_until=<epoch>    when that live wait reaches the threshold
+#   live_wait_state=waiting|expired  only an observed expiry permits parking
+#   live_wait_gen=<spawn_gen>  incarnation of the continuously waiting worker
+#   live_wait_status=<line>    bound declaration, then exact expiry publication;
+#                            any different status revokes the active wait/waiver
 #
 # Environment knobs:
 #   FM_PARK_INTERVAL       condition poll cadence in seconds (default by kind:
@@ -212,6 +300,8 @@
 #                          results always recheck at the normal cadence.
 #   FM_PARK_STABLE         consecutive true polls required (2)
 #   FM_PARK_ERROR_BUDGET   consecutive condition errors before waking (5)
+#   FM_PARK_LIVE_WAIT_SECS live-wait threshold in seconds, in place of
+#                          config/park-live-wait-minutes (tests)
 #   FM_PARK_DEADLINE_SECS  default deadline from now (604800) for file:,
 #                          pr-merged:, inbox: and cmd:
 #   FM_PARK_DEADLINE_MERGE_RESULT_SECS  merge-result: default deadline (10800)
@@ -314,16 +404,38 @@ task_resolve() {  # <id>
 # pr=/pr_head= pair stays the record's tail, which bin/fm-pr-lib.sh requires, so
 # the new lines go just before it.
 park_record() {
-  local lock tmp line placed=0 kv keys=' '
+  local lock tmp line placed=0 kv keys=' ' live_token='' resumed_token='' resumed_gen='' resumed_source=''
+  if [ "${1-}" = --if-live-token ]; then
+    live_token=${2-}; [ -n "$live_token" ] || return 1
+    shift 2
+  elif [ "${1-}" = --if-resumed-queue ]; then
+    resumed_token=${2-}; resumed_gen=${3-}; resumed_source=${4-}
+    [ -n "$resumed_token" ] && [ -n "$resumed_gen" ] && [ -n "$resumed_source" ] || return 1
+    shift 4
+  fi
   for kv in "$@"; do keys="$keys${kv%%=*} "; done
   lock=$(fm_meta_lock_path "$META") || return 1
-  fm_lock_acquire_wait "$lock"
+  fm_lock_acquire_wait "$lock" || return 1
+  if [ -n "$live_token" ]; then
+    if [ "$(meta_get park_state)" != live ] || [ "$(meta_get park_token)" != "$live_token" ] ||
+       [ "$(meta_get park_spawn_gen)" != "$(meta_get spawn_gen)" ]; then
+      fm_lock_release "$lock"
+      return 3
+    fi
+  fi
+  if [ -n "$resumed_token" ]; then
+    if [ "$(meta_get park_state)" != parked ] || [ "$(meta_get park_token)" != "$resumed_token" ] ||
+       [ "$(meta_get park_spawn_gen)" != "$resumed_gen" ] || [ "$(meta_get park_source)" != "$resumed_source" ]; then
+      fm_lock_release "$lock"
+      return 3
+    fi
+  fi
   tmp=$(mktemp "$STATE/.$ID.meta.park.XXXXXX") || { fm_lock_release "$lock"; return 1; }
   {
     while IFS= read -r line || [ -n "$line" ]; do
       case "$keys" in *" ${line%%=*} "*) continue ;; esac
       case "$line" in
-        park_*=*|wait_started_at=*)
+        park_*=*|wait_started_at=*|live_wait_*=*)
           [ "$#" -gt 0 ] || continue
           ;;
         pr=*)
@@ -424,6 +536,103 @@ park_default_deadline() {
   esac
   case "$secs" in ''|0*|*[!0-9]*) return 1 ;; esac
   printf '%s\n' "$secs"
+}
+
+# live_wait_threshold_to <var>: the live-wait threshold in seconds, from the
+# whole minutes on the first line of config/park-live-wait-minutes (60 minutes
+# when the file is absent). A present file that cannot be read, or that holds
+# no whole number of minutes from 0 to 1440, is a failed reading: print why on
+# stderr and return 1, never fall back to the default.
+live_wait_threshold_to() {
+  local _lwt_file="$CONFIG/park-live-wait-minutes" _lwt_line=
+  case "${FM_PARK_LIVE_WAIT_SECS-}" in
+    '') ;;
+    *[!0-9]*) printf 'fm-park: FM_PARK_LIVE_WAIT_SECS must be whole seconds: %s\n' "$FM_PARK_LIVE_WAIT_SECS" >&2; return 1 ;;
+    *) printf -v "$1" '%s' $((10#$FM_PARK_LIVE_WAIT_SECS)); return 0 ;;
+  esac
+  if [ ! -e "$_lwt_file" ] && [ ! -L "$_lwt_file" ]; then
+    printf -v "$1" '%s' 3600
+    return 0
+  fi
+  if [ -f "$_lwt_file" ]; then
+    { IFS= read -r _lwt_line < "$_lwt_file" || [ -n "$_lwt_line" ]; } 2>/dev/null || _lwt_line=
+  fi
+  _lwt_line=${_lwt_line//[[:space:]]/}
+  case "$_lwt_line" in
+    [0-9]|[0-9][0-9]|[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9])
+      if [ $((10#$_lwt_line)) -le 1440 ]; then
+        printf -v "$1" '%s' $((10#$_lwt_line * 60))
+        return 0
+      fi
+      ;;
+  esac
+  printf 'fm-park: %s must hold whole minutes from 0 to 1440 on its first line (it is empty, unreadable or out of range); fix or remove it\n' "$_lwt_file" >&2
+  return 1
+}
+
+# expect_epoch_to <var> <UTC|+seconds> <now>: the epoch a --expect value names;
+# 1 when it is malformed.
+expect_epoch_to() {
+  local _ee_value=$2 _ee_epoch
+  case "$_ee_value" in
+    +*)
+      case "${_ee_value#+}" in ''|*[!0-9]*) return 1 ;; esac
+      [ "${#_ee_value}" -le 9 ] || return 1
+      _ee_epoch=$(( $3 + 10#${_ee_value#+} ))
+      ;;
+    *) _ee_epoch=$(fm_utc_iso_to_epoch "$_ee_value") || return 1 ;;
+  esac
+  printf -v "$1" '%s' "$_ee_epoch"
+}
+
+# Retire permission as well as the active wait. A killed waiter never writes
+# expired; a completed/erroring/cancelled waiter cannot authorize a later park.
+live_wait_clear() {
+  park_record 'live_wait_when=' 'live_wait_until=' 'live_wait_state=' 'live_wait_gen=' 'live_wait_status='
+}
+
+# live_wait_rule <expect-value> <now>: the header's "Live waits" rule for a
+# worker parking itself. Returns when the park may go ahead; exits 4 with the
+# live-wait instructions, before anything is installed, when the worker should
+# wait live instead, and 1 when it cannot tell.
+live_wait_rule() {
+  local expect=$1 now=$2 expect_epoch threshold minutes await
+  local meta_live_wait_when meta_live_wait_until meta_live_wait_state meta_live_wait_gen meta_live_wait_status meta_spawn_gen
+  live_wait_threshold_to threshold || die "task $ID was not parked: the live-wait threshold cannot be read"
+  [ "$threshold" -gt 0 ] || return 0
+  minutes=$((threshold / 60))
+  meta_read live_wait_when live_wait_until live_wait_state live_wait_gen live_wait_status spawn_gen
+  if [ "$meta_live_wait_when" = "$HANDOFF_CONDITION" ] &&
+     [ "$meta_live_wait_state" = expired ] && [ -n "$meta_spawn_gen" ] &&
+     [ "$meta_live_wait_gen" = "$meta_spawn_gen" ] &&
+     [[ "$meta_live_wait_until" =~ ^[1-9][0-9]{0,9}$ ]] &&
+     [ "$meta_live_wait_until" -le "$now" ] &&
+     [ -n "$meta_live_wait_status" ] &&
+     [ "$meta_live_wait_status" = "$(tail -n 1 "$STATE/$ID.status")" ]; then
+    return 0
+  fi
+  expect_epoch=
+  if [ -n "$expect" ]; then
+    expect_epoch_to expect_epoch "$expect" "$now" \
+      || die "--expect must be a UTC time like 2026-10-02T12:00Z or +<seconds>: $expect"
+  fi
+  [ -n "$expect_epoch" ] || die "task $ID was not parked: a worker parking itself states when it expects $HANDOFF_CONDITION to hold, with --expect <UTC|+seconds>. A wait expected in less than $minutes minutes is waited live, not parked; one at or above the threshold parks. Add --requested when firstmate or the memory guard asked for this park, bypassing estimate policy but not handoff safety, or --open-ended when the wait has no expected end."
+  [ $((expect_epoch - now)) -lt "$threshold" ] || return 0
+  # Queue adoption keeps the adapter as the only result-action owner. A short
+  # wait is recorded below without stopping or arming an ordinary resume.
+  [ -z "${adopted-}" ] || return 4
+  case "$HANDOFF_CONDITION" in
+    inbox:*)
+      # shellcheck disable=SC2016 # Literal backticks quote commands for the reader.
+      printf 'fm-park: task %s was not parked: you expect %s in less than %s minutes, under this home'"'"'s live-wait threshold, so wait live: append `paused [wait=inbox:%s] [at=<epoch>]: <what you wait for>` with your brief'"'"'s status command and end your turn; a steer to your inbox wakes this session.\n' \
+        "$ID" "$HANDOFF_CONDITION" "$minutes" "$ID" >&2 ;;
+    *)
+      await="FM_HOME=$(printf '%q' "$FM_HOME") $(printf '%q' "$SCRIPT_DIR/fm-park.sh") await $ID $(printf '%q' "$HANDOFF_CONDITION")"
+      # shellcheck disable=SC2016 # Literal backticks quote commands for the reader.
+      printf 'fm-park: task %s was not parked: you expect %s in less than %s minutes, under this home'"'"'s live-wait threshold, so wait live: run `%s` as a command whose exit wakes this session (in the background on Claude, in the foreground elsewhere). It declares the wait itself and exits 0 when the condition holds, or 3 after %s minutes, when this same park command parks.\n' \
+        "$ID" "$HANDOFF_CONDITION" "$minutes" "$await" "$minutes" >&2 ;;
+  esac
+  return 4
 }
 
 # heavy_job_path: the heavy slot's heavy-job.sh, from the last path= line of
@@ -602,17 +811,27 @@ cmd_validate() {
 
 cmd_park() {
   local handoff='' want='' deadline_iso='' deadline_epoch now rel dest wt here detached=0 detach out adopted='' sid='' tag=''
-  local open_ended=0 relocation_safe=0 started token release_name release_timeout
+  local open_ended=0 relocation_safe=0 started token release_name release_timeout expect='' expect_set=0 requested=0 live_queue=0 rc park_state=parked
+  local queue_submit=0 queue_branch='' queue_note='' pending='' declaration latest
+  local -a queue_resume_args=()
   task_resolve "${1-}"
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --open-ended) open_ended=1; shift ;;
+      --requested) requested=1; shift ;;
+      --expect) expect=${2-}; expect_set=1; shift 2 || die "--expect needs a UTC time or +seconds" ;;
       --relocation-safe) relocation_safe=1; shift ;;
       --handoff) handoff=${2-}; shift 2 || die "--handoff needs a file" ;;
       --when) want=${2-}; shift 2 || die "--when needs a condition" ;;
       --deadline) deadline_iso=${2-}; shift 2 || die "--deadline needs a UTC time" ;;
       --adopt-merge-queue) adopted=${2-}; [ -n "$adopted" ] || die "--adopt-merge-queue needs a head"; shift 2 ;;
+      --queue-resume-note)
+        [ "$#" -ge 2 ] || die "--queue-resume-note needs text"
+        queue_resume_args=("$2"); shift 2 ;;
+      --submit-merge-queue)
+        [ "$#" -ge 3 ] || die "--submit-merge-queue needs a branch and note"
+        queue_submit=1; queue_branch=$2; queue_note=$3; shift 3 ;;
       *) die "unknown park argument: $1" ;;
     esac
   done
@@ -620,16 +839,50 @@ cmd_park() {
   case "$release_timeout" in ''|0*|*[!0-9]*) die "copy-release action bound must be an integer of at least 5 seconds" ;; esac
   [ "${#release_timeout}" -le 6 ] && [ "$release_timeout" -ge 5 ] || die "copy-release action bound must be 5..999999 seconds"
   [ -n "$handoff" ] || die "park needs --handoff <file> (sections: Goal, Done, Waiting for, Next steps)"
+  # Resolve and classify the estimate against one clock sample: validation
+  # and the condition precheck must not shorten a relative --expect duration.
+  now=$(date +%s)
   validate_handoff "$handoff" "$want"
   case "$(meta_get copy_state)" in ''|retained) ;; *) die "saved copy custody requires reconciliation or restoration, not re-park" ;; esac
   case "$HANDOFF_CONDITION" in inbox:*) [ "$HANDOFF_CONDITION" = "inbox:$ID" ] || die "inbox condition must name this task" ;; esac
+  if [ "$queue_submit" = 0 ] && [ "$(meta_get park_state)" = completed ] &&
+     [ "$(meta_get park_when)" = "$HANDOFF_CONDITION" ]; then
+    die "stale queue condition already completed: $HANDOFF_CONDITION; task $ID was not parked; provide a current handoff"
+  fi
+  # A session stop is not a change of result owner. In particular the memory
+  # guard calls ordinary park with the existing handoff, without adoption flags.
+  if [ "$queue_submit" = 0 ] && [ -z "$adopted" ] && [ -n "$(meta_get park_source)" ]; then
+    case "$(meta_get park_state)" in live|parked)
+      adopted=$(meta_get park_when)
+      adopted=${adopted##* }
+      fm_procevent_merge_queue_park_identity_matches "$STATE" "$ID" "$adopted" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" \
+        || die "cannot preserve the queue owner: its task incarnation or registration changed; reconcile before parking"
+      ;;
+    esac
+  fi
+  [ "$queue_submit" = 0 ] || [ -n "$adopted" ] || die "queue submission requires --adopt-merge-queue"
+  [ "${#queue_resume_args[@]}" = 0 ] || [ "$queue_submit" = 1 ] || die "queue resume note requires submission"
   if [ -n "$adopted" ]; then
-    fm_procevent_merge_queue_registration_matches "$STATE" "$ID" "$adopted" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" \
-      || die "no matching registered queue source for task $ID head $adopted"
+    sid=$("$SCRIPT_DIR/fm-procevent-merge-queue.sh" source-id "$ID" "$adopted") || die "invalid queue task or head"
     [ "$HANDOFF_CONDITION" = "cmd:$SCRIPT_DIR/fm-procevent-merge-queue.sh result-ready $adopted" ] \
       || die "adopted queue condition must be its result-ready command"
     [ -n "$(meta_get spawn_gen)" ] || die "adopting a queue source requires a task incarnation"
-    sid="merge-queue-$ID-${adopted:0:8}"
+    if [ "$queue_submit" = 0 ]; then
+      pending=$("$SCRIPT_DIR/fm-procevent-merge-queue.sh" pending-result "$ID" "$adopted") \
+        || die "cannot read captured queue results; conversion refused"
+      if [ -n "$pending" ]; then
+        fm_procevent_merge_queue_park_identity_matches "$STATE" "$ID" "$adopted" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" \
+          || die "captured queue result no longer owns this task incarnation"
+        printf 'queue result for %s is captured; handing it to settlement instead of parking\n' "$ID"
+        fm_procevent_task_transition_release
+        rc=0
+        "$SCRIPT_DIR/fm-procevent-merge-queue.sh" autohandle "$sid" "$(fm_procevent_result_sequence "$pending")" "$pending" || rc=$?
+        [ "$rc" -eq 0 ] || return "$rc"
+        die "queue condition settled instead of parking: $HANDOFF_CONDITION; task $ID was not parked; provide a current handoff"
+      fi
+      fm_procevent_merge_queue_registration_matches "$STATE" "$ID" "$adopted" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" \
+        || die "no matching registered queue source for task $ID head $adopted"
+    fi
     tag=" [key=merge-queue] [wait=merge-result:$adopted]"
   fi
   precheck_condition "$HANDOFF_CONDITION"
@@ -639,7 +892,14 @@ cmd_park() {
   if [ -n "$wt" ] && wt=$(cd "$wt" 2>/dev/null && pwd -P); then
     case "$here/" in "$wt"/*) detached=1 ;; esac
   fi
-  [ "$detached" -eq 0 ] || [ "$(meta_get harness)" != claude ] || refuse_claude_background_work
+  if [ "$detached" -eq 1 ] && [ "$requested" -eq 0 ] && [ "$open_ended" -eq 0 ] &&
+     { [ "$queue_submit" -eq 0 ] || [ "$expect_set" -eq 1 ]; }; then
+    live_wait_rule "$expect" "$now"
+    rc=$?
+    if [ "$rc" -eq 4 ] && [ -n "$adopted" ]; then live_queue=1; park_state=live
+    elif [ "$rc" -ne 0 ]; then exit "$rc"; fi
+  fi
+  [ "$live_queue" -eq 1 ] || [ "$detached" -eq 0 ] || [ "$(meta_get harness)" != claude ] || refuse_claude_background_work
   now=$(date +%s)
   if [ -n "$deadline_iso" ]; then
     deadline_epoch=$(fm_utc_iso_to_epoch "$deadline_iso") \
@@ -654,6 +914,24 @@ cmd_park() {
   deadline_iso=$(date -u -d "@$deadline_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
     || date -u -r "$deadline_epoch" +%Y-%m-%dT%H:%M:%SZ) || die "cannot format the deadline"
 
+  # An expiry is not a supervisor request to interrupt unrelated work. Check
+  # continuity after the potentially blocking preflight, before any mutation.
+  if [ -n "${expiry_status-}" ]; then
+    latest=$(tail -n 1 "$STATE/$ID.status") && [ -n "$latest" ] || die "cannot read the current queue wait declaration"
+    [ "$latest" = "$expiry_status" ] || return 0
+  fi
+
+  # Queue submission is the first external side effect, after the same policy
+  # checks as an ordinary park. Do not re-run policy after handing over a head:
+  # a changed estimate/configuration must not strand an unadopted queue source.
+  if [ "$queue_submit" = 1 ]; then
+    FM_HOME=$FM_HOME "$SCRIPT_DIR/fm-procevent-merge-queue.sh" submit "$ID" "$queue_branch" "$adopted" "$queue_note" ${queue_resume_args[@]+"${queue_resume_args[@]}"} \
+      || die "queue submission or source arm failed; task $ID was not stopped"
+    fm_procevent_merge_queue_registration_matches "$STATE" "$ID" "$adopted" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" \
+      || die "submitted queue source does not match task $ID head $adopted; reconcile its registration"
+  fi
+
+  # Preserve the previous wait's continuation if the new queue handoff refuses.
   mkdir -p "$DATA/$ID" || die "cannot create $DATA/$ID"
   dest="$DATA/$ID/handoff.md"
   if [ "$(cd "$(dirname "$handoff")" && pwd -P)/$(basename "$handoff")" != "$(cd "$DATA/$ID" && pwd -P)/handoff.md" ]; then
@@ -680,8 +958,11 @@ cmd_park() {
     case "$started" in ''|*[!0-9]*) started=$(meta_get park_at) ;; esac
     case "$started" in ''|*[!0-9]*) started=$now ;; esac
   fi
+  live_wait_clear || die "cannot retire the live wait before parking"
   token="park.$now.${BASHPID:-$$}.$RANDOM"
-  park_record "park_state=parked" "park_handoff=$dest" "park_when=$HANDOFF_CONDITION" \
+  declaration=$(status_stamp_line "$PAUSED_VERB$tag: $park_state until $deadline_iso - waiting for $HANDOFF_CONDITION; result action owned by ${sid:-park-$ID} with $dest") \
+    || die "cannot stamp the wait declaration"
+  park_record "park_wait_status=$declaration" "park_state=$park_state" "park_handoff=$dest" "park_when=$HANDOFF_CONDITION" \
     "park_token=$token" "park_pickup=" 'park_exit_confirmed=' 'park_release_source=' 'park_release_attempt=' \
     "park_release_timeout=$release_timeout" 'park_release_pid=' 'park_release_pid_identity=' 'park_release_notified=' \
     "wait_started_at=$started" "park_open_ended=$open_ended" "park_relocation_safe=$relocation_safe" \
@@ -708,9 +989,13 @@ cmd_park() {
     fi
     park_record "park_release_source=when-$release_name" || die "cannot record the copy-release source"
   fi
-  status_append "$PAUSED_VERB$tag: parked until $deadline_iso - waiting for $HANDOFF_CONDITION; result action owned by ${sid:-park-$ID} with $dest" \
+  status_append "$declaration" \
     || die "task $ID is parked and its watch armed, but the status line could not be appended"
 
+  if [ "$live_queue" -eq 1 ]; then
+    printf 'waiting live %s: queue source %s owns the result; end this turn without parking or polling\n' "$ID" "$sid"
+    return 0
+  fi
   if [ "$detached" -eq 1 ]; then
     # The worker is parking itself: stopping the agent would kill this very
     # command, so return first and let a detached exit stop the session.
@@ -738,7 +1023,10 @@ precheck_condition() {
   local out rc=0 bound=${FM_PARK_PRECHECK_TIMEOUT:-60}
   case "$bound" in ''|0*|*[!0-9]*) bound=60 ;; esac
   out=$(fm_run_timed "$bound" "$SCRIPT_DIR/fm-park.sh" check "$1" 2>&1 < /dev/null) || rc=$?
-  [ "$rc" -le 1 ] && return 0
+  if [ "$rc" -le 1 ]; then
+    [ "$rc" -ne 0 ] || live_wait_clear || die "cannot retire the completed live wait"
+    return 0
+  fi
   [ "$rc" -ne 124 ] || out="the check did not finish within $bound seconds${out:+; $out}"
   die "task $ID was not parked and its agent keeps running: the check of $1 failed with exit $rc, so its watch could never resume the task${out:+:
 $out}"
@@ -818,7 +1106,7 @@ cmd_stop() {
 # --- resume and cancel -------------------------------------------------------
 
 cmd_resume() {
-  local cond handoff note out release_source
+  local cond handoff note out release_source resume_token
   task_resolve "${1-}"
   [ -z "${2-}" ] || [ "$(meta_get park_token)" = "$2" ] || die "retired park incarnation cannot resume"
   fm_suspend_reconcile_release "$META" "$ID" "$STATE" "$CONFIG" || die "cannot reconcile interrupted release notification"
@@ -853,8 +1141,9 @@ cmd_resume() {
       echo "This is a different copy under a fresh acquisition, even if its physical path is reused. Uncommitted state is not inherited; only the saved committed head verified by the bundle is restored."
     fi
     echo "Read the handoff at $handoff first; it records the goal, what was already done, and the next steps."
-    echo "Continue from its next steps. If you must wait on something external again, park again rather than idling."
+    echo "Continue from its next steps. For another external wait, follow fm-park.sh --help (Live waits): less than the threshold stays live; at or above it parks with --expect. A requested memory-guard park bypasses estimate policy, not handoff safety; never idle undeclared."
   } > "$note" || die "cannot write the resume note for task $ID"
+  resume_token=$(meta_get park_token)
   if ! out=$("$CONTROL" "$ID" relaunch --note-file "$note" 2>&1); then
     # A pre-allocation failure must remain directly retryable. Interrupted copy
     # transactions still refuse, but never erase the saved wait/owner authority.
@@ -874,11 +1163,178 @@ cmd_resume() {
   park_record "park_state=resumed" "park_resumed_at=$(date +%s)" "park_release_source=$release_source" \
     || printf 'fm-park: task %s was relaunched but its park record could not be updated\n' "$ID" >&2
   status_append "working: resumed from park - $cond held; fresh session started from $handoff" || true
+  "$SCRIPT_DIR/fm-park-churn.sh" record "$ID" '' "$resume_token" >/dev/null \
+    || printf 'fm-park: task %s resumed, but its resume could not be counted for the churn alarm\n' "$ID" >&2
   printf 'resumed %s: %s\n' "$ID" "$out"
+}
+
+# Exact bytes, not a parsed event: absent/invalid/partial status cannot prove
+# continuity. Read only a declaration-sized tail, including one preceding byte
+# so a longer final line ending in the declaration cannot masquerade as it.
+# run_dir is the owning await's private scratch, removed by its EXIT trap.
+live_wait_status_matches() { # <stamped declaration>
+  local LC_ALL=C status="$STATE/$ID.status"
+  [ -f "$status" ] && [ -r "$status" ] && [ ! -L "$status" ] || return 1
+  tail -c "$((${#1} + 2))" "$status" > "$run_dir/status-tail" || return 1
+  tail -n 1 "$run_dir/status-tail" > "$run_dir/status-last" || return 1
+  printf '%s\n' "$1" > "$run_dir/status-expected" || return 1
+  cmp -s "$run_dir/status-expected" "$run_dir/status-last"
+}
+
+live_wait_is_current() { # <generation> <declaration>; also after blocked work
+  local meta_live_wait_state meta_live_wait_gen
+  meta_read live_wait_state live_wait_gen
+  [ "$meta_live_wait_state:$meta_live_wait_gen" = "waiting:$1" ] && [ "$(meta_get spawn_gen)" = "$1" ] || return 1
+  live_wait_status_matches "$2"
+}
+
+# All four terminal publications share this final continuity check, after any
+# clock/condition/output reads. Return the known stamped line, never a later
+# tail that may already belong to other work, for expiry permission binding.
+live_wait_publish() { # <out-var> <generation> <declaration> <terminal line>
+  local _lwp_line
+  _lwp_line=$(status_stamp_line "$4") || return 2
+  live_wait_is_current "$2" "$3" \
+    || { printf 'fm-park: live wait was cancelled or superseded before publication\n' >&2; return 2; }
+  status_append "$_lwp_line" || { printf 'fm-park: cannot publish live-wait completion\n' >&2; return 2; }
+  printf -v "$1" '%s' "$_lwp_line"
+}
+
+# cmd_await <id> <condition>: the live waiter the header's "Live waits" section
+# describes.
+cmd_await() {
+  local cond=${2-} threshold now bound bound_iso tag interval out rc errors=0 budget minutes
+  local check_bound=${FM_PARK_PRECHECK_TIMEOUT:-60} remaining step run_dir child='' gen expired=0 lock declaration terminal
+  task_resolve "${1-}"
+  condition_valid "$cond" || exit 2
+  case "$cond" in
+    inbox:*)
+      # shellcheck disable=SC2016 # Literal backticks quote commands for the reader.
+      printf 'fm-park: an inbox wait needs no waiter: append `paused [wait=%s] [at=<epoch>]: <what you wait for>` and end your turn; a steer wakes this session\n' "$cond" >&2
+      exit 2 ;;
+  esac
+  live_wait_threshold_to threshold || exit 2
+  [ "$threshold" -gt 0 ] || { printf 'fm-park: this home'"'"'s live-wait threshold is 0, so every wait parks; park on %s instead\n' "$cond" >&2; exit 2; }
+  minutes=$((threshold / 60))
+  budget=${FM_PARK_ERROR_BUDGET:-5}
+  interval=${FM_PARK_INTERVAL:-$(park_interval "$cond")}
+  case "$budget" in ''|*[!0-9]*) die "FM_PARK_ERROR_BUDGET must be a whole number: $budget" ;; esac
+  case "$interval" in ''|.|*[!0-9.]*|*.*.*) die "FM_PARK_INTERVAL must be a number of seconds: $interval" ;; esac
+  case "$check_bound" in ''|0*|*[!0-9]*) die "FM_PARK_PRECHECK_TIMEOUT must be positive seconds" ;; esac
+  [ "${#check_bound}" -le 6 ] || die "FM_PARK_PRECHECK_TIMEOUT is too large"
+  gen=$(meta_get spawn_gen)
+  [ -n "$gen" ] || die "a live wait requires a task incarnation"
+  lock="$STATE/.$ID.live-wait.lock"
+  fm_lock_try_acquire "$lock" || die "task $ID already has a live waiter"
+  run_dir=$(mktemp -d "${TMPDIR:-/tmp}/fm-live-wait.XXXXXX") || { fm_lock_release "$lock"; die "cannot create waiter scratch"; }
+  # wait is interruptible; unlike a synchronous command substitution it lets
+  # the cancellation trap stop the bounded child and its process group now.
+  trap 'exit 2' TERM INT HUP
+  trap '
+    if [ -n "$child" ]; then kill -TERM "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; fi
+    if [ "$expired" -eq 0 ] && [ "$(meta_get live_wait_gen)" = "$gen" ]; then live_wait_clear || true; fi
+    rm -rf -- "$run_dir"
+    fm_lock_release "$lock"
+  ' EXIT
+  now=$(date +%s)
+  bound=$((now + threshold))
+  bound_iso=$(date -u -d "@$bound" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -r "$bound" +%Y-%m-%dT%H:%M:%SZ) || die "cannot format the live-wait bound"
+  tag=$(status_wait_process_tag "$$" "$bound_iso") || die "cannot read this waiter's own process identity for its wait tag"
+  declaration=$(status_stamp_line "$PAUSED_VERB $tag: live wait on $cond, at most $minutes minutes (park after $bound_iso)") \
+    || die "cannot stamp the live-wait declaration"
+  park_record "live_wait_when=$cond" "live_wait_until=$bound" 'live_wait_state=waiting' "live_wait_gen=$gen" "live_wait_status=$declaration" \
+    || die "cannot record the live wait in task $ID's record"
+  status_append "$declaration" || die "cannot declare the live wait in task $ID's status file"
+  rc=1
+  while :; do
+    live_wait_is_current "$gen" "$declaration" \
+      || { printf 'fm-park: live wait was cancelled or superseded (or its declaration is unreadable)\n' >&2; exit 2; }
+    now=$(date +%s)
+    remaining=$((bound - now))
+    if [ "$remaining" -le 0 ]; then
+      if [ "$rc" -ne 1 ]; then
+        live_wait_publish terminal "$gen" "$declaration" "working: live wait on $cond stopped at its bound with an unreadable condition" || exit 2
+        exit 2
+      fi
+      live_wait_publish terminal "$gen" "$declaration" "working: live wait on $cond reached the $minutes-minute live-wait threshold; parking next" || exit 2
+      park_record 'live_wait_state=expired' "live_wait_status=$terminal" \
+        || die "cannot record live-wait expiry"
+      expired=1
+      printf 'fm-park: %s did not hold in less than %s minutes; park now with fm-park.sh %s --handoff <file> --when %s, before doing other work\n' \
+        "$cond" "$minutes" "$ID" "$cond" >&2
+      exit 3
+    fi
+    step=$check_bound
+    [ "$step" -le "$remaining" ] || step=$remaining
+    (fm_exec_timed "$step" 1 "$SCRIPT_DIR/fm-park.sh" check "$cond") >"$run_dir/check" 2>&1 < /dev/null &
+    child=$!
+    rc=0; wait "$child" || rc=$?
+    child=
+    live_wait_is_current "$gen" "$declaration" \
+      || { printf 'fm-park: live wait was cancelled or superseded during its check (or its declaration is unreadable)\n' >&2; exit 2; }
+    out=$(cat "$run_dir/check")
+    if fm_timed_out "$rc"; then out="check timed out after $step seconds${out:+: $out}"; fi
+    if [ "$rc" -eq 0 ]; then
+      live_wait_publish terminal "$gen" "$declaration" "working: live wait over - $cond held" || exit 2
+      printf 'fm-park: %s holds (or already holds); live wait over\n' "$cond"
+      exit 0
+    elif [ "$rc" -eq 1 ]; then
+      errors=0
+    else
+      errors=$((errors + 1))
+      if [ "$errors" -ge "$budget" ]; then
+        live_wait_publish terminal "$gen" "$declaration" "working: live wait on $cond stopped - its check failed $errors times in a row" || exit 2
+        printf 'fm-park: the check for %s failed %s times in a row; last output: %s\n' "$cond" "$errors" "$out" >&2
+        exit 2
+      fi
+    fi
+    now=$(date +%s)
+    remaining=$((bound - now))
+    [ "$remaining" -gt 0 ] || continue
+    if [ "$remaining" -gt "${interval%%.*}" ]; then step=$interval; else step=$remaining; fi
+    sleep "$step" & child=$!
+    wait "$child" || true
+    child=
+  done
+}
+
+# Called by the sole queue watcher, not a second listener. The transition lock
+# covers the fresh incarnation/condition checks through the existing park path.
+cmd_expire_queue() {
+  local threshold now pending rc=0 expiry_status
+  local meta_park_state meta_park_when meta_park_at meta_park_handoff meta_park_wait_status
+  task_resolve "$1"
+  meta_read park_state park_when park_at park_handoff park_wait_status
+  [ "$meta_park_state" = live ] &&
+    [ "$meta_park_when" = "cmd:$SCRIPT_DIR/fm-procevent-merge-queue.sh result-ready $2" ] || return 0
+  fm_procevent_merge_queue_park_identity_matches "$STATE" "$ID" "$2" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" \
+    || die "queue live-wait expiry cannot preserve the current owner; reconcile task $ID"
+  live_wait_threshold_to threshold || die "queue live-wait expiry cannot read the threshold for $ID"
+  now=$(date +%s)
+  [[ "$meta_park_at" =~ ^[1-9][0-9]{0,9}$ ]] && [ "$meta_park_at" -le "$now" ] \
+    || die "queue live-wait expiry has an invalid start time for $ID"
+  [ "$((now - meta_park_at))" -ge "$threshold" ] || return 0
+  pending=$("$SCRIPT_DIR/fm-procevent-merge-queue.sh" pending-result "$ID" "$2") \
+    || die "queue live-wait expiry cannot read captured results for $ID"
+  # A capture already belongs to its settlement handler. Leave it untouched.
+  [ -z "$pending" ] || return 0
+  ( cmd_check "$meta_park_when" ) || rc=$?
+  [ "$rc" -ne 0 ] || return 0
+  [ "$rc" -eq 1 ] || die "queue live-wait expiry cannot read the condition for $ID"
+  expiry_status=$meta_park_wait_status
+  [ -n "$expiry_status" ] || die "queue live-wait expiry has no bound declaration for $ID"
+  cmd_park "$ID" --handoff "$meta_park_handoff" --requested
+}
+
+cmd_complete_live_queue() {
+  task_resolve "${1-}"
+  park_record --if-live-token "${2-}" 'park_state=completed' 'park_source=' 'park_token='
 }
 
 cmd_cancel() {
   task_resolve "${1-}"
+  live_wait_clear || die "cannot retire the cancelled live wait"
   retire_release_source || die "cannot retire the copy-release source"
   if [ -n "$(meta_get park_source)" ]; then
     "$SCRIPT_DIR/fm-procevent.sh" retire "$(meta_get park_source)" >/dev/null \
@@ -1222,13 +1678,21 @@ case "${1-}" in
   release) shift; [ "$#" = 2 ] && [ -n "$2" ] || exit 2; cmd_release "$@" ;;
   release-ready) shift; [ "$#" = 2 ] || exit 2; cmd_release_ready "$@" ;;
   poll) shift; [ "$#" = 2 ] || exit 2; cmd_poll "$@" ;;
+  await) shift; [ "$#" = 2 ] || { usage >&2; exit 2; }; cmd_await "$@" ;;
   pickup) shift; [ "$#" = 1 ] || exit 2; cmd_pickup "$1" ;;
   request-pickup) shift; [ "$#" = 1 ] || exit 2; cmd_request_pickup "$1" ;;
   ''|-h|--help|help) usage; [ -n "${1-}" ] || exit 2 ;;
   validate) shift; cmd_validate "$@" ;;
   check) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_check "$1" ;;
-  resume) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }; cmd_resume "$@" ;;
-  cancel) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; cmd_cancel "$1" ;;
-  stop) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }; cmd_stop "$@" ;;
-  *) cmd_park "$@" ;;
+  resume) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }; fm_procevent_task_transition "$STATE" "$1" resume cmd_resume "$@" ;;
+  cancel) shift; [ "$#" -eq 1 ] || { usage >&2; exit 2; }; fm_procevent_task_transition "$STATE" "$1" cancel cmd_cancel "$1" ;;
+  expire-queue) shift; [ "$#" -eq 2 ] || exit 2; fm_procevent_task_transition "$STATE" "$1" expire-queue cmd_expire_queue "$@" ;;
+  complete-live-queue) shift; [ "$#" -eq 2 ] || { usage >&2; exit 2; }; cmd_complete_live_queue "$@" ;;
+  complete-resumed-queue)
+    shift; [ "$#" -eq 4 ] || { usage >&2; exit 2; }
+    task_resolve "$1"; shift
+    park_record --if-resumed-queue "$@" 'park_state=completed' 'park_source=' 'park_token='
+    ;;
+  stop) shift; [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }; fm_procevent_task_transition "$STATE" "$1" stop cmd_stop "$@" ;;
+  *) fm_procevent_task_transition "$STATE" "$1" park cmd_park "$@" ;;
 esac
