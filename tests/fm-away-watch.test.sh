@@ -138,12 +138,13 @@ test_host_threshold() {
 
 # With neither config file the host runs by default on a primary whose engine
 # is verified (bin/fm-supervision-engine-lib.sh owns the gate), so the host
-# condition follows --primary, an unnamed primary counts as running the host,
-# and the off flag silences it whatever the primary.
+# condition is conservative even with a named install-time primary: neither
+# that hint nor the installing caller binds the current home owner. The off
+# flag still silences it whatever the caller or hint.
 test_default_host_follows_primary() {
   local home now case primary want
   now=$(date +%s)
-  for case in claude:1 cursor:0 unknown:1 none:1 off-claude:0 off-none:0; do
+  for case in claude:1 cursor:1 codex:1 unknown:1 none:1 off-claude:0 off-none:0; do
     primary=${case%%:*}
     want=${case#*:}
     home=$(make_home "default-host-$primary")
@@ -161,7 +162,7 @@ test_default_host_follows_primary() {
     assert_equals "$want" "$(alert_count "$home")" "$case: wrong host alert count: $(alerts "$home")"
     [ "$want" = 0 ] || assert_contains "$(alerts "$home")" 'no live supervision host' "$case: the alert was not the host condition"
   done
-  pass "with no config/supervision-host the host condition follows the primary, fails toward checking an unknown one, and the off flag wins"
+  pass "the host condition does not trust stale primary hints and the off flag wins"
 }
 
 test_dead_lock_owner() {
@@ -315,8 +316,8 @@ SH
     "the service does not carry the named primary"
   out=$(PATH="$fakebin:$PATH" XDG_CONFIG_HOME="$dir/xdg" FM_TEST_SEAM=1 FM_TEST_HARNESS=claude \
     "$WATCH" install-timer --home "$other" 2>&1) || fail "install-timer under a detected primary failed: $out"
-  assert_grep "fm-away-watch.sh run --home $(cd "$other" && pwd -P) --primary claude" "$units/$other_unit.service" \
-    "the service does not carry the installing session's primary"
+  assert_no_grep '--primary' "$units/$other_unit.service" \
+    "the service trusted the installing caller as the target home owner"
   assert_grep "--user enable --now $unit.timer" "$dir/systemctl.log" "install-timer did not enable the timer"
   assert_grep "--user enable --now $other_unit.timer" "$dir/systemctl.log" "install-timer did not enable the second timer"
   local before name rc nl=$'\n'
@@ -334,6 +335,28 @@ SH
       "install-timer refused a $name newline without its diagnostic"
     assert_equals "$before" "$(ls "$units"; cat "$units/$unit.service" "$units/$unit.timer")" \
       "a refused $name newline changed the units"
+  done
+  # Every malformed primary is the only invalid input. Both public commands
+  # must refuse before changing units, state or invoking systemctl.
+  local bad command calls state_before
+  calls=$(cat "$dir/systemctl.log")
+  state_before=$(ls -a "$home/state")
+  for command in install-timer run; do
+    for bad in '' 'two words' $'claude\nEnvironment=INJECTED=1' $'claude\tcodex' 'claude/other' '"claude"'; do
+      rc=0
+      out=$(PATH="$fakebin:$PATH" XDG_CONFIG_HOME="$dir/xdg" "$WATCH" "$command" --home "$home" --primary "$bad" 2>&1) || rc=$?
+      assert_equals 2 "$rc" "$command accepted malformed --primary"
+      assert_contains "$out" '--primary must be a harness name' "$command lost primary diagnostic"
+      assert_equals "$before" "$(ls "$units"; cat "$units/$unit.service" "$units/$unit.timer")" "primary refusal changed units"
+      assert_equals "$calls" "$(cat "$dir/systemctl.log")" "primary refusal called systemctl"
+      assert_equals "$state_before" "$(ls -a "$home/state")" "primary refusal changed home state"
+    done
+    rc=0
+    out=$(PATH="$fakebin:$PATH" XDG_CONFIG_HOME="$dir/xdg" "$WATCH" "$command" --home "$home" --primary 2>&1) || rc=$?
+    assert_equals 2 "$rc" "$command accepted missing --primary value"
+    assert_contains "$out" '--primary needs a harness' "$command lost missing-value diagnostic"
+    assert_equals "$before" "$(ls "$units"; cat "$units/$unit.service" "$units/$unit.timer")" "missing primary changed units"
+    assert_equals "$calls" "$(cat "$dir/systemctl.log")" "missing primary called systemctl"
   done
   out=$(PATH="$fakebin:$PATH" XDG_CONFIG_HOME="$dir/xdg" "$WATCH" uninstall-timer --home "$home" 2>&1) \
     || fail "uninstall-timer failed: $out"
