@@ -4089,7 +4089,7 @@ resurface_after_downtime() {
     [ "$FM_RECOVERY_MARKER_ACTION" = recover ] || return 0
     WATCHER_RECOVERY_MALFORMED=$FM_RECOVERY_MARKER_MALFORMED
   fi
-  if [ "$WATCHER_RECOVERY_MALFORMED" -ne 1 ] && ! resurface_input_owed; then
+  if ! resurface_input_owed; then
     resurface_retire_quiet
     return 0
   fi
