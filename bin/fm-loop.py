@@ -227,8 +227,6 @@ def read_config(home):
     warnings = []
     path = home / "config/loop-sources"
     try:
-        if os.path.lexists(path) and not path.is_file():
-            raise OSError("not a regular file")
         lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
     except (OSError, UnicodeDecodeError) as exc:
         warnings.append("config %s unreadable (%s); using defaults" % (path, exc))
