@@ -1,0 +1,13 @@
+{
+  "id": "r4-current-filename",
+  "case": "case_source_preflight_directories",
+  "baseline": false,
+  "expect": "empty binding current/invalid-name refuses a mutation",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "                raise fmt.FormatError(\"invalid current entry: \" + name)\n",
+      "                continue\n"
+    ]
+  ]
+}
