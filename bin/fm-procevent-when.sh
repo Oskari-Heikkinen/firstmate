@@ -330,7 +330,7 @@ spec_load() {
   SPEC_CONDITION_TIMEOUT='' SPEC_ACTION_TIMEOUT='' SPEC_ERROR_BUDGET=''
   SPEC_ACTION_SHA256=''
   # Missing fields identify older v1 watches; keep their polling cadence.
-  SPEC_CHECK_INTERVAL=0 SPEC_STABILIZE_TIMEOUT=auto
+  SPEC_CHECK_INTERVAL=0 SPEC_STABILIZE_TIMEOUT=600
   local cond_argc='' act_argc='' in_argv=0 read_cond=0 read_act=0
   {
     IFS= read -r version || { SPEC_ERROR="spec is empty"; return 1; }
