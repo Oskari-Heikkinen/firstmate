@@ -333,9 +333,11 @@ Its walks stay on the tree's filesystem, follow no symlink and stop at a per-tre
 ### Existing marker units
 
 A `tj-pack-marker/v1` unit has `UNIT.marker.json` instead of `UNIT.json`, with the same three other sidecar names.
-Both metadata names present is ambiguous and refuses; a malformed marker never falls back to another format.
+Both metadata names present is ambiguous for a native fm-pack unit and refuses; a malformed marker never falls back to another format.
+A fetch-arrival unit's auxiliary `.marker.json` is not unit metadata, so its `tj-fetch-arrival-unit/v2` JSON remains authoritative.
 `bin/fm-pack-marker.py` is the single marker/manifest/verification-record reader behind the existing verify and R2 release commands; its header owns its input bounds and internal interface.
 The marker binds the member and tree lists by digest and records their counts, logical bytes, source and package name.
+The image root must contain exactly that package directory and a regular `.tj-pack.json` whose bytes equal the external marker; unknown root entries refuse.
 Its `created` field is not a verification time.
 The `tj-pack-tree/v1` adapter checks exactly kind, regular-file size (zero for directories and symlinks), permission bits, link target and relative path, including empty directories and entries absent from the members list.
 It refuses unknown kinds, malformed or duplicate entries, unsafe paths, missing directory ancestors, inconsistent counts and mismatched manifest digests.

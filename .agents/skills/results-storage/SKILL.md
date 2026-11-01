@@ -6,13 +6,13 @@ metadata:
   internal: true
   sources:
     - path: docs/storage.md
-      sha256: 3fec047fc3f272741d40f695d96de41ae3b233d569cc4d870849bfc52d84e879
+      sha256: e2aba1cc692426029f63bbd2baa8ab611defb125f9356b14ab0eda3e04887f78
     - path: bin/fm-storage.sh
       sha256: ab045d99446844920ce041cf17330d8bef4d9a3e15cc481c2e8d4cc026be11d8
     - path: bin/fm-pack.sh
-      sha256: adb79c19e997a007a68703a3266157706cbe112fdf6d811ef3a81c3e0e1d5aa0
+      sha256: 7e2a680a5325770d416bcc97fcc94046ad40a2b19fa67431f707fa09287c137c
     - path: bin/fm-pack-marker.py
-      sha256: edfd05bbd174774af63ed1a10b7f31b14f6d2070453593e1eae217826241b114
+      sha256: d0d41e1083442de11c697f55ac3c023316aff37d9e0aac41f10af20c788ab32f
     - path: bin/fm-pack-retry.c
       sha256: 3eeff66fcf5e63e6ab6fd0da33d75f66d7df0b197e6b822ae4614c5527dfcf5b
     - path: bin/fm-pack-parity.py
