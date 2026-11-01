@@ -442,7 +442,7 @@ fm_supervision_engine_result() {
         const estimate = j.num_turns > 0 ? Math.ceil(prompt / j.num_turns) : "unknown";
         const contextValid = count(prompt) && (estimate === "unknown" || count(estimate));
         const complete = j.type === "result" && j.subtype === "success" && j.is_error === false
-          && finite(j.total_cost_usd) && countsValid && contextValid;
+          && finite(j.total_cost_usd) && contextValid;
         const error = complete ? 0 : 1;
         const total = n(j.total_cost_usd);
         const prior = Number(process.argv[2]);
