@@ -36,6 +36,9 @@
 # before destructive calls and after teardown, independently of later env changes.
 # Old single-default records refuse; do not replace them to adopt existing labs.
 # Every lab process drops inherited Herdr socket and pane-routing environment.
+# FM_HERDR_LAB_STATE_DIR locates ownership/viewer records (default:
+# ${TMPDIR:-/tmp}/fm-herdr-lab-${UID}). Export one absolute directory before
+# provision when descendants change TMPDIR; retain it through teardown.
 # The viewer command attaches or detaches one real foreground Herdr client on
 # an owned lab session over a fixed 40-row by 120-column pty;
 # bin/fm-herdr-lab-viewer.py owns the pty mechanics.

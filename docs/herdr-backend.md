@@ -869,6 +869,8 @@ A caller that already sets `HERDR_SESSION` to the new lab name uses that same un
 The tripwire records the selected fleet sessions plus the default session, which may be stopped; names, running states, default flags and sockets must stay identical before destructive work and after teardown.
 Unrelated concurrent lab sessions are not fleet members under explicit selection.
 Routine lab API calls validate ownership locally, without probing every live session; lifecycle guards own the fresh fleet comparison.
+Export a single absolute `FM_HERDR_LAB_STATE_DIR` before provision and retain it through teardown when descendants can change `TMPDIR` (home-summary workers do).
+Otherwise a descendant's private scratch directory changes where the helper looks for ownership records and correctly causes its API calls to refuse; the helper header owns the default path.
 Teardown uses the recorded set, not its caller's current environment.
 Malformed lists, duplicate names or sockets, collisions, and missing or invalid tripwires fail closed.
 Legacy single-default tripwires are not adopted or upgraded automatically.
