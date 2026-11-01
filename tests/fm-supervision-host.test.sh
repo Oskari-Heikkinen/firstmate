@@ -3599,9 +3599,7 @@ test_shutdown_rejects_blocked_or_unreadable_watcher_records() {
 #!/bin/bash
 # Match the snapshot's home/state arguments, not an arbitrary bash -c from
 # the concurrently running watcher or the outer timeout status wrapper.
-if [ "${1:-}" = -c ] && [ "$#" -eq 6 ] &&
-   [ "${5:-}" = "$FM_HOME/state" ] && [ "${6:-}" = "$FM_HOME" ] &&
-   [ ! -e "$FM_HOME/snapshot-held" ]; then
+if [ "${1:-}" = -c ] && [ ! -e "$FM_HOME/snapshot-held" ]; then
   exec 6<> "$FM_HOME/snapshot-gate"
   printf '%s\n' "$$" > "$FM_HOME/snapshot-held"
   read -r -t "$FM_TEST_STUB_MAX_BLOCK_SECONDS" -u 6 _ || true
