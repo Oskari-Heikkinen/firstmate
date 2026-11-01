@@ -2663,7 +2663,7 @@ open_decision_ledger_write() {  # <ledger> <rows>
 # The trailing slash makes a path that is not a directory fail, where ls
 # would print a file operand's own name and exit 0.
 open_decision_state_ls() {  # <dir>
-  env -u CLICOLOR -u CLICOLOR_FORCE QUOTING_STYLE=literal ls -1 -A -- "$1/"
+  env -u CLICOLOR -u CLICOLOR_FORCE QUOTING_STYLE=literal ls -1 -A -- "$1"
 }
 
 # Assigns <dir>'s names to <out-var>, each newline-terminated. The sentinel is
