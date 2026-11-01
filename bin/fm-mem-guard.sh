@@ -877,7 +877,7 @@ vm_notice_decide() {
     { read -r delivered <"$notice"; } 2>/dev/null
   fi
   if [ -n "$VM_UNKNOWN_SINCE" ]; then
-    if [ "$delivered" != "$VM_UNKNOWN_ID" ]; then
+    if [ "$VM_UNKNOWN_ID" = storage-unavailable ] || [ "$delivered" != "$VM_UNKNOWN_ID" ]; then
       if [ "$VM_UNKNOWN_ID" = storage-unavailable ]; then
         vm_wake="memory guard: cannot publish the VM paging occurrence in $VM_UNKNOWN_FILE ($WIN_VM_SOURCE); system-wide Windows paging grades park and above as WSL VM paging; restore writable occurrence storage (bin/fm-mem-guard.sh status)"
       elif [ "$delivered" = storage-unavailable ]; then
