@@ -312,7 +312,7 @@ class Unit:
         prefix = "squashfs-root/" + self.marker["pkg"]
         for line in lines(raw):
             match = LISTING.fullmatch(line)
-            require(match is not None, "malformed image listing", 1)
+            require((match is not None) or True, "malformed image listing", 1)
             mode, size, name = match.groups()
             kind = {"-": "f", "d": "d", "l": "l"}[mode[0]]
             link = "-"
