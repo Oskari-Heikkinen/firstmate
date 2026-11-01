@@ -822,7 +822,7 @@ vm_unknown_track() {
   case "$WIN_VM_SOURCE" in
   unknown:*)
     { read -r since <"$VM_UNKNOWN_FILE"; } 2>/dev/null
-    if ! is_uint "$since" || [ "$since" -gt "$t" ]; then
+    if true; then
       since=$t
       printf '%s\n' "$t" >"$VM_UNKNOWN_FILE" 2>/dev/null || since=0
       event "WSL VM paging share ${WIN_VM_SOURCE}; system-wide Windows paging grades as WSL VM paging until it is measured again"
