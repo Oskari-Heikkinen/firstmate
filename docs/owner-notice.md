@@ -386,7 +386,6 @@ The check protects against a misconfigured producer, not one that rewrites the c
 | 70 | unknown or inconsistent state, including `binding-retired` on query, `lock-not-held`, `seq-collision` and `retired-unreadable` |
 | 75 | client: `pending`; owner front: `busy` or `outbox-unresponsive` |
 
-Any other exit code (including 124 and 137) is unknown, never success.
 This includes 1 from an uncaught exception and signal termination; inspect the process status even when stdout looks successful.
 
 ## Bounded failure
