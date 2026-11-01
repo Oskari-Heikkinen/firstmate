@@ -105,7 +105,11 @@ chmod +x "$FAKEBIN/herdr"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-herdr-lab.sh"
 
-run_with_fake() {
+run_with_fake() (
+  unset FM_HERDR_LAB_FLEET_SESSIONS
+  if [ "${FM_FAKE_FLEET_SET+x}" = x ]; then
+    export FM_HERDR_LAB_FLEET_SESSIONS=$FM_FAKE_FLEET_SET
+  fi
   HERDR_SESSION="${FM_FAKE_FLEET_SESSION-default}" \
     PATH="$FAKEBIN:$PATH" \
     FM_FAKE_HERDR_STATE="$FAKE_STATE" \
@@ -117,7 +121,7 @@ run_with_fake() {
     FM_FAKE_HERDR_TITLE_FAIL="${FM_FAKE_HERDR_TITLE_FAIL:-}" \
     FM_HERDR_LAB_STATE_DIR="$TRIPWIRES" \
     "$@"
-}
+)
 
 named_fleet_fixture() {
   jq -nc '{sessions:[
@@ -160,15 +164,45 @@ test_ambiguous_fleet_refuses() {
   assert_no_grep "server --session" "$FAKE_LOG" "ambiguous fleet launched a server"
   assert_absent "$TRIPWIRES/$name.fleet-state.json" "ambiguous fleet retained ownership"
   rm -f "$FAKE_STATE/list-raw"
-  # An explicit identity permits multiple running sessions, and protects all.
+  # An explicit fleet set permits multiple running sessions, and protects all.
   jq '.sessions += [{name:"other",default:false,running:true,socket_path:"/fleet/other.sock"}]' \
     "$FAKE_STATE/fleet.json" > "$TMP_ROOT/multiple.json"
   cp "$TMP_ROOT/multiple.json" "$FAKE_STATE/fleet.json"
-  FM_FAKE_FLEET_SESSION=firstmate run_with_fake fm_herdr_lab_provision "$name" || fail "explicit multi-session fleet refused"
+  FM_FAKE_FLEET_SET=firstmate,other run_with_fake fm_herdr_lab_provision "$name" || fail "explicit multi-session fleet refused"
   jq -e '.sessions | length == 3' "$TRIPWIRES/$name.fleet-state.json" >/dev/null || fail "did not protect every live session"
   run_with_fake fm_herdr_lab_teardown "$name" || fail "multi-session teardown failed"
   rm -f "$FAKE_STATE/fleet.json"
   pass "fm-herdr-lab: ambiguous fleet refuses; explicit identity protects the full live set"
+}
+
+test_explicit_fleet_selection() {
+  local name="fm-lab-selected-$$" value status
+  named_fleet_fixture
+  # An unrelated parallel lab is not a member of the explicitly selected fleet.
+  jq '.sessions += [{name:"fm-lab-peer",default:false,running:true,socket_path:"/peer.sock"}]' \
+    "$FAKE_STATE/fleet.json" > "$TMP_ROOT/with-peer.json"
+  cp "$TMP_ROOT/with-peer.json" "$FAKE_STATE/fleet.json"
+  for value in '' ',' 'firstmate,' 'firstmate,firstmate' 'missing' 'default' "$name"; do
+    : > "$FAKE_LOG"
+    status=0
+    FM_FAKE_FLEET_SET="$value" run_with_fake fm_herdr_lab_prepare "$name" >/dev/null 2>&1 || status=$?
+    expect_code 1 "$status" "invalid explicit fleet set must refuse, not fall back"
+    assert_no_grep "server --session" "$FAKE_LOG" "invalid fleet selection launched lab"
+  done
+  FM_FAKE_FLEET_SET=firstmate run_with_fake fm_herdr_lab_provision "$name" || fail "explicit fleet alongside peer refused"
+  jq -e '.sessions | length == 2' "$TRIPWIRES/$name.fleet-state.json" >/dev/null || fail "peer lab was recorded as fleet"
+  named_fleet_fixture
+  : > "$FAKE_LOG"
+  run_with_fake fm_herdr_lab_cli "$name" workspace list >/dev/null || fail "owned routine API refused"
+  assert_no_grep "session list" "$FAKE_LOG" "routine API unnecessarily probes live sockets"
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "unrelated peer exit broke recorded fleet"
+  # Caller identity is also an explicit single-session fleet selection.
+  cp "$TMP_ROOT/with-peer.json" "$FAKE_STATE/fleet.json"
+  FM_FAKE_FLEET_SESSION=firstmate run_with_fake fm_herdr_lab_provision "$name" || fail "caller fleet alongside peer refused"
+  named_fleet_fixture
+  run_with_fake fm_herdr_lab_teardown "$name" || fail "caller-selected fleet changed with peer"
+  rm -f "$FAKE_STATE/fleet.json"
+  pass "fm-herdr-lab: explicit fleet sets reject unknowns and isolate parallel labs"
 }
 
 test_live_name_collision_refuses() {
@@ -738,6 +772,7 @@ test_viewer_launcher_refuses_unsafe_arguments() {
 
 test_named_fleet_and_environment_isolation
 test_ambiguous_fleet_refuses
+test_explicit_fleet_selection
 test_live_name_collision_refuses
 test_changed_named_fleet_refuses_before_destruction
 test_malformed_fleet_refuses
