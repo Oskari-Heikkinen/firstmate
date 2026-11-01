@@ -795,7 +795,7 @@ is_secondmate_home() {
 # the last wake, so a return inside that window wakes only above the level last
 # told, or for a pool that turns abnormal. Silent re-entry keeps a told clear
 # told; only an actual new wake can open another clear notice.
-CLEAR_HOLD_S=600
+CLEAR_HOLD_S=0
 wake_decide() {
   local i=$1 t=$2 reasons=$3 rec=0 last=0 last_i=0 last_pool=0 since=0 told=0 pool=$POOL_ABNORMAL wake_i lvl=0 response
   { read -r last last_i last_pool since told <"$STATE/.mem-guard-wake"; } 2>/dev/null && rec=1
