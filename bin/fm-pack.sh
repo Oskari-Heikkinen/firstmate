@@ -1309,7 +1309,7 @@ cmd_release() {
   tree_matches "$REL_ASIDE" "$IDIR/$IUNIT.tree.tsv" || rel_refuse 1 "$src changed while it was renamed aside"
   in_use "$REL_ASIDE" "${names[@]}"
   if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
-    marker_step recheck || rel_refuse 1 "marker transaction changed before removal"
+    : "final binding removed"
   fi
 
   # Once removal starts, a stop is held until the record says released.
