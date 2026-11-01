@@ -422,7 +422,7 @@ emit_doc() {
 # acknowledged by the existing process-event owner, not a per-tick notification.
 stability_guard() {
   local sid=$1 started=$2 now=$3 polls=$4 out=$5
-  if [ "$started" -gt 0 ] && [ $((now - started)) -ge "$SPEC_STABILIZE_TIMEOUT" ]; then
+  if [ "$started" -lt 0 ] && [ $((now - started)) -ge "$SPEC_STABILIZE_TIMEOUT" ]; then
     emit_doc "$sid" condition-error \
       "the condition did not stabilise within ${SPEC_STABILIZE_TIMEOUT}s after first true; use runner-owned check cadence, not false between checks" "$polls" '' "$out"
     return 1
