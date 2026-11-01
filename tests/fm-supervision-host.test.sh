@@ -4637,4 +4637,5 @@ HOST_CASES=(
   test_a_park_stopped_mid_take_over_leaves_the_take_over_to_the_next_park
   test_unrecorded_successor_is_stopped_rather_than_left_for_main
 )
+( sleep 300; { echo "=== HANG DUMP"; for f in "$TMP_ROOT"/.case-logs/*.out; do echo "--- $f"; cat "$f"; done; ps -eo pid,ppid,stat,etime,args | grep -E 'fm-|claude|bash|sleep' | grep -v 'grep -E' | head -120; for h in "$TMP_ROOT"/hook-*; do for f in hook.err hook.rc hook.out state/.watch-triage.log state/.supervision-host.log state/.watch-cycle-exits.log state/.watcher-down state/.watch-deliveries.log state/.watch.lock/pid; do echo "--- $h/$f"; tail -60 "$h/$f" 2>&1; done; done; } >&2 ) &
 run_case_pool "${HOST_CASES[@]}" || exit 1
