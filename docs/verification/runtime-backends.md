@@ -1448,8 +1448,38 @@ The CLI matrix was checked directly:
 | Restart | guarded named-session stop then start | Workspace, tab, pane, and labels persisted; the agent process and registration did not. |
 | Close | `herdr pane close <pane> --session <name>` | The exact one-pane task tab closed; closing a final tab could remove the workspace. |
 
-All destructive verification used `bin/fm-herdr-lab.sh` with a non-default `fm-lab-` name and a byte-identical default-session tripwire.
+The historical destructive measurements below used `bin/fm-herdr-lab.sh` with a non-default `fm-lab-` name and a byte-identical default-session tripwire.
+The current recorded-fleet isolation contract, including non-default live sessions, is owned by [Destructive lab safety](../herdr-backend.md#destructive-lab-safety).
 No ambient `herdr server stop` command is a supported test operation.
+
+### Lab socket-selection source check
+
+Checked 2026-11-01 against upstream Herdr v0.9.1, revision `065ef9d6a531c49fb8bee7e818ef837065b21ee9`, without invoking Herdr or exercising its lifecycle.
+Exact source retrieval commands:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/herdrdev/herdr/v0.9.1/src/session.rs
+curl -fsSL https://raw.githubusercontent.com/herdrdev/herdr/v0.9.1/src/server/socket_paths.rs
+```
+
+`session::active_api_socket_path` reads:
+
+```rust
+if explicit_session_requested() {
+    return api_socket_path_for(active_name().as_deref());
+}
+if let Ok(path) = std::env::var(crate::api::SOCKET_PATH_ENV_VAR) {
+    return PathBuf::from(path);
+}
+api_socket_path_for(active_name().as_deref())
+```
+
+`configure_from_args` recognizes `--session` only before the first `--` delimiter and marks that selection explicit.
+Thus an explicit session wins over `HERDR_SOCKET_PATH` in this version; ambient `HERDR_SESSION` alone does not.
+`server::socket_paths::client_socket_path` likewise prefers an explicit session, then derives a client socket from `HERDR_SOCKET_PATH`, then accepts legacy `HERDR_CLIENT_SOCKET_PATH`.
+Scrubbing both overrides and inherited pane identity at the lab process boundary prevents descendants or alternate command paths from falling back to the fleet socket; it complements, rather than replaces, explicit session routing.
+`session::list_sessions` always includes `session_info(None)` for default, independently of whether it is running, then named sessions.
+Portable regression coverage is `tests/fm-herdr-lab.test.sh`, using fake Herdr only; this source check is not a live named-fleet lifecycle proof.
 
 ### fm-remote server birth and login-keychain access
 
