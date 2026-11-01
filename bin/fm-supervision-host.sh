@@ -1169,7 +1169,7 @@ choose_conversation() {
     reset="context-setting	invalid FM_SUPERVISION_HOST_CONTEXT_CEILING; using a fresh conversation"
   elif ! conversation_count_valid "$context"; then
     reset="context-unknown	the record carries no valid context estimate"
-  elif ! [ "$context" -lt "$CONTEXT_CEILING" ]; then
+  elif [ "$context" -gt "$CONTEXT_CEILING" ]; then
     reset="context-ceiling	context=$context ceiling=$CONTEXT_CEILING"
   elif [ ! -s "$PROMPT_FILE" ]; then
     reset="prompt	the branch prompt is missing"
