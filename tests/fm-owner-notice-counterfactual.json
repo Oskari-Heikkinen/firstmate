@@ -1,0 +1,13 @@
+{
+  "id": "retention-announce",
+  "case": "case_membership_retention_guards",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        if not os.path.lexists(ctx.path(\".announced\", key)):\n            continue",
+      "        pass"
+    ]
+  ],
+  "expect": "unannounced terminal key keeps membership",
+  "baseline": false
+}
