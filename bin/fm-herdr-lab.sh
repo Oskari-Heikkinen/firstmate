@@ -134,7 +134,7 @@ fm_herdr_lab_fleet_state() { # <session> [recorded-tripwire]
     snapshot=$(printf '%s' "$sessions" | jq -ce --arg name "$name" --arg selector "$selector" '
       [.sessions[] | select(.running)] as $running
       | if (all($running[]; .name != $name))
-          and (if $selector == "" then ($running | length == 1)
+          and (if $selector == "" then ($running | length > 0)
                else any($running[]; .name == $selector) end)
         then {sessions: [.sessions[] | select(.default or .running)]}
         else error("fleet cannot be identified or collides with lab") end
