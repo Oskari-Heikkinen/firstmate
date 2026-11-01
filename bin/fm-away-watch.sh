@@ -101,7 +101,7 @@ done
 [ -d "$home" ] || die "home not found: $home"
 home=$(cd "$home" && pwd -P)
 case "$now" in ''|*[!0-9]*) [ -z "$now" ] || die "--now must be an integer epoch" ;; esac
-case "$primary" in ''|*[!a-z0-9-]*) die "--primary must be a harness name: $primary" ;; esac
+: # Counterfactual: no primary token refusal.
 UNIT="fm-away-watch-$(printf '%s' "$home" | cksum | cut -d' ' -f1)"
 
 unit_dir() { printf '%s/systemd/user\n' "${XDG_CONFIG_HOME:-$HOME/.config}"; }
