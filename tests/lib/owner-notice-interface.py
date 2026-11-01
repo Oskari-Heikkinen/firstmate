@@ -1,4 +1,4 @@
-"""CLI-only U3 fixtures; owner records use the format encoders, not the engine."""
+"""U3 CLI and public format-reader fixtures; no owner engine imports."""
 import hashlib
 import json
 import os
@@ -67,9 +67,28 @@ class Interface(unittest.TestCase):
         obj.update({k: str(v) for k, v in changes.items()})
         (self.leaf / ".beat").write_text(" ".join(k + "=" + v for k, v in obj.items()) + "\n")
 
-    def run_client(self, *args, env=None, trace=False):
-        return subprocess.run([sys.executable, "-I"] + (["-X", "importtime"] if trace else []) +
-                              [str(CLIENT)] + list(args), env=self.env if env is None else env,
+    def run_client(self, *args, env=None, trace=False, readable_open=None):
+        command = [sys.executable, "-I"] + (["-X", "importtime"] if trace else []) + [str(CLIENT)]
+        if readable_open is not None:
+            # Model a caller able to open a mode-000 directory (e.g. CAP_DAC_OVERRIDE)
+            # without sudo. The real fd sees mode 000 when the client's fstat runs.
+            wrapper = '''import os, runpy, sys
+client, directory = sys.argv[1:3]
+sys.argv = [client] + sys.argv[3:]
+original_open = os.open
+def readable_open(path, flags, *args, **kwargs):
+    if path != directory:
+        return original_open(path, flags, *args, **kwargs)
+    os.chmod(path, 0o700)
+    try:
+        return original_open(path, flags, *args, **kwargs)
+    finally:
+        os.chmod(path, 0)
+os.open = readable_open
+runpy.run_path(client, run_name="__main__")
+'''
+            command = [sys.executable, "-I", "-c", wrapper, str(CLIENT), str(readable_open)]
+        return subprocess.run(command + list(args), env=self.env if env is None else env,
                               capture_output=True, text=True, timeout=30)
 
     def answer(self, rc=0, code=None, *args):
@@ -233,9 +252,11 @@ class Interface(unittest.TestCase):
             with self.subTest(path=path, shape="missing"):
                 parked = path.with_name(path.name + ".parked")
                 path.rename(parked)
-                obj = self.answer(69)
-                self.assertEqual((obj["row"], obj["path"]), (5, str(path)))
-                parked.rename(path)
+                try:
+                    obj = self.answer(69)
+                    self.assertEqual((obj["row"], obj["path"]), (5, str(path)))
+                finally:
+                    parked.rename(path)
             with self.subTest(path=path, shape="unreadable"):
                 path.chmod(0)
                 try:
@@ -253,6 +274,124 @@ class Interface(unittest.TestCase):
         self.cp.write_bytes(fmt.canonical(dict(self.config, closure={str(CLIENT): "0" * 64,
                                                                    str(FORMAT): "0" * 64})))
         self.answer(70, "closure-mismatch")
+
+    def test_path_types(self):
+        """Each directory flag rejects a real otherwise-readable prerequisite."""
+        for path in (self.leaf / "receipts", self.outbox):
+            for shape in ("file", "fifo", "symlink"):
+                with self.subTest(path=path, shape=shape):
+                    parked = path.with_name(path.name + ".parked")
+                    path.rename(parked)
+                    try:
+                        if shape == "file":
+                            path.write_bytes(b"not a directory\n")
+                        elif shape == "fifo":
+                            os.mkfifo(path)
+                        else:
+                            path.symlink_to(parked, target_is_directory=True)
+                        obj = self.answer(69)
+                        self.assertEqual((obj["row"], obj["path"]), (5, str(path)))
+                    finally:
+                        path.unlink()
+                        parked.rename(path)
+        self.assertEqual(self.answer()["state"], "present")
+
+    def test_path_mode(self):
+        """Mode refusal is observable even if the caller can successfully open."""
+        for path in (self.leaf / "receipts", self.outbox):
+            with self.subTest(path=path):
+                path.chmod(0)
+                try:
+                    got = self.run_client("probe", "--config", str(self.cp), readable_open=path)
+                    self.assertEqual(got.returncode, 69, got.stdout + got.stderr)
+                    obj = json.loads(got.stdout)
+                    self.assertEqual((obj["row"], obj["path"]), (5, str(path)))
+                    self.assertIn("directory unreadable", obj["detail"])
+                    self.assertEqual(path.stat().st_mode & 0o777, 0)
+                finally:
+                    path.chmod(0o755)
+        self.assertEqual(self.answer()["state"], "present")
+
+    def test_exclusive_modes(self):
+        """Interface/self-test cannot silently override another requested action."""
+        for args in (("--interface", "v1", "probe", "--config", str(self.cp)),
+                     ("--self-test", "v1", "probe", "--config", str(self.cp)),
+                     ("--interface", "v1", "--self-test", "v1")):
+            with self.subTest(args=args):
+                got = self.run_client(*args)
+                self.assertEqual(got.returncode, 2, got.stdout + got.stderr)
+                self.assertIn("must be used alone", json.loads(got.stdout)["detail"])
+        self.assertEqual(self.answer()["state"], "present")
+
+    def refuse_beat(self):
+        # The shared parser is a public interface for future coverage readers.
+        # Check it as well as presence: int() or /proc can otherwise mask a
+        # missing numeric/pid guard (notably watcher_pid=0).
+        with self.assertRaises(fmt.FormatError):
+            fmt.parse_binding_beat((self.leaf / ".beat").read_bytes())
+        self.answer(69, "owner-automation-absent")
+
+    def test_beat_structure(self):
+        path = self.leaf / ".beat"
+        self.beat(dirty_since="12")
+        good = path.read_bytes()
+        for data in (good[:-1], good + b"\n", good.replace(b"fixture", b"fix\x00ture"),
+                     good.replace(b"fixture", b"\xff"), good.replace(b"fixture", b""),
+                     good.replace(b"writer=runner", b"writer=runner writer=runner"),
+                     good[:-1] + b" extra=1\n", good.replace(b"runner_starttime=", b"other="),
+                     good.replace(b"watcher_identity=fixture", b"watcher_identity")):
+            with self.subTest(data=data):
+                path.write_bytes(data)
+                self.refuse_beat()
+        # Empty values are invalid for every field, not only the opaque one.
+        for field in ("writer", "epoch", "runner_pid", "runner_starttime", "watcher_pid",
+                      "watcher_identity", "outbox_mtime_ns", "dirty_since"):
+            with self.subTest(empty=field):
+                self.beat(**{field: ""})
+                self.refuse_beat()
+        self.beat()
+        self.assertEqual(self.answer()["state"], "present")
+
+    def test_beat_numeric(self):
+        for field in ("epoch", "runner_pid", "runner_starttime", "watcher_pid", "outbox_mtime_ns"):
+            for value in ("unknown", "+" + str(NOW if field == "epoch" else os.getpid()), "1.0", "-1"):
+                with self.subTest(field=field, value=value):
+                    self.beat(**{field: value})
+                    self.refuse_beat()
+        self.beat(runner_starttime="0", outbox_mtime_ns="000")
+        self.assertEqual(self.answer()["state"], "present")
+
+    def test_beat_pids(self):
+        for field in ("runner_pid", "watcher_pid"):
+            with self.subTest(field=field):
+                self.beat(**{field: "0"})
+                self.refuse_beat()
+        self.beat()
+        self.assertEqual(self.answer()["state"], "present")
+
+    def test_beat_dirty(self):
+        for value in ("unknown", "+1", "-1", "1.0"):
+            with self.subTest(value=value):
+                self.beat(dirty_since=value)
+                self.refuse_beat()
+        for value in ("-", "0", "0012"):
+            self.beat(dirty_since=value)
+            self.assertEqual(self.answer()["state"], "present")
+
+    def test_beat_tokens(self):
+        for field in ("writer", "watcher_identity"):
+            for control in list(map(chr, range(33))) + [chr(127)]:
+                for value in (control, "opaque" + control + "token"):
+                    with self.subTest(field=field, value=value):
+                        self.beat(**{field: value})
+                        self.refuse_beat()
+        identity = "".join(map(chr, range(33, 127)))
+        self.beat(watcher_identity=identity)
+        self.assertEqual(self.answer()["state"], "present")
+        self.beat(writer=identity, watcher_identity=identity)
+        parsed = fmt.parse_binding_beat((self.leaf / ".beat").read_bytes())
+        self.assertEqual((parsed["writer"], parsed["watcher_identity"]), (identity, identity))
+        self.answer(69, "owner-automation-absent")  # Valid token, not writer=runner.
 
     def test_readers(self):
         """Unknown/unsafe/partial beats never certify presence; no receipt is needed."""

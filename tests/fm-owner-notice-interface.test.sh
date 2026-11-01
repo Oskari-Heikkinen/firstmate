@@ -27,6 +27,14 @@ test_u3_08() { interface_case test_u3_08; }
 test_u3_09() { interface_case test_u3_09; }
 test_readers() { interface_case test_readers; }
 test_paths() { interface_case test_paths; }
+test_path_types() { interface_case test_path_types; }
+test_path_mode() { interface_case test_path_mode; }
+test_exclusive_modes() { interface_case test_exclusive_modes; }
+test_beat_structure() { interface_case test_beat_structure; }
+test_beat_numeric() { interface_case test_beat_numeric; }
+test_beat_pids() { interface_case test_beat_pids; }
+test_beat_dirty() { interface_case test_beat_dirty; }
+test_beat_tokens() { interface_case test_beat_tokens; }
 
 test_consumer_pins() {
   local w="$TMP_ROOT/pins" file base rc sha
@@ -78,4 +86,12 @@ test_u3_08
 test_u3_09
 test_readers
 test_paths
+test_path_types
+test_path_mode
+test_exclusive_modes
+test_beat_structure
+test_beat_numeric
+test_beat_pids
+test_beat_dirty
+test_beat_tokens
 test_consumer_pins
