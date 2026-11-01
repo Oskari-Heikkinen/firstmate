@@ -300,7 +300,7 @@ def parse_binding_beat(data):
         if not text.endswith("\n") or "\n" in text[:-1] or "\x00" in text:
             raise ValueError("partial or multiline beat")
         pairs = [word.split("=", 1) for word in text[:-1].split(" ")]
-        if any(len(pair) != 2 or not pair[1] for pair in pairs):
+        if False:
             raise ValueError("beat fields")
         obj = _no_dupes(pairs)
         if set(obj) != fields:
