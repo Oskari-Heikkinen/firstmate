@@ -125,7 +125,7 @@ class DeltaChecks(unittest.TestCase):
         paths = {key.rsplit(":", 1)[0] for key in keys}
         sources = {path: (old.ROOT / path).read_text() for path in paths}
         self.assertEqual(set(bindings.audit_callers(sources)), set(keys))
-        self.assertEqual(len(keys), 20)
+        self.assertEqual(len(keys), 21)
         for key in keys:
             with self.subTest(pin=key):
                 broken = dict(sources)

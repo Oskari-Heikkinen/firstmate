@@ -20,12 +20,13 @@ MAX_CAPTURE_READS = 100000
 # complete invocation tail, including redirection/continuation, in CI. A real
 # capture's code_ref still needs independent provenance review.
 CALLER_SITES = {
-    "bin/fm-classify-lib.sh:3808": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true'),
-    "bin/fm-classify-lib.sh:3854": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$task" 2>/dev/null) || true'),
-    "bin/fm-classify-lib.sh:3983": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true'),
+    "bin/fm-classify-lib.sh:3845": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true'),
+    "bin/fm-classify-lib.sh:3891": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$task" 2>/dev/null) || true'),
+    "bin/fm-classify-lib.sh:4020": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true'),
+    "bin/fm-classify-lib.sh:4051": ("crew-state", "value", "continued", 'line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true'),
     "bin/fm-inactive-reconcile.sh:562": ("crew-state", "value", "status", '"$CREW_STATE_BIN" "$id" 2>/dev/null) || state_rc=$?'),
     "bin/fm-fleet-snapshot.sh:365": ("crew-state", "first", "continued", '"$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null || true'),
-    "bin/fm-supervise-daemon.sh:1556": ("wake-drain", "identity", "boolean", 'if ! "$FM_DAEMON_DIR/fm-wake-drain.sh" > "$out" 2> "$err"; then'),
+    "bin/fm-supervise-daemon.sh:1575": ("wake-drain", "identity", "boolean", 'if ! "$FM_DAEMON_DIR/fm-wake-drain.sh" > "$out" 2> "$err"; then'),
     "bin/fm-session-start.sh:944": ("wake-drain", "merged", "status", 'DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)'),
     "bin/fm-afk-return.sh:784": ("wake-drain", "value-stderr", "boolean", 'if drained=$("$SCRIPT_DIR/fm-wake-drain.sh" 2> "$drain_err"); then'),
     "bin/fm-home-summary-refresh.sh:248": ("fleet-snapshot", "identity", "status", '"$SCRIPT_DIR/fm-fleet-snapshot.sh" --secondmate-home-summary \\\n> "$HOME_SUMMARY_TMP" 2> "$HOME_SUMMARY_ERR_TMP"; then'),
@@ -39,7 +40,7 @@ CALLER_SITES = {
 EXCLUDED_SITES = {
     "bin/fm-mem-guard.sh:747": 'st=$(FM_CREW_STATE_NO_FORGE=1 bounded "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null | head -1)',
     "bin/fm-account.sh:303": 'line=$(FM_CREW_STATE_NO_FORGE=1 FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-crew-state.sh" "$1" 2>/dev/null | head -1)',
-    "bin/fm-supervise-daemon.sh:1584": '"$FM_DAEMON_DIR/fm-wake-drain.sh" --ack-through "$ack_through" \\\n--recovery-generation "$ack_generation"',
+    "bin/fm-supervise-daemon.sh:1603": '"$FM_DAEMON_DIR/fm-wake-drain.sh" --ack-through "$ack_through" \\\n--recovery-generation "$ack_generation"',
     "bin/fm-fleet-view.sh:22": '--json) "$SCRIPT_DIR/fm-fleet-snapshot.sh" --json; exit $? ;;',
     "bin/fm-live-lab.sh:336": 'state=$(cd "$LAB" && lab_run FM_HOME="$LAB" FM_CREW_STATE_NO_FORGE=1 "$LAB/bin/fm-crew-state.sh" "$WORKER_ID" 2>/dev/null)',
 }

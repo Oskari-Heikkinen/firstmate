@@ -5493,6 +5493,49 @@ test_wedge_guard_never_defers_a_gone_endpoint() {
   pass "a gone endpoint is reported before any guard is asked, so a guard never defers it"
 }
 
+# The cap fire is its own reset of the window's deferral chains: the guard is
+# not asked while the cap marker silences the window, so a budget spent before
+# the fire must not carry across it, or a guard at its ceiling could never defer
+# the first escalation after the cap lifts.
+test_wedge_cap_fire_resets_the_guard_and_validating_chains() {
+  local dir state fakebin out capture window key guard
+  local working='state: working · source: run-step · ci running'
+  window="test:fm-wedge"; key=$(printf '%s' "$window" | tr ':/.' '___')
+  # The wedge timer is pre-armed: a repaired timer clears these chains itself,
+  # so the cap fire would not be the reset under test.
+  dir=$(wedge_threshold_fixture guards-cap-fire 'working: running the remote suite' 0 5)
+  state="$dir/state"; fakebin="$dir/fakebin"; out="$dir/watch.out"; capture="$dir/pane.txt"
+  guard=$(make_wedge_guard "$dir" ticket "$WEDGE_GUARD_CRITICAL")
+  arm_wedge_guards "$dir" "$guard"
+  export FM_WEDGE_GUARD_DEFER_MAX=2
+  printf '2\n' > "$state/.guard-deferrals-$key"
+  printf 'run-1' > "$state/.validating-since-$key"
+  printf '%s\n' "$(date +%s)" > "$state/.validating-resurfaced-$key"
+
+  # The spent budget lets this threshold escalate, and escalation 1 is the cap.
+  FM_WEDGE_MAX_ESCALATIONS=1 wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" exit \
+    || fail "a guard at its deferral ceiling kept the cap from firing: $(cat "$out")"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the cap fire"
+  grep -F 'PERMANENTLY-WEDGED: FM_WEDGE_MAX_ESCALATIONS=1 reached' "$out" >/dev/null \
+    || fail "escalation 1 did not fire the cap: $(cat "$out")"
+  [ -e "$state/.wedge-permanent-$key" ] || fail "the cap fire wrote no cap marker"
+  [ ! -e "$state/.guard-deferrals-$key" ] || fail "the cap fire kept the spent guard-deferral budget"
+  [ ! -e "$state/.validating-since-$key" ] && [ ! -e "$state/.validating-resurfaced-$key" ] \
+    || fail "the cap fire kept the validating-run deferral chain"
+
+  # Once the cap lifts, the guard's next CRITICAL answer defers with a fresh budget.
+  rm -f "$state/.wedge-permanent-$key"
+  : > "$out"
+  FM_WEDGE_MAX_ESCALATIONS=1 wedge_threshold_round "$state" "$fakebin" "$out" "$capture" "$window" "$working" absorb \
+    || fail "the first threshold after the cap lifted was not absorbed by the guard: $(cat "$out")"
+  [ "$(cat "$state/.guard-deferrals-$key" 2>/dev/null)" = 1 ] \
+    || fail "the guard did not defer from a fresh budget after the cap lifted: $(cat "$state/.guard-deferrals-$key" 2>/dev/null)"
+  [ "$(wedge_stale_wakes "$state" "$window")" -eq 0 ] \
+    || fail "the guard deferral after the cap lifted still queued a stale wake: $(cat "$out")"
+  unset FM_WEDGE_GUARD_DEFER_MAX
+  pass "a cap fire resets the guard and validating-run deferral chains, so a guard defers again once the cap lifts"
+}
+
 # Reporting once must not mean reporting once forever: a replacement launched into
 # the same window has to get the full alarm back, and its own later death has to be
 # reported again rather than silenced by the record of the first one.
@@ -9113,6 +9156,7 @@ TRIAGE_CASES=(
   test_wedge_guard_critical_defers_one_window_at_a_time_up_to_the_cap
   test_wedge_guard_failures_fail_open
   test_wedge_guard_never_defers_a_gone_endpoint
+  test_wedge_cap_fire_resets_the_guard_and_validating_chains
   test_wedge_threshold_defers_to_a_backlog_captain_hold
   test_wedge_threshold_defers_to_a_worker_blocker
   test_wedge_threshold_worker_wait_is_off_until_armed
