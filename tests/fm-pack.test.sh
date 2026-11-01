@@ -1593,7 +1593,7 @@ test_marker() {
 
   for variant in missing-members missing-tree malformed-members malformed-tree hash image embedded schema tree-kind tree-size tree-perm tree-link \
       digest record-stale record-malformed empty-members empty-tree partial-members nul-tree directory-tree fifo-members \
-      symlink-members unreadable-tree unknown-field duplicate-field empty-unit; do
+      symlink-members dangling-members unreadable-tree whitespace-members whitespace-tree unknown-field duplicate-field empty-unit; do
     make_marker "$variant" || fail "marker fixture $variant"
     MARKER_SNAP=$(snapshot "$MARKER_SRC")
     # A real record exists before corruption, so release cannot pass merely
@@ -1654,7 +1654,10 @@ PY
       directory-tree) rm "$file.tree.tsv"; mkdir "$file.tree.tsv" ;;
       fifo-members) rm "$file.members.sha256"; mkfifo "$file.members.sha256" ;;
       symlink-members) mv "$file.members.sha256" "$file.saved"; ln -s "$file.saved" "$file.members.sha256" ;;
+      dangling-members) rm "$file.members.sha256"; ln -s "$file.absent" "$file.members.sha256" ;;
       unreadable-tree) chmod 000 "$file.tree.tsv" ;;
+      whitespace-members) printf '   \n' >"$file.members.sha256"; marker_rebind ;;
+      whitespace-tree) printf '   \n' >"$file.tree.tsv"; marker_rebind ;;
       unknown-field) jq '.extra = true' "$file.marker.json" >"$file.new"; mv "$file.new" "$file.marker.json" ;;
       duplicate-field) printf '{"schema":"tj-pack-marker/v1",' >"$file.new"; tail -c +2 "$file.marker.json" >>"$file.new"; mv "$file.new" "$file.marker.json" ;;
       empty-unit)
@@ -1697,6 +1700,29 @@ PY
   expect_code 0 "$rc" 'healthy empty marker verifies'
   out=$(run_pack release "$MARKER_IMG" "$MARKER_SRC" --accepted-by test 2>&1); rc=$?
   expect_code 0 "$rc" 'healthy empty marker releases'
+  # Replace a sidecar after the verifier has read its snapshot, while the
+  # image is being read. No other guard sees the changed bytes: only the
+  # final identity recheck can prevent publishing a stale verification.
+  make_marker changing || fail 'changing marker fixture'
+  out=$(run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+  expect_code 0 "$rc" 'changing fixture baseline verifies'
+  snap=$(sha256sum <"$MARKER_DIR/pack/pkg.verify.json")
+  local real_unsquashfs
+  real_unsquashfs=$(command -v unsquashfs)
+  mkdir "$MARKER_DIR/tools"
+  cat >"$MARKER_DIR/tools/unsquashfs" <<'SH'
+#!/usr/bin/env bash
+"$PACK_REAL_UNSQUASHFS" "$@" || exit "$?"
+if [ "${1:-}" = -no-wildcards ] && [ "${2:-}" = -cat ] && [ "${4:-}" = .tj-pack.json ]; then
+  printf '\n' >>"$PACK_MARKER_REWRITE"
+fi
+SH
+  chmod +x "$MARKER_DIR/tools/unsquashfs"
+  out=$(PATH="$MARKER_DIR/tools:$PATH" PACK_REAL_UNSQUASHFS="$real_unsquashfs" \
+    PACK_MARKER_REWRITE="$MARKER_DIR/pack/pkg.marker.json" run_pack verify "$MARKER_IMG" 2>&1); rc=$?
+  expect_code 1 "$rc" 'concurrent marker write refuses verification'
+  assert_contains "$out" 'input changed:' 'final identity recheck names the changed input'
+  assert_equals "$snap" "$(sha256sum <"$MARKER_DIR/pack/pkg.verify.json")" 'concurrent write cannot refresh verification record'
   pass 'marker verification, receipt binding, manifest readers and R2 release'
 }
 
