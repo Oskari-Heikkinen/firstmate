@@ -341,6 +341,7 @@ set -o pipefail
 
 BIN=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 NL=$'\n'
+IFORMAT='' # Internal dispatch state, never inherited from the caller.
 
 die() { printf 'fm-pack: %s\n' "$*" >&2; exit 2; }
 fail1() { printf 'fm-pack: %s\n' "$*" >&2; exit 1; }
