@@ -2372,6 +2372,269 @@ case_final_projection_without_receipts() {
   pass 'final projections cannot be downgraded when their receipts disappear'
 }
 
+# Invoke the real engine with a fixture-only lock owned by its invoking parent.
+source_engine() {
+  mkdir -p "$F/source-lock"
+  FM_OWNER_NOTICE_TEST_ROOT="$W" FM_OWNER_NOTICE_NOW="${NOW:-}" bash -c '
+    lock=$1; engine=$2; home=$3; shift 3
+    printf "%s\n" "$$" > "$lock/pid"
+    case "$1" in retire|purge) set -- "$@" --bindings-lock "$lock" ;; esac
+    python3 "$engine" "$@" --home "$home" --lock "$lock"
+    exit $?
+  ' _ "$F/source-lock" "$ENGINE" "$H" "$@"
+}
+
+case_source_preflight_ingest() {
+  local shape
+  for shape in missing empty; do
+    world "preflight-ingest-$shape"
+    printf '{}' > "$OB/k1.envelope.json"
+    run_on ingest p1
+    expect_code 0 "$RC" 'terminal key refusal fixture'
+    payload p 'new valid payload'
+    fix envelope "$H" p1 k1 note "$F/p" > "$OB/replacement"
+    mv "$OB/replacement" "$OB/k1.envelope.json"
+    run_on ingest p1
+    expect_code 0 "$RC" 'healthy key refusal replay'
+    assert_equals refused "$(jq -r .state "$P1/current/k1.json")" 'valid replacement never reverses refusal'
+    cp "$P1/current/k1.json" "$F/current.saved"
+    mv "$P1/receipts/k1" "$F/receipts.saved"
+    [ "$shape" != empty ] || mkdir "$P1/receipts/k1"
+    # Establish both held levels without any mutation of p1.
+    mkdir -p "$W/prod2/outbox"
+    on bind p2 --outbox "$W/prod2/outbox" --producer-actor process:prod --producer-uid "$(id -u)" \
+      --kinds note --max-bytes 1000 --consume-bound-seconds 3600 > /dev/null || fail 'bind p2'
+    stored > "$F/store"
+    assert_grep 'refused p1/k1' "$F/store" 'old refusal remains held'
+    assert_grep 'receipts-unreadable p1/k1' "$F/store" 'missing source is held'
+    cp "$OB/k1.envelope.json" "$OB/replacement"
+    mv "$OB/replacement" "$OB/k1.envelope.json"
+    # A new inode forces stage: reconcile-only coverage misses write-before-check.
+    run_on ingest p1
+    expect_code 70 "$RC" "staged ingest refuses $shape terminal history ($OUT)"
+    assert_contains "$(field detail)" 'final projection without receipts' 'source refusal precedes routing'
+    assert_absent "$P1/custody/k1.notice" 'no replacement custody before source validation'
+    assert_equals 0 "$(receipt_count k1)" 'no invented receipt sequence'
+    cmp "$F/current.saved" "$P1/current/k1.json" || fail 'terminal projection replaced'
+    stored > "$F/store"
+    assert_grep 'refused p1/k1' "$F/store" 'ingest cannot clear refusal'
+    assert_grep 'receipts-unreadable p1/k1' "$F/store" 'ingest cannot clear source level'
+    [ "$shape" != empty ] || rmdir "$P1/receipts/k1"
+    mv "$F/receipts.saved" "$P1/receipts/k1"
+    run_on ingest p1
+    expect_code 0 "$RC" 'verified history restoration permits replay'
+    assert_equals refused "$(jq -r .state "$P1/current/k1.json")" 'restored refusal stays terminal'
+  done
+  pass 'preflight prevents staged ingest from replacing lost final truth before its refresh'
+}
+
+case_source_preflight_final_states() {
+  local state shape place
+  for state in delivered consumed; do
+    for shape in missing empty; do
+      world "preflight-final-$state-$shape"
+      payload p original
+      submit k1 note p
+      run_on ingest p1
+      expect_code 0 "$RC" 'final-state delivery fixture'
+      place=custody
+      if [ "$state" = consumed ]; then
+        run_on consume p1 k1
+        expect_code 0 "$RC" 'final-state consumed fixture'
+        place=handled
+      fi
+      cp "$P1/current/k1.json" "$F/current.saved"
+      cp "$P1/$place/k1.notice" "$F/custody.saved"
+      mv "$P1/receipts/k1" "$F/receipts.saved"
+      [ "$shape" != empty ] || mkdir "$P1/receipts/k1"
+      payload p replacement
+      fix envelope "$H" p1 k1 note "$F/p" > "$OB/replacement"
+      mv "$OB/replacement" "$OB/k1.envelope.json"
+      run_on ingest p1
+      expect_code 70 "$RC" "$state/$shape history refuses staged replacement ($OUT)"
+      cmp "$F/current.saved" "$P1/current/k1.json" || fail "$state projection changed"
+      cmp "$F/custody.saved" "$P1/$place/k1.notice" || fail "$state custody changed"
+      [ "$place" = custody ] || assert_absent "$P1/custody/k1.notice" 'consumed key cannot gain new custody'
+      assert_equals 0 "$(receipt_count k1)" 'no receipt replacement after history loss'
+      [ "$shape" != empty ] || rmdir "$P1/receipts/k1"
+      mv "$F/receipts.saved" "$P1/receipts/k1"
+      run_on ingest p1
+      expect_code 0 "$RC" 'restored history processes replacement as conflict'
+      assert_equals "$state" "$(jq -r .state "$P1/current/k1.json")" 'restored final state is not downgraded'
+      cmp "$F/custody.saved" "$P1/$place/k1.notice" || fail 'conflict replaced original custody'
+    done
+  done
+  pass 'delivered and consumed keys refuse missing or empty history before custody replacement'
+}
+
+case_source_preflight_lifecycle() {
+  local command
+  world preflight-lifecycle
+  payload p 'unconsumed live member'
+  submit k1 note p
+  run_on ingest p1
+  expect_code 0 "$RC" 'lifecycle fixture delivery'
+  mv "$OB/k1.envelope.json" "$F/envelope.saved"
+  run_on retire p1
+  expect_code 65 "$RC" 'healthy no-outbox retirement is busy from receipt truth'
+  assert_equals retire-busy "$(field code)" 'healthy control is not source corruption'
+  mv "$P1/current/k1.json" "$F/current.saved"
+  mv "$P1/receipts/k1" "$F/receipts.saved"
+  for command in retire reconcile consume ack-refusal; do
+    case "$command" in
+      consume) run_on consume p1 k1 ;;
+      ack-refusal) run_on ack-refusal p1 k1 --note checked ;;
+      *) run_on "$command" p1 ;;
+    esac
+    expect_code 70 "$RC" "$command refuses a known member absent from filenames ($OUT)"
+    assert_absent "$OWN/bindings/p1.retired" 'missing member cannot authorize retirement'
+    assert_absent "$P1/handled/k1.notice" 'unknown source cannot authorize custody movement'
+    assert_absent "$P1/.acked/k1" 'unknown source cannot authorize acknowledgement'
+    assert_present "$P1/custody/k1.notice" 'unknown member keeps custody'
+    assert_equals '["k1"]' "$(jq -c .keys "$P1/.live-keys")" 'known member never disappears'
+  done
+  for command in announce-list mark-announced retention purge; do
+    if [ "$command" = mark-announced ]; then
+      OUT=$(source_engine "$command" p1 newkey 2> "$F/on.err"); RC=$?
+    else
+      OUT=$(source_engine "$command" p1 2> "$F/on.err"); RC=$?
+    fi
+    expect_code 70 "$RC" "$command validates live membership before any decision ($OUT)"
+    assert_no_grep Traceback "$F/on.err" 'source failure is structured'
+    assert_absent "$P1/.announced/newkey" 'no announce marker on incomplete source'
+    assert_present "$P1/custody/k1.notice" 'lifecycle preflight preserves custody'
+  done
+  mv "$F/current.saved" "$P1/current/k1.json"
+  mv "$F/receipts.saved" "$P1/receipts/k1"
+  run_on consume p1 k1
+  expect_code 0 "$RC" 'restoration permits consumption'
+  run_on retire p1
+  expect_code 0 "$RC" 'complete consumed binding can retire'
+  pass 'every locked lifecycle entry validates inventory before trusting a reduced filename set'
+}
+
+case_source_preflight_directories() {
+  local source shape
+  for source in current receipts; do
+    for shape in missing symlink invalid-name; do
+      [ "$shape" != invalid-name ] || [ "$source" = current ] || continue
+      world "preflight-directory-$source-$shape"
+      if [ "$shape" = invalid-name ]; then
+        printf '{}' > "$P1/current/BAD.json"
+      else
+        mv "$P1/$source" "$F/source.saved"
+        if [ "$shape" = symlink ]; then
+          mkdir "$F/empty"
+          ln -s "$F/empty" "$P1/$source"
+        fi
+      fi
+      OUT=$(source_engine mark-announced p1 newkey 2> "$F/on.err"); RC=$?
+      expect_code 70 "$RC" "empty binding $source/$shape refuses a mutation ($OUT)"
+      assert_no_grep Traceback "$F/on.err" 'directory error is a structured refusal'
+      assert_absent "$P1/.announced/newkey" 'no marker before required-directory validation'
+      if [ "$shape" = invalid-name ]; then
+        rm "$P1/current/BAD.json"
+      else
+        [ "$shape" != symlink ] || rm "$P1/$source"
+        mv "$F/source.saved" "$P1/$source"
+      fi
+      OUT=$(source_engine mark-announced p1 newkey 2> "$F/on.err"); RC=$?
+      expect_code 0 "$RC" 'healthy empty sources permit normal mutation'
+    done
+  done
+  pass 'preflight distinguishes healthy empty sources from missing nonregular or invalid directories'
+}
+
+case_bind_replay_source_preflight() {
+  local source
+  world bind-replay-preflight
+  OUT=$(bind_p1 2> "$F/on.err"); RC=$?
+  expect_code 0 "$RC" 'healthy empty bind replay'
+  for source in custody handled current receipts; do
+    mv "$P1/$source" "$F/source.saved"
+    OUT=$(bind_p1 2> "$F/on.err"); RC=$?
+    expect_code 70 "$RC" "bind replay refuses missing $source ($OUT)"
+    assert_absent "$P1/$source" 'bind replay never repairs missing authoritative layout'
+    assert_no_grep Traceback "$F/on.err" 'bind source error is structured'
+    mv "$F/source.saved" "$P1/$source"
+  done
+  payload p history
+  submit k1 note p
+  run_on ingest p1
+  expect_code 0 "$RC" 'bind replay history fixture'
+  mv "$P1/receipts/k1" "$F/receipts.saved"
+  OUT=$(bind_p1 2> "$F/on.err"); RC=$?
+  expect_code 70 "$RC" "bind replay validates complete existing history ($OUT)"
+  assert_absent "$P1/receipts/k1" 'bind replay never creates replacement history'
+  mv "$F/receipts.saved" "$P1/receipts/k1"
+  OUT=$(bind_p1 2> "$F/on.err"); RC=$?
+  expect_code 0 "$RC" 'verified source restoration permits bind replay'
+  pass 'bind replay validates existing sources read-only rather than recreating missing layout'
+}
+
+case_projection_receipt_witness() {
+  local state seq
+  for state in delivered consumed refused; do
+    world "receipt-witness-$state"
+    payload p history
+    if [ "$state" = refused ]; then
+      fix envelope "$H" p1 k1 forbidden "$F/p" > "$OB/k1.envelope.json"
+    else
+      submit k1 note p
+    fi
+    run_on ingest p1
+    expect_code 0 "$RC" 'witness initial receipt'
+    seq=1
+    if [ "$state" = consumed ]; then
+      run_on consume p1 k1
+      expect_code 0 "$RC" 'witness consumed receipt'
+      seq=2
+    else
+      fix envelope "$H" p1 k1 alert "$F/p" > "$OB/replacement"
+      mv "$OB/replacement" "$OB/k1.envelope.json"
+      run_on ingest p1
+      expect_code 0 "$RC" 'witness second digest refusal'
+    fi
+    cp "$P1/current/k1.json" "$F/current.saved"
+    mv "$P1/receipts/k1/$seq.json" "$F/receipt.saved"
+    # Another valid receipt remains: the empty-history guard cannot save this.
+    assert_equals 1 "$(receipt_count k1)" 'isolated nonempty partial history'
+    run_on reconcile p1
+    expect_code 70 "$RC" "$state missing referenced receipt refuses ($OUT)"
+    assert_contains "$(field detail)" 'receipt history lost or inconsistent' 'partial loss is not a fresh final state'
+    cmp "$F/current.saved" "$P1/current/k1.json" || fail 'partial history rewrote projection'
+    stored > "$F/store"
+    assert_grep 'receipts-unreadable p1/k1' "$F/store" 'partial loss alarms as an incomplete source'
+    mv "$F/receipt.saved" "$P1/receipts/k1/$seq.json"
+    run_on reconcile p1
+    expect_code 0 "$RC" 'restored exact receipt permits replay'
+  done
+  pass 'nonempty receipt history must witness the prior final projection without downgrading it'
+}
+
+case_retention_receipt_truth() {
+  world retention-receipt-truth
+  local NOW=1700000000
+  payload p original
+  submit k1 note p
+  run_on ingest p1
+  run_on consume p1 k1
+  expect_code 0 "$RC" 'retention fixture consumed'
+  # Crash after a new conflict receipt but before refreshing the consumed projection.
+  fix envelope "$H" p1 k1 alert "$F/p" > "$OB/replacement"
+  mv "$OB/replacement" "$OB/k1.envelope.json"
+  OF=ingest:after-refusal:kill run_on ingest p1
+  assert_equals null "$(jq -r .code "$P1/current/k1.json")" 'projection is legitimately crash-stale'
+  assert_equals key-conflict "$(jq -r .code "$P1/receipts/k1/3.json")" 'receipt holds the new obligation'
+  NOW=$((1700000000 + 8 * 86400))
+  OUT=$(source_engine retention p1 2> "$F/on.err"); RC=$?
+  expect_code 0 "$RC" 'complete history allows retention decision'
+  assert_present "$P1/current/k1.json" 'stale projection cannot authorize archive of unacknowledged conflict'
+  assert_equals '["k1"]' "$(jq -c .keys "$P1/.live-keys")" 'new conflict keeps membership'
+  assert_equals key-conflict "$(jq -r .code "$P1/current/k1.json")" 'retention refreshes receipt truth'
+  pass 'retention judges complete receipt truth rather than a stale terminal projection'
+}
+
 case_unknown_problem_mutation() {
   local command shape
   world unknown-problem
@@ -2786,6 +3049,13 @@ fm_run_case_pool "$(fm_case_pool_jobs "${FM_OWNER_NOTICE_CASE_JOBS:-}")" "$TMP_R
   case_consumed_receipt_linkage \
   case_empty_source_directories \
   case_final_projection_without_receipts \
+  case_source_preflight_ingest \
+  case_source_preflight_final_states \
+  case_source_preflight_lifecycle \
+  case_source_preflight_directories \
+  case_bind_replay_source_preflight \
+  case_projection_receipt_witness \
+  case_retention_receipt_truth \
   case_unknown_problem_mutation \
   case_bind_inventory_init \
   case_live_membership \

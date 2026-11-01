@@ -637,8 +637,19 @@ def cmd_bind(owner, a):
     path = owner.binding_path(a.id)
     if not os.path.lexists(path):
         require_pristine_bind(owner, a.id)
-    for d in OWNER_DIRS:
-        fmt.mkdir_durable(owner.dir(a.id, d), root=owner.root)
+        for d in OWNER_DIRS:
+            fmt.mkdir_durable(owner.dir(a.id, d), root=owner.root)
+    else:
+        # Bind holds only the bindings lock. Replay validates read-only and
+        # never repairs/reaps a binding another locked command may be using.
+        try:
+            for d in OWNER_DIRS:
+                require_directory(owner.dir(a.id, d))
+        except OSError as exc:
+            raise fmt.FormatError("bind replay source directory: %s" % exc) from None
+        ctx = Ctx(owner, a.id, finish=False)
+        ctx.members = read_live(owner, a.id)
+        ctx.validate_sources()
     fmt.mkdir_durable(owner.bindings, root=owner.root)
     live_path = owner.dir(a.id, ".live-keys")
     if not os.path.lexists(path) and not os.path.lexists(live_path):
@@ -875,6 +886,53 @@ class Ctx:
         self.members = read_live(owner, bid) if finish else None
         self.seq_allocs = 0
         self.touched = set()
+        if finish:
+            self.validate_sources()
+
+    def validate_sources(self):
+        """Preflight every live source before any locked mutation or decision.
+
+        Only live membership and current filenames are enumerated, not lifetime
+        receipts or archives. Pending projections may legitimately precede their
+        first receipt; a final projection must still have its receipt witnesses.
+        """
+        try:
+            require_directory(self.path("receipts"))
+            require_directory(self.path("current"))
+            names = fmt.scandir_names(self.path("current"), "engine")
+        except OSError as exc:
+            raise fmt.FormatError("required live source directory: %s" % exc) from None
+        keys = set(self.members)
+        for name in names:
+            if not name.endswith(".json") or not fmt.valid_name(name[:-5]):
+                raise fmt.FormatError("invalid current entry: " + name)
+            keys.add(name[:-5])
+        for key in sorted(keys):
+            old = self.read_current(key)
+            try:
+                self.validate_history(key, old, receipts_of(self.owner, self.bid, key))
+            except fmt.FormatError as exc:
+                raise Done(UNKNOWN, state="unknown", code="receipts-unreadable", key=key,
+                           detail=str(exc)) from None
+
+    def validate_history(self, key, old, receipts):
+        """Verify the projection's prior truth without rejecting crash-stale state."""
+        if not old or old["state"] not in FINAL:
+            return
+        by_seq = dict(receipts)
+        receipt = by_seq.get(old["seq"])
+        witnesses = [] if receipt is None else [receipt]
+        if receipt and receipt["outcome"] == "consumed":
+            witnesses.insert(0, by_seq[receipt["delivered_seq"]])
+        if old["state"] != "refused" and old["code"] == "key-conflict":
+            witnesses.extend(o for _, o in receipts if o["outcome"] == "refused")
+        prior = self.derive_current(key, [(o["seq"], o) for o in witnesses])
+        fields = ("state", "kind", "payload_sha256", "seq", "code", "final_at",
+                  "delivered_at", "consumed_at")
+        if any(prior[f] != old[f] for f in fields):
+            detail = "final projection receipt history lost or inconsistent: " + key if receipts \
+                else "final projection without receipts"
+            raise fmt.FormatError(detail)
 
     def path(self, *parts):
         return self.owner.dir(self.bid, *parts)
@@ -976,8 +1034,6 @@ class Ctx:
         self.track(key)
         old = self.read_current(key)
         receipts = receipts_of(self.owner, self.bid, key)
-        if not receipts and old and old["state"] in FINAL:
-            raise fmt.FormatError("final projection without receipts")
         cur = self.derive_current(key, receipts, old)
         if cur != old:
             write_json(self.current_path(key), cur, self.tmp, "o-current-dirsync")
@@ -1533,9 +1589,7 @@ def retention(ctx):
             fmt.unlink_durable(ctx.path("handled", name), "o-handled-dirsync")
     for name in fmt.scandir_names(ctx.path("current"), "engine"):
         key = name[:-5]
-        cur = ctx.read_current(key)
-        if not cur:
-            continue
+        cur = ctx.refresh_current(key)
         since = None
         if cur["state"] == "consumed":
             since = fmt.parse_iso(cur["consumed_at"])
@@ -1858,8 +1912,7 @@ def wanted_levels(owner):
                         path=ctx.current_path(key))
             try:
                 receipts = receipts_of(owner, bid, key)
-                if not receipts and cur and cur["state"] in FINAL:
-                    raise fmt.FormatError("final projection without receipts")
+                ctx.validate_history(key, cur, receipts)
                 cur = ctx.derive_current(key, receipts, cur)
             except (Done, fmt.FormatError, ValueError) as exc:
                 unknown("receipts-unreadable", bid, key, "receipts/%s cannot be read" % key, detail=str(exc))

@@ -35,7 +35,7 @@ A receipt says only that the owner holds the notice: delivery is not consumption
 - `purge` is a cleanup action that asks the operator first.
 - An `outbox-in-progress` level means a producer's envelope has stayed uncommitted past 60 s; the next submit or query by that producer finishes a dead publisher's temp, so check the producer before anything else.
 - A `binding-unreadable`, `current-unreadable`, `receipts-unreadable`, `membership-unreadable`, `status-unreadable` or `routing-unreadable` level means the source set is unknown; repair it rather than acknowledging around it, following the protocol's Alarms and Live membership sections.
-- Never recreate a missing `.live-keys` as empty, bypass `unknown-surviving-tree` by deleting records, or run a receipt-history scan on every refresh; the protocol's Live membership section owns recovery and retention ordering.
+- Never recreate a missing `.live-keys` as empty, bypass `unknown-surviving-tree` by deleting records, or substitute a new envelope for lost receipt history; the protocol's Live membership section owns pre-mutation validation, verified source restoration and bounded retention ordering.
 - A postcommit routing error preserves the operation result but exits 70; check the process exit and repair the named source, following the protocol's Alarms section rather than treating preserved stdout as overall success.
 - Exit 75 from the front is a held lock or an outbox that did not answer within its bound; it names the holder or the outbox, so retry later rather than clearing anything by hand.
 

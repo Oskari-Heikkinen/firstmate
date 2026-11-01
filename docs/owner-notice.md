@@ -201,7 +201,8 @@ It is owner-local membership evidence, not a receipt or acceptance authority; th
 The read and write limit is 16 MiB; reaching it refuses new membership with 70 `membership-full` rather than truncating the set.
 Missing, unreadable, non-regular, oversized or invalid membership is 70 `membership-unreadable` on mutation and an incomplete alarm snapshot, never an empty inventory or an automatic rebuild.
 An empty inventory explicitly created by a new bind is healthy.
-A bind replay never reinitializes missing membership while its binding exists; an existing pre-inventory binding must be explicitly migrated or its verified inventory restored before use.
+A bind replay validates the existing layout and live sources read-only under the bindings lock, never reinitializes missing membership or recreates missing directories while its binding exists, and never reaps that binding's temps without its lock.
+An existing pre-inventory binding must be explicitly migrated or its verified inventory restored before use.
 When the binding is missing, `bind` refuses with 70 `unknown-surviving-tree` unless the owner tree is absent or provably pristine: only empty standard directories, optional validated empty membership and an optional initial empty outbox-status record.
 Any surviving receipt, projection, custody, archive, acknowledgement, temp or unexpected record, or an unreadable/nonregular layout, prevents reinitialization even if the inventory is missing.
 This check reads only the fixed layout and at most one child per directory, not receipt history.
@@ -209,13 +210,17 @@ A surviving tree needs verified restoration or explicit bounded restartable inve
 This uninstalled core does not automatically migrate older homes or scan receipt history to repair membership.
 
 Under the binding lock, an initial projection is durable before membership, which is durable before a key's first receipt or problem record.
-Reconcile unions live members with current filenames and refreshes valid stale projections from receipts without enumerating the receipt root or archives.
+Every locked engine context preflights the union of live members and current filenames before any custody change, receipt append, acknowledgement, announce, retention or retirement decision, including replay and direct-engine entry points.
+It requires real current and receipt root directories, valid projection filenames and records, and each final projection's supporting receipts, without enumerating lifetime receipt keys or archives.
+A final projection must still be witnessed by its named receipt and any delivery predecessor or conflict refusal it records; nonempty but inconsistent partial history is unknown too.
+A valid crash-stale projection may lag newly appended receipts, and a genuinely initial pending projection needs no receipt yet.
 A missing live-member projection or an invalid existing projection refuses mutation: a problem and its timestamp can exist only there, so rebuilding from receipts alone could silently lose an obligation.
-Restore the verified projection before retrying; receipt truth alone is not a reconstruction authority for missing problem history.
+Restore verified projections and receipt history before retrying; neither a staged replacement envelope nor remaining receipts authorize reconstruction of lost final truth or problem history.
+Reconcile then refreshes valid stale projections from receipts.
 A crash between initial projection and membership leaves a discoverable valid pending record; a crash between membership and receipt leaves that same valid record, so both replay without treating unknown state as empty.
 A missing required directory is unknown and must be restored, not silently recreated as empty.
 
-Retention removes membership only after the key is announced, consumed or refusal-acknowledged, its retention period elapsed, and its terminal archive is durable.
+Retention judges refreshed receipt truth, not a crash-stale terminal projection, and removes membership only after the key is announced, consumed or refusal-acknowledged, its retention period elapsed, and its terminal archive is durable.
 Any remaining refusal/problem also requires its acknowledgement.
 Archive publication copies the validated record rather than hardlinking it, so a crash cannot make the current file fail the single-link reader.
 Membership removal precedes current unlink; a crash between them leaves an extra current file that replay can safely archive again.
@@ -258,7 +263,8 @@ A fence line inside the payload cannot close the block early, because only the l
 1. Create `bindings/<id>.retiring` exclusively, so the client refuses new submits from here.
 2. List the outbox in a bounded child; on timeout remove `.retiring` and exit 75 `outbox-unresponsive`.
 3. Refuse with 65 `retire-busy` and the keys, removing `.retiring`, when an envelope has no final receipt, a key is delivered and unconsumed, or a final key has no `.announced` marker.
-Each key's state comes from its receipts, never from a `current/` entry a crash left pending; receipts that cannot be read refuse with 70 `receipts-unreadable`, removing `.retiring`.
+The Live membership preflight applies before step 1 and on replay, so missing filenames cannot hide a known live member.
+Each key's state comes from its receipts, never from a `current/` entry a crash left pending; a source failure during the decision refuses with 70 `receipts-unreadable`, removing `.retiring`.
 4. Create `bindings/<id>.retired` exclusively and remove `.retiring`; the front then moves the id from `.bindings.list` to `.retired.list`.
 A `retire` that finds `.retired` already there removes any `.retiring` and rebuilds the lists before it answers, so a repeat finishes an interrupted one; the front repairs the lists after every `retire` and `purge`.
 
@@ -294,7 +300,7 @@ The levels in this version:
 - per key: `outbox-in-progress` while the envelope stays in progress past 60 s, until a complete listing no longer finds it so, `refused` and `unsafe-file` until `.acked/K`, `custody-mismatch`, `orphan-custody` and `seq-collision` until `.acked/K` or a later delivery, `unannounced` past 15 s after the final receipt, `unconsumed` past `consume_bound_seconds`, and `current-unreadable` and `receipts-unreadable` for an entry that cannot be read.
 
 A source that cannot be read is unknown, never empty: missing required directories, missing member projections, schema/type/identity-invalid current records and invalid receipt sources raise their own levels and mark the wanted set incomplete.
-Every live/current key is judged from validated receipt truth, including identity and consumed-to-delivered linkage, even when its current projection parses.
+Every live/current key is judged from validated receipt truth, including identity, consumed-to-delivered linkage and the Live membership projection witnesses, even when its current projection parses.
 On an incomplete set the front asserts each wanted level and clears nothing, so an unknown source never clears a live level; the whole-set sync runs only on a complete set.
 List repair likewise keeps an unreadable binding's existing list lines, but refuses before replacing either list if either fallback is missing, unreadable or malformed.
 
