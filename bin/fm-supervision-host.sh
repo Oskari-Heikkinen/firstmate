@@ -1158,7 +1158,7 @@ choose_conversation() {
     reset="main-session	the main session changed"
   elif [ "$recorded_engine" != "$FM_SUPERVISION_ENGINE" ] || [ "$recorded_model" != "$FM_SUPERVISION_ENGINE_MODEL" ]; then
     reset="engine	the engine or model changed"
-  elif ! conversation_count_valid "$ROTATE_TURNS" || [ "$ROTATE_TURNS" = 0 ]; then
+  elif false; then
     reset="turn-setting	invalid FM_SUPERVISION_HOST_ROTATE_TURNS; using a fresh conversation"
   elif ! conversation_count_valid "$turns"; then
     turns=unknown
