@@ -152,6 +152,45 @@ SH
   pass "$n evidence copies verify within a 60-second bound"
 }
 
+test_snapshot_connections_close_per_declaration() {
+  python3 - "$ROOT/bin/fm-task-evidence-stream.py" "$TMP_ROOT/connections" <<'PY' || fail 'snapshot connection ownership regression'
+import hashlib
+import importlib.util
+import os
+import sqlite3
+import sys
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location('evidence', sys.argv[1])
+evidence = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(evidence)
+root = sys.argv[2]
+scan, staging = os.path.join(root, 'scan'), os.path.join(root, 'staging')
+os.makedirs(scan)
+os.makedirs(staging)
+closed = []
+class Connection(sqlite3.Connection):
+    def close(self):
+        closed.append(True)
+        return super().close()
+connect = sqlite3.connect
+def tracked_connect(path):
+    return connect(path, factory=Connection)
+with patch.object(evidence.sqlite3, 'connect', tracked_connect):
+    with open(os.path.join(staging, 'MANIFEST.sha256'), 'w') as manifest:
+        for index in range(8):
+            source = os.path.join(root, str(index))
+            with open(source, 'wb') as out:
+                out.write(b'proof')
+            key = 'copy/' + str(index)
+            evidence.snapshot(source, scan, str(index), key)
+            assert len(closed) == index + 1, 'snapshot transaction retained its connection'
+            manifest.write(hashlib.sha256(b'proof').hexdigest() + '  ' + key + '\n')
+    evidence.recheck(staging, scan, '8')
+    assert len(closed) == 17, 'recheck retained a per-declaration connection or manifest database'
+PY
+  pass 'snapshot and recheck close every SQLite connection rather than retaining transactions until garbage collection'
+}
+
 test_rss_sampler_handles_proc_exit_races() {
   python3 - "$ROOT/tests/evidence-rss.py" <<'PY' || fail 'procfs exit-race sampler regression'
 import errno
@@ -186,4 +225,5 @@ PY
 test_verdicts_match_in_batched_and_per_file_hashing
 test_a_single_file_declaration_records_its_key
 test_a_large_evidence_set_verifies_in_bounded_time
+test_snapshot_connections_close_per_declaration
 test_rss_sampler_handles_proc_exit_races

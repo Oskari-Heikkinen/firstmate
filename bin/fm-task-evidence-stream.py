@@ -8,6 +8,7 @@ No collection grows with tree membership: hashes use fixed batches, inventories
 and manifest lookups use SQLite with a fixed cache and disk temporary tables.
 Scratch belongs to the caller's scan directory; this helper never removes roots.
 """
+from contextlib import closing
 import hashlib
 import os
 import shutil
@@ -146,7 +147,7 @@ def snapshot(root, scratch, index, key):
     if not index or any(c not in '0123456789' for c in index):
         refuse('evidence copy check: invalid snapshot invocation')
     path = os.path.join(scratch, 'snapshot.' + index + '.sqlite')
-    with database(path) as db:
+    with closing(database(path)) as db, db:
         db.execute('CREATE TABLE info (root BLOB, key BLOB, t0 REAL)')
         db.execute('INSERT INTO info VALUES (?,?,?)', (os.fsencode(root), os.fsencode(key), time.time() - 3))
         inventory(db, root, 'saved')
@@ -157,7 +158,7 @@ def recheck(staging, scratch, count):
         refuse('evidence copy check: invalid recheck invocation')
     # Index the manifest once on disk. Racy entries use an indexed lookup, not
     # a whole-manifest hash table or a repeated whole-manifest scan.
-    with database(os.path.join(scratch, 'recheck.sqlite')) as manifests:
+    with closing(database(os.path.join(scratch, 'recheck.sqlite'))) as manifests, manifests:
         manifests.execute('CREATE TABLE IF NOT EXISTS hashes (name BLOB PRIMARY KEY, hash BLOB)')
         manifests.execute('DELETE FROM hashes')
         with open(os.path.join(staging, 'MANIFEST.sha256'), 'rb') as lines:
@@ -168,7 +169,10 @@ def recheck(staging, scratch, count):
                     refuse('evidence copy check: malformed staged manifest line')
                 manifests.execute('INSERT OR REPLACE INTO hashes VALUES (?,?)', (fields[1], digest))
         for index in range(int(count)):
-            with database(os.path.join(scratch, 'snapshot.' + str(index) + '.sqlite'), existing=True) as db:
+            snapshot_path = os.path.join(scratch, 'snapshot.' + str(index) + '.sqlite')
+            # sqlite3's transaction context commits but does not close. Close
+            # each declaration's connection before reading the next one.
+            with closing(database(snapshot_path, existing=True)) as db, db:
                 root, key, t0 = db.execute('SELECT root,key,t0 FROM info').fetchone()
                 db.execute('DROP TABLE IF EXISTS current')
                 inventory(db, root, 'current')
