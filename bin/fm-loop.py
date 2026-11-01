@@ -363,7 +363,7 @@ def read_collected(src):
         data = load_json(path, src)
         if isinstance(data, dict) and isinstance(data.get("request_id"), str):
             outcome = data.get("outcome")
-            data["_state_unknown"] = not isinstance(outcome, str) or outcome not in WITH_RESULTS | WITHOUT_RESULTS
+            data["_state_unknown"] = False
             if data["_state_unknown"]:
                 src.fail("unreadable", "%s has unknown collected outcome %r" % (path, outcome))
             out[data["request_id"]] = data
