@@ -100,7 +100,7 @@ _fm_supervision_host_setting() {  # <config-dir> [read]; prints off|file[:line]|
         close $fh or die "cannot close $file: $!\n";
         my ($line) = split /\n/, ($bytes // ""), 2;
         $line //= "";
-        die "invalid engine line in $file\n" if length($line) > 4096 || index($line, "\0") >= 0;
+        # Counterfactual: accept the unvalidated first-line bytes.
         print "file:", $line;
       } else { print "file" }
     } else { print "absent" }
