@@ -696,6 +696,7 @@ Routine status lines (`working:`, `done:`, `paused:`, `note:`, `resolved:`), bar
 A `needs-decision:`, `blocked:`, or `failed:` line, a captain-held declaration, a pending-reply escalation, any other captain-relevant line except a plain `done:`, and an unreadable status log wake at once, and that wake classifies every held signal line with it.
 A declared-wait recheck for a changed or unreadable lane, for a declared time that has passed, for the periodic reminder of an untagged wait whose declared time lies beyond the cadence, or for a wait at the standing-waits ceiling still wakes at once.
 A rearm-resurface wakes at once when a queued row's task has such a line the supervisor has not been shown yet, or the queue holds anything other than signal rows and declared-wait rechecks.
+A recovery with nothing owed raises no rearm-resurface at all ([`watcher-continuity.md`](watcher-continuity.md) "Announcement").
 Held signals keep their seen markers unmoved, the batch start is kept in `state/.wake-batch-since`, and a held rearm-resurface in `state/.wake-batch-resurface`, so a restarted watcher holds the same items to the same deadline and never loses one.
 Batching is off while the away-mode daemon owns triage.
 `bin/fm-watch.sh`'s `wake_batch_due` and `signal_span_urgent` own the exact rules.
@@ -1175,7 +1176,8 @@ A level rises at once and falls only after `clear_samples` consecutive better sa
 The page-in rate is the average between the current Windows reading and one at least 60 s and at most `win_stale_max_s` older, so one second's spike does not grade and a gap longer than that leaves paging ungraded until the next reading.
 A non-paged pool at or above `win_nonpaged_pool_mib` grades `warn` only, because it points at a leaking Windows driver that parking agents does not free, but it always wakes the supervisor and names the likely cause.
 
-The guard wakes the primary home's supervisor, before any park work, when the level is at or above `wake_level` or the pool is abnormal: once when that starts, again every `rewake_s` while it lasts, at once when the level rises or the pool turns abnormal, and with one `memory guard cleared` line on the tick it ends.
+The guard wakes the primary home's supervisor, before any park work, when the level is at or above `wake_level` or the pool is abnormal: once when that starts, again every `rewake_s` while it lasts, at once when the level rises or the pool turns abnormal, and with one `memory guard cleared` line once it has stayed ended for 600 seconds.
+A return before that folds into the open notice, and a return within `rewake_s` of the last wake after the clear was told wakes only above the level last told or for a pool that turns abnormal.
 Each wake names every graded signal and what the level does to agents.
 A Windows reading that is unavailable holds the pool notice as it was, and secondmate homes never wake.
 The fleet-wide agent budget is the admission gate's `max_agents`, counted across every home on the machine.
@@ -2859,7 +2861,6 @@ FM_INACTIVE_RECONCILE_BUDGET_SECS=10  # 1..30-second scan deadline; wedged-scan 
 FM_CHECK_INTERVAL=300   # seconds between slow checks (authenticated merge polls, custom checks, or Relay dispatch)
 FM_TASK_INBOX_GRACE_SECS=90   # seconds an unhandled steering-inbox message may sit before the watcher attempts doorbell delivery on an idle pane; also the minimum spacing between attempts
 FM_TASK_INBOX_RING_MAX=3      # watcher delivery attempts without an acknowledgement before the task surfaces as a stale wake for recovery
-FM_TASK_INBOX_BUSY_MAX=2      # consecutive busy-deferred due polls before a stuck-busy stale wake; 1..999999999, at most 9 decimal digits, otherwise 2; policy: bin/fm-task-inbox-lib.sh
 FM_CHECK_TIMEOUT=30     # seconds allowed per slow check script
 FM_MAIL_CHECK_BUDGET=15   # seconds allowed for one standing mail poll; valid 5..25, cut to fit FM_CHECK_TIMEOUT
 FM_MAIL_POLL_MAX_WAKES=20   # per-poll wake cap for a mail poll; valid 1..200, keeps a flood from flooding firstmate

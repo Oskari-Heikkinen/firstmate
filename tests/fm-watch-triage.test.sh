@@ -1182,6 +1182,9 @@ test_wake_batch_holds_rearm_resurface_unless_a_queued_row_is_urgent() {
   wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the first watcher woke on an empty home: $(cat "$out")"; }
   reap "$pid"
   : > "$out"
+  # A routine update the supervisor has not been shown makes the recovery owed
+  # (a recovery owing nothing wakes nobody) without queueing a row.
+  printf 'working: fixture update\n' > "$state/t.status"
   watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=600
   pid=$!
   if ! wait_poll_cycle "$state" "$pid" || ! wait_poll_cycle "$state" "$pid"; then
@@ -1236,6 +1239,9 @@ test_wake_batch_held_rearm_resurface_survives_a_restart() {
   wait_poll_cycle "$state" "$pid" || { reap "$pid"; fail "the first watcher woke on an empty home: $(cat "$out")"; }
   reap "$pid"
   : > "$out"
+  # A routine update the supervisor has not been shown makes the recovery owed
+  # (a recovery owing nothing wakes nobody) without queueing a row.
+  printf 'working: fixture update\n' > "$state/t.status"
   watch_bg "$state" "$fakebin" "$out" env FM_WAKE_BATCH_SECS=600
   pid=$!
   if ! wait_poll_cycle "$state" "$pid" || ! wait_poll_cycle "$state" "$pid"; then
