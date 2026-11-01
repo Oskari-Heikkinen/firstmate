@@ -822,7 +822,7 @@ class Loop:
         if r["replaced_by"] and not pkgs:
             return put(None, None, "replaced by %s" % r["replaced_by"])
         # Without a collected record (older requests), every package collected counts.
-        collected = rec.get("outcome") in WITH_RESULTS if rec else (bool(pkgs) and all(p["collected"] for p in pkgs))
+        collected = bool(rec.get("fully_collected")) if rec else (bool(pkgs) and all(p["collected"] for p in pkgs))
         if collected:
             when = iso_epoch(rec.get("recorded_at")) if rec else max(p["collected"] for p in pkgs)
             refused = [p for p in pkgs if p["refusal"]]
