@@ -936,7 +936,7 @@ cmd_park() {
       || rc=$?
     if [ "$rc" -ne 0 ]; then
       printf 'error: queue submission or source arm failed; task %s was not stopped\n' "$ID" >&2
-      return "$rc"
+      return 1
     fi
     fm_procevent_merge_queue_registration_matches "$STATE" "$ID" "$adopted" "$SCRIPT_DIR/fm-procevent-merge-queue.sh" \
       || die "submitted queue source does not match task $ID head $adopted; reconcile its registration"
