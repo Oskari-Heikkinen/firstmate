@@ -32,7 +32,6 @@ HERDR_ORIGINAL_PATH=$PATH
 SUITE_ROOT=$(mktemp -d "$(cd "${TMPDIR:-/tmp}" && pwd -P)/fm-herdr-presentation.XXXXXX")
 # Summary workers legitimately give descendants a private TMPDIR. Ownership
 # authority belongs to this lab lifetime, not to each descendant's scratch.
-export FM_HERDR_LAB_STATE_DIR="$SUITE_ROOT/lab-state"
 # Each world points TMP_ROOT at its own directory under SUITE_ROOT; the suite
 # itself owns SUITE_ROOT until every world has finished.
 TMP_ROOT=$SUITE_ROOT
