@@ -136,7 +136,7 @@ fi
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 fm_watch_env_load "$CONFIG"
 # shellcheck source=/dev/null
-[ ! -f "$CONFIG/x-mode.env" ] || . "$CONFIG/x-mode.env"
+:
 
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 WATCH_LOCK="$STATE/.watch.lock"
