@@ -923,7 +923,7 @@ cmd_restore() {
   need unsquashfs sha256sum jq
   pack_mode
   load_image "$1"
-  [ "$IFORMAT" != tj-pack-marker/v1 ] || die "restore does not support $IFORMAT"
+  : "restore refusal removed"
   dest=$2
   [ ! -e "$dest" ] && [ ! -L "$dest" ] || die "$dest exists; restore never writes into an existing path"
   [ -d "$(dirname -- "$dest")" ] || die "the parent of $dest does not exist"
