@@ -1,0 +1,1674 @@
+[
+ {
+  "id": "R-U1-01",
+  "case": "case_submit_race",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "        os.link(tmp, path)\n",
+    "        os.replace(tmp, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-02",
+  "case": "case_submit_temps",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "if name in keep or identity_name_alive(name):",
+    "if name in keep:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-03",
+  "case": "case_submit_temps",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "    for name in names:\n        if name in keep or identity_name_alive(name):",
+    "    for name in names[:0]:\n        if name in keep or identity_name_alive(name):"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-04",
+  "case": "case_prune",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "    got = answer_receipts(ctx, args.key, args.kind, psha, payloads)\n",
+    "    got = None\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-05",
+  "case": "case_prune",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if not verify_record(ctx, key, env, payload):",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-06",
+  "case": "case_record_differs",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "fmt.create_exclusive(p, data, ctx.tmp, \"c-record-dirsync\", \"c-temp-fsync\")",
+    "fmt.replace_durable(p, data, ctx.tmp, \"c-record-dirsync\", \"c-temp-fsync\")"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-07",
+  "case": "case_deterministic_envelope",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "        \"payload_b64\": base64.b64encode(payload).decode(\"ascii\"),\n    })",
+    "        \"payload_b64\": base64.b64encode(payload).decode(\"ascii\"),\n        \"t\": __import__(\"time\").time_ns(),\n    })"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-08",
+  "case": "case_submit_retired",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if ctx.retired:\n        return ans(UNAVAILABLE, \"unavailable\", 16",
+    "if False:\n        return ans(UNAVAILABLE, \"unavailable\", 16"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-09",
+  "case": "case_submit_retired",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "for suffix in (\".retiring\", \".retired\"):",
+    "for suffix in (\".retired\",):"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-10",
+  "case": "case_config_paths",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "    if unknown or missing:\n",
+    "    if missing:\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-11",
+  "case": "case_config_paths",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "        self.receipts = os.path.join(self.notices, self.bid, \"receipts\")\n",
+    "        self.receipts = os.path.join(os.path.dirname(self.home), \"decoy\", \"state\", \"owner-notices\",\n                                     self.bid, \"receipts\")\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-T1",
+  "case": "case_answer_rows_unavailable",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "        raise ans(UNAVAILABLE, \"unavailable\", 1, path=bpath, detail=str(exc))\n",
+    "        bdata = b\"\"\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-T2",
+  "case": "case_answer_rows_unavailable",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "        raise ans(UNAVAILABLE, \"unavailable\", 2, code=\"owner-tree-writable\", path=path, st_rdonly=rdonly)\n",
+    "        return\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-T3",
+  "case": "case_answer_rows_unavailable",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if sha != config[\"binding_sha256\"]:",
+    "if False:"
+   ],
+   [
+    "bin/fm-owner-notice-client.py",
+    "if binding[f] != config[f]:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-T4",
+  "case": "case_answer_rows_unavailable",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "            raise ans(UNKNOWN, \"unknown\", 4, code=\"binding-retired\", path=ctx.receipts)\n",
+    "            pass\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-T5",
+  "case": "case_answer_rows_unavailable",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "        raise ans(UNAVAILABLE, \"unavailable\", 5, path=ctx.receipts)\n",
+    "        pass\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-T6a",
+  "case": "case_answer_rows_unavailable",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if obj[f] != v:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-T6b",
+  "case": "case_answer_rows_unavailable",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "            shape = fmt.validate_receipt(obj, seq)\n",
+    "            shape = fmt.validate_receipt(obj, obj.get(\"seq\"))\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-T6c",
+  "case": "case_answer_rows_unavailable",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if fmt.sha256_hex(env) != obj[\"envelope_sha256\"]:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-T6d",
+  "case": "case_answer_rows_unavailable",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "            if d is None or fmt.receipt_digest(d) != fmt.receipt_digest(obj) \\\n                    or d[\"envelope_sha256\"] != obj[\"envelope_sha256\"]:",
+    "            if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-T7",
+  "case": "case_answer_rows_final",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "state, row = (\"consumed\", 7) if consumed else (\"delivered\", 8)",
+    "state, row = (\"delivered\", 8)"
+   ]
+  ]
+ },
+ {
+  "id": "R-T8",
+  "case": "case_answer_rows_final",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if shape == \"delivered\" and fmt.receipt_digest(obj) == mine:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-T9",
+  "case": "case_answer_rows_final",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if shape == \"refused-key\":\n            return ans(REFUSED, \"refused\", 9",
+    "if False:\n            return ans(REFUSED, \"refused\", 9"
+   ]
+  ]
+ },
+ {
+  "id": "R-T10",
+  "case": "case_answer_rows_final",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if shape == \"delivered\":\n            return ans(REFUSED, \"key-conflict\", 10",
+    "if False:\n            return ans(REFUSED, \"key-conflict\", 10"
+   ]
+  ]
+ },
+ {
+  "id": "R-T11",
+  "case": "case_answer_rows_final",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if shape == \"refused-digest\" and fmt.receipt_digest(obj) == mine:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-T12",
+  "case": "case_answer_rows_final",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if shape == \"refused-digest\":\n            return ans(REFUSED, \"key-conflict\", 12",
+    "if False:\n            return ans(REFUSED, \"key-conflict\", 12"
+   ]
+  ]
+ },
+ {
+  "id": "R-T13",
+  "case": "case_answer_rows_final",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if theirs == (psha, kind):",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-T14",
+  "case": "case_answer_rows_final",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "    return ans(REFUSED, \"key-conflict\", 14,",
+    "    return None if True else ans(REFUSED, \"key-conflict\", 14,"
+   ]
+  ]
+ },
+ {
+  "id": "R-T15",
+  "case": "case_answer_rows_final",
+  "timeout": 90,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "        raise ans(UNKNOWN, \"unknown\", 15, key=key, path=path, detail=str(exc))\n    try:\n        env = fmt.parse_canonical(data)",
+    "        return None\n    try:\n        env = fmt.parse_canonical(data)"
+   ]
+  ]
+ },
+ {
+  "id": "R-T16",
+  "case": "case_answer_rows_unavailable",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if ctx.retired:\n        return ans(UNKNOWN, \"unknown\", 16",
+    "if False:\n        return ans(UNKNOWN, \"unknown\", 16"
+   ]
+  ]
+ },
+ {
+  "id": "R-T17",
+  "case": "case_answer_rows_final",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if os.path.lexists(p):\n        return ans(UNKNOWN, \"unknown\", 17",
+    "if False:\n        return ans(UNKNOWN, \"unknown\", 17"
+   ]
+  ]
+ },
+ {
+  "id": "R-T18",
+  "case": "case_answer_rows_final",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "    return ans(ABSENT, \"absent\", 18, key=key)\n",
+    "    raise RuntimeError(\"row 18 reverted\")\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-12",
+  "case": "case_staged_reads_owner_only",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "data = fmt.read_regular_nofollow(os.path.join(rdir, entry[\"file\"]),",
+    "data = fmt.read_regular_nofollow(os.path.join(ctx.binding[\"outbox\"], entry[\"name\"]),"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-13",
+  "case": "case_custody_reread",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if again != data:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-14",
+  "case": "case_custody_replace",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if have != data:\n            fmt.replace_durable(custody",
+    "if False:\n            fmt.replace_durable(custody"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-15",
+  "case": "case_route_by_receipts",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "        return refuse_digest(ctx, key, \"key-conflict\", digest, data)\n",
+    "        return deliver(ctx, key, data)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-16",
+  "case": "case_lock_ingest_consume",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    \"\"\"The engine guard: the lock's recorded owner pid must be our parent.\"\"\"\n",
+    "    \"\"\"The engine guard: the lock's recorded owner pid must be our parent.\"\"\"\n    return\n"
+   ],
+   [
+    "bin/fm-owner-notice.sh",
+    "  take_lock \"$ROOT/$id/.lock\" || exit 75\n  engine ingest-staged",
+    "  engine ingest-staged"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-17",
+  "case": "case_lock_ingest_consume",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    \"\"\"The engine guard: the lock's recorded owner pid must be our parent.\"\"\"\n",
+    "    \"\"\"The engine guard: the lock's recorded owner pid must be our parent.\"\"\"\n    return\n"
+   ],
+   [
+    "bin/fm-owner-notice.sh",
+    "  take_lock \"$ROOT/$id/.lock\" || exit 75\n  engine \"$@\" --home",
+    "  [ \"$1\" = consume ] || { take_lock \"$ROOT/$id/.lock\" || exit 75; }\n  engine \"$@\" --home"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-18",
+  "case": "case_lock_retire",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    \"\"\"The engine guard: the lock's recorded owner pid must be our parent.\"\"\"\n",
+    "    \"\"\"The engine guard: the lock's recorded owner pid must be our parent.\"\"\"\n    return\n"
+   ],
+   [
+    "bin/fm-owner-notice.sh",
+    "  take_lock \"$BINDINGS_LOCK\" || exit 75\n  take_lock \"$ROOT/$id/.lock\" || exit 75\n",
+    "  take_lock \"$BINDINGS_LOCK\" || exit 75\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-19",
+  "case": "case_lock_guard",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    \"\"\"The engine guard: the lock's recorded owner pid must be our parent.\"\"\"\n",
+    "    \"\"\"The engine guard: the lock's recorded owner pid must be our parent.\"\"\"\n    return\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-20",
+  "case": "case_seq",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "\"%d.json\" % obj[\"seq\"]",
+    "\"%d-%s.json\" % (obj[\"seq\"], obj[\"outcome\"])"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-21",
+  "case": "case_seq",
+  "timeout": 90,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "        for _ in range(2):\n",
+    "        while True:\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-22",
+  "case": "case_announce",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice.sh",
+    "    engine fsync-file \"$FM_WAKE_QUEUE\" > /dev/null && synced=1 || rc=70\n",
+    "    synced=1\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-23",
+  "case": "case_announce",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice.sh",
+    "      *$'\\n'\"$wkey\"$'\\n'*) continue ;;\n",
+    "      *$'\\n'\"$wkey-never\"$'\\n'*) continue ;;\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-24",
+  "case": "case_announce",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice.sh",
+    "\"owner-notice: $id/$key $kind $outcome\"",
+    "\"owner-notice: $id/$key $kind $outcome $(python3 -c 'import base64,json,sys; print(base64.b64decode(json.load(open(sys.argv[1]))[\"payload_b64\"]).decode().replace(chr(9), \" \").replace(chr(10), \" \"))' \"$ROOT/$id/custody/$key.notice\" 2>/dev/null)\""
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-25",
+  "case": "case_orphans",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "        orphan(ctx, key)\n",
+    "        pass\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-26",
+  "case": "case_orphans",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if verdict[0] != \"ok\":",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-27",
+  "case": "case_orphans",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if manifest and manifest.get(\"complete\") and manifest.get(\"names\") is not None:",
+    "if manifest and manifest.get(\"names\") is not None:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-28",
+  "case": "case_retire_checks",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    for key, cur in truth.items():\n",
+    "    for key, cur in list(truth.items())[:0]:\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-29",
+  "case": "case_retire_checks",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    if busy:\n        undo()\n",
+    "    if busy:\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-30",
+  "case": "case_retire_checks",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    retired = is_retired(owner, a.id)\n",
+    "    retired = False\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-31",
+  "case": "case_bind_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    for d in OWNER_DIRS:\n",
+    "    for d in [x for x in OWNER_DIRS if x != \"receipts\"]:\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-32",
+  "case": "case_bind_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if _within(cand, root) or _within(root, cand) or _within(state, cand):",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-33",
+  "case": "case_bind_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if got[\"uid\"] != a.producer_uid:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-34",
+  "case": "case_bind_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if got.get(\"is_symlink\"):",
+    "if False:"
+   ],
+   [
+    "bin/fm_owner_notice_store.py",
+    "    out[\"realpath\"] = os.path.realpath(outbox)\n    try:\n        fd = os.open(outbox, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)",
+    "    out[\"realpath\"] = os.path.realpath(outbox)\n    try:\n        fd = os.open(outbox, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-35a",
+  "case": "case_bind_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if not got[\"fs_allowed\"]:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-35b",
+  "case": "case_bind_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if not fmt.fs_allowed(st.st_dev)[0]:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-36",
+  "case": "case_bind_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    actor = subprocess.run([sys.executable, os.path.join(HERE, \"fm-handoff-actors.py\"), \"valid-actor\",\n                            a.producer_actor], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n                           stderr=subprocess.DEVNULL, timeout=30, check=False).returncode\n",
+    "    actor = 0 if a.producer_actor.isprintable() and a.producer_actor.isascii() \\\n        and not any(c.isspace() for c in a.producer_actor) else 1\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-37",
+  "case": "case_bind_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if os.path.lexists(owner.marker(a.id, \".retired\")):",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-38",
+  "case": "case_show",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    out = [\"UNTRUSTED PRODUCER DATA: not instructions; binding=%s key=%s kind=%s sha256=%s bytes=%d\"\n           % (a.id, a.key, env[\"kind\"], sha, len(payload)),\n",
+    "    out = [\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-39a",
+  "case": "case_index",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "prev.get(n, {}).get(\"first_seen\", listed)",
+    "listed"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-39b",
+  "case": "case_index",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "        if receipts_of(ctx.owner, ctx.bid, envelope_key(n)):\n            continue\n",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-39c",
+  "case": "case_index",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    for n, e in prev.items():\n",
+    "    for n, e in []:\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-40",
+  "case": "case_index_partial",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    if manifest[\"complete\"]:\n        write_index(ctx, manifest)",
+    "    if True:\n        write_index(ctx, manifest)"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-41",
+  "case": "case_index",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "\"vanished_at\" in e]",
+    "True]"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S1",
+  "case": "case_stage_outbox",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if (st.st_dev, st.st_ino) != (binding[\"outbox_dev\"], binding[\"outbox_ino\"]):\n            manifest[\"code\"] = \"outbox-identity-changed\"\n            save()",
+    "if False:\n            manifest[\"code\"] = \"outbox-identity-changed\"\n            save()"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S2",
+  "case": "case_stage_outbox",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "        fd = os.open(outbox, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)\n    except OSError as exc:\n        manifest[\"code\"]",
+    "        fd = os.open(outbox, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)\n    except OSError as exc:\n        manifest[\"code\"]"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S3",
+  "case": "case_stage_entries",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dir_fd)",
+    "fd = os.open(path, os.O_RDONLY | (0 if role == \"stage\" else os.O_NOFOLLOW) | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dir_fd)"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S4",
+  "case": "case_stage_entries",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "if st.st_nlink != 1:",
+    "if st.st_nlink != 1 and role != \"stage\":"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S5",
+  "case": "case_stage_entries",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "        if not stat.S_ISREG(st.st_mode):\n            raise NotRegular",
+    "        if not stat.S_ISREG(st.st_mode) and role != \"stage\":\n            raise NotRegular"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S6",
+  "case": "case_stage_entries",
+  "timeout": 90,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dir_fd)",
+    "fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | (0 if role == \"stage\" else os.O_NONBLOCK) | os.O_CLOEXEC, dir_fd=dir_fd)"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S7",
+  "case": "case_stage_entries",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "if st.st_size > bound:",
+    "if st.st_size > bound and role != \"stage\":"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S8",
+  "case": "case_stage_entries",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "if st.st_size > bound:",
+    "if st.st_size > bound and role != \"stage\":"
+   ],
+   [
+    "bin/fm_owner_notice_format.py",
+    "        left = bound + 1\n",
+    "        left = bound + 1 if role != \"stage\" else 1 << 40\n"
+   ],
+   [
+    "bin/fm_owner_notice_format.py",
+    "if len(data) > bound:",
+    "if len(data) > bound and role != \"stage\":"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S9",
+  "case": "case_envelope_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if len(payload) > ctx.binding[\"max_bytes\"]:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S10",
+  "case": "case_envelope_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if fmt.sha256_hex(payload) != env[\"payload_sha256\"]:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S11",
+  "case": "case_envelope_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if env[\"kind\"] not in ctx.binding[\"kinds\"]:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S12",
+  "case": "case_envelope_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if env[\"binding_id\"] != ctx.bid or env[\"binding_sha256\"] != ctx.sha:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S13",
+  "case": "case_envelope_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if env[\"schema\"] != fmt.ENVELOPE_SCHEMA:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S14",
+  "case": "case_envelope_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "    if canonical(obj) != data:\n        raise FormatError(\"not canonical\")\n",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "R-U1-S15",
+  "case": "case_envelope_refusals",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if env[\"notice_key\"] != key:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "R-D01",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_file(fd, ident, path):\n    seams().spy_line(ident, path)\n",
+    "def fsync_file(fd, ident, path):\n    if ident == \"c-temp-fsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D02",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"c-envelope-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D03",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"c-record-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D04",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-binding-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D05",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-mkdir-parent\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D05c",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"c-mkdir-parent\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D06",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-list-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D07",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-custody-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D08",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-receipt-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D09",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-current-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D10",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_file(fd, ident, path):\n    seams().spy_line(ident, path)\n",
+    "def fsync_file(fd, ident, path):\n    if ident == \"o-wakequeue-fsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D11",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-announced-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D12a",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-handled-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D12b",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-custody-unlink-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D13a",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-acked-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D13b",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-retiring-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D13c",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-retired-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D13d",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-archive-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "R-D14",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "def fsync_dir(path, ident):\n    seams().spy_line(ident, path)\n",
+    "def fsync_dir(path, ident):\n    if ident == \"o-index-dirsync\":\n        return\n    seams().spy_line(ident, path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "pending-filter",
+  "case": "case_pending_prune_all",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "    if got.result[\"state\"] not in (\"delivered\", \"consumed\"):\n",
+    "    if True:\n"
+   ]
+  ]
+ },
+ {
+  "id": "prune-all-kept",
+  "case": "case_pending_prune_all",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "(pruned if got.result[\"exit\"] == 0 else kept).append(key)",
+    "pruned.append(key)"
+   ]
+  ]
+ },
+ {
+  "id": "list-archived-dedupe",
+  "case": "case_list_archived",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if name in seen or not name.endswith(\".json\"):",
+    "if not name.endswith(\".json\"):"
+   ]
+  ]
+ },
+ {
+  "id": "stage-refusal-levels",
+  "case": "case_stage_outbox",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "STAGE_REFUSALS = (\"outbox-identity-changed\", \"outbox-symlink\", \"outbox-filesystem\", \"outbox-unreadable\")",
+    "STAGE_REFUSALS = (\"outbox-identity-changed\", \"outbox-filesystem\", \"outbox-unreadable\")"
+   ]
+  ]
+ },
+ {
+  "id": "outbox-status-unreadable",
+  "case": "case_stage_outbox",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "            st = {\"code\": \"outbox-unreadable\", \"since\": fmt.utc_iso(t), \"backlog\": False}\n",
+    "            st = None\n"
+   ]
+  ]
+ },
+ {
+  "id": "alarm-sync-skipped",
+  "case": "case_stage_outbox",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice.sh",
+    "    \"$SCRIPT_DIR/fm-alert-store.sh\" sync \"$ALERT_STORE\" owner-notice \"$SCRATCH/wanted.json\" \\\n      \"no longer wanted by fm-owner-notice\" > /dev/null || return 70\n",
+    "    :\n"
+   ]
+  ]
+ },
+ {
+  "id": "alarm-sync-lock-check",
+  "case": "case_stage_outbox",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice.sh",
+    "  [ \"${#HELD_LOCKS[@]}\" -eq 0 ] || return 70\n  scratch || return 70\n  engine alarms",
+    "  return 70\n  scratch || return 70\n  engine alarms"
+   ]
+  ]
+ },
+ {
+  "id": "Q3-cache-ctime",
+  "case": "case_ingest_cache",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "            ident = (name, st.st_ino, st.st_ctime_ns)\n",
+    "            ident = (name, st.st_ino, 0)\n"
+   ]
+  ]
+ },
+ {
+  "id": "Q2-seam-root-engine",
+  "case": "case_seam_root",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "        check_test_root(self.root)\n",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "Q2-seam-root-front",
+  "case": "case_seam_root",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice.sh",
+    "  if [ ! -f \"$root/.fm-owner-notice-test-root\" ] || [ -L \"$root/.fm-owner-notice-test-root\" ]; then\n    die_usage \"FM_OWNER_NOTICE_TEST_ROOT has no regular .fm-owner-notice-test-root file\"\n  fi\n",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "F1-commit-before-dirsync",
+  "case": "case_publish_window",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "    seams().spy_line(\"link\", path)\n    seams().fault(dir_ident + \":after-link\")\n",
+    "    os.unlink(tmp)\n    seams().spy_line(\"link\", path)\n    seams().fault(dir_ident + \":after-link\")\n"
+   ],
+   [
+    "bin/fm_owner_notice_format.py",
+    "    os.unlink(tmp)\n    seams().spy_line(\"commit\", path)\n",
+    "    seams().spy_line(\"commit\", path)\n"
+   ]
+  ]
+ },
+ {
+  "id": "F1-inprogress-read",
+  "case": "case_publish_window",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "if tmpdir is not None and publisher_temp(tmpdir, st, dir_fd) is not None:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "F1-finish-dead-temp",
+  "case": "case_publish_window",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "F1-receipt-uncommitted-pending",
+  "case": "case_publish_window",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "        except fmt.InProgress:\n            uncommitted = True\n            continue\n",
+    "        except fmt.InProgress:\n            continue\n"
+   ]
+  ]
+ },
+ {
+  "id": "F1-equal-custody-dirsync",
+  "case": "case_publish_window",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "            fmt.fsync_dir(os.path.dirname(custody), \"o-custody-dirsync\")\n",
+    "            pass\n"
+   ]
+  ]
+ },
+ {
+  "id": "F1-stage-inprogress",
+  "case": "case_publish_window",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "                entry.update(result=\"in-progress\", cacheable=False, detail=str(exc), stuck=ctime < stuck)\n",
+    "                entry.update(result=\"unsafe-file\", detail=str(exc))\n"
+   ]
+  ]
+ },
+ {
+  "id": "F1-wakequeue-dirsync",
+  "case": "case_fsync_spy",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    fmt.fsync_dir(os.path.dirname(os.path.abspath(a.path)), \"o-wakequeue-dirsync\")\n",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "F2-retire-refresh",
+  "case": "case_retire_truth",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "            truth[key] = ctx.refresh_current(key)\n",
+    "            truth[key] = ctx.read_current(key) or {\"state\": \"absent\"}\n"
+   ]
+  ]
+ },
+ {
+  "id": "F2-retire-unreadable",
+  "case": "case_retire_truth",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    except (OSError, fmt.FormatError) as exc:\n        undo()\n        log(owner, a.id, \"retire refused\"",
+    "    except ZeroDivisionError as exc:\n        undo()\n        log(owner, a.id, \"retire refused\""
+   ]
+  ]
+ },
+ {
+  "id": "F2-retire-replay-retiring",
+  "case": "case_retire_truth",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "if os.path.lexists(retiring):",
+    "if False:"
+   ]
+  ]
+ },
+ {
+  "id": "F5-inprogress-level",
+  "case": "case_publish_window",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "entry.update(result=\"in-progress\", cacheable=False, detail=str(exc), stuck=ctime < stuck)",
+    "entry.update(result=\"in-progress\", cacheable=False, detail=str(exc), stuck=False)"
+   ]
+  ]
+ },
+ {
+  "id": "F5-inprogress-clear",
+  "case": "case_publish_window",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    if not manifest[\"complete\"] and old:\n",
+    "    if old:\n"
+   ]
+  ]
+ },
+ {
+  "id": "F1-mkdir-replay",
+  "case": "case_publish_window",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_format.py",
+    "    root = os.path.abspath(root)\n    level = path\n",
+    "    return\n    level = path\n"
+   ]
+  ]
+ },
+ {
+  "id": "F3-own-envelope",
+  "case": "case_query_modes",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "            payloads[(psha, args.kind)] = payload\n    return full_answer(",
+    "            pass\n    return full_answer("
+   ]
+  ]
+ },
+ {
+  "id": "F2-announce-pending",
+  "case": "case_retire_truth",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "        if not cur or cur[\"state\"] == \"pending\":\n            # A crash between a receipt and its refresh leaves current/ behind",
+    "        if not cur:\n            # A crash between a receipt and its refresh leaves current/ behind"
+   ]
+  ]
+ },
+ {
+  "id": "F2-levels-pending",
+  "case": "case_retire_truth",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "            if not cur or cur[\"state\"] == \"pending\":\n                # An unreadable or crash-stale entry is read from the receipts.",
+    "            if not cur:\n                # An unreadable or crash-stale entry is read from the receipts."
+   ]
+  ]
+ },
+ {
+  "id": "F3-verified",
+  "case": "case_query_modes",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "if have != data:\n        raise ans(UNKNOWN, \"unknown\", 6, key=key, code=\"envelope-unverifiable\"",
+    "if False:\n        raise ans(UNKNOWN, \"unknown\", 6, key=key, code=\"envelope-unverifiable\""
+   ]
+  ]
+ },
+ {
+  "id": "F3-unrebuildable",
+  "case": "case_query_modes",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    " and not (shape == \"refused-digest\" and obj[\"code\"] in UNREBUILDABLE):",
+    ":"
+   ]
+  ]
+ },
+ {
+  "id": "F4-binding-unreadable",
+  "case": "case_unknown_sources",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "            unknown(\"binding-unreadable\", bid, None, \"the binding record cannot be read\",\n                    path=owner.binding_path(bid), detail=d.result.get(\"detail\"))\n",
+    ""
+   ]
+  ]
+ },
+ {
+  "id": "F4-current-unreadable",
+  "case": "case_unknown_sources",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "                    unknown(\"current-unreadable\", bid, key, \"current/%s cannot be read\" % name,",
+    "                    (lambda *a, **k: None)(\"current-unreadable\", bid, key, \"current/%s cannot be read\" % name,"
+   ]
+  ]
+ },
+ {
+  "id": "F4-front-incomplete-assert",
+  "case": "case_unknown_sources",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice.sh",
+    "json_true \"$SCRATCH/alarms.json\" '.complete == true'",
+    "json_true \"$SCRATCH/alarms.json\" 'true'"
+   ]
+  ]
+ },
+ {
+  "id": "Q2-inprogress-absent",
+  "case": "case_publish_window",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "    except FileNotFoundError:\n        return None, None, None\n    except fmt.InProgress:\n",
+    "    except (FileNotFoundError, fmt.InProgress):\n        return None, None, None\n    except ZeroDivisionError:\n"
+   ]
+  ]
+ },
+ {
+  "id": "Q4-handled-fsync-inbranch",
+  "case": "case_publish_window",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "        fmt.seams().fault(\"consume:after-handled-link\")\n    # Every pass, so a consume that died between its link and this fsync is\n    # finished before its consumed receipt.\n    fmt.fsync_dir(ctx.path(\"handled\"), \"o-handled-dirsync\")\n",
+    "        fmt.seams().fault(\"consume:after-handled-link\")\n        fmt.fsync_dir(ctx.path(\"handled\"), \"o-handled-dirsync\")\n"
+   ]
+  ]
+ },
+ {
+  "id": "Q4-commit-wait",
+  "case": "case_publish_window",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "            if time.monotonic() >= deadline:\n                raise\n",
+    "            raise\n"
+   ]
+  ]
+ },
+ {
+  "id": "Q4-pending-answer",
+  "case": "case_publish_window",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm-owner-notice-client.py",
+    "        return ans(PENDING, \"pending\", 13, key=key, payload_sha256=psha, detail=\"envelope not yet committed\")",
+    "        raise ans(UNKNOWN, \"unknown\", 15, key=key, path=path, detail=\"in progress\")"
+   ]
+  ]
+ },
+ {
+  "id": "Q1-purged-levels",
+  "case": "case_purge",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "    for bid in binding_ids(owner):\n        if is_purged(owner, bid):\n            continue\n",
+    "    for bid in binding_ids(owner):\n        if False:\n            continue\n"
+   ]
+  ]
+ },
+ {
+  "id": "Q1-purged-status",
+  "case": "case_purge",
+  "timeout": 240,
+  "edits": [
+   [
+    "bin/fm_owner_notice_store.py",
+    "        if is_purged(owner, bid):\n            rows.append(",
+    "        if False:\n            rows.append("
+   ]
+  ]
+ }
+]
