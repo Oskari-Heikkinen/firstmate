@@ -104,6 +104,7 @@ class Owner:
     def __init__(self, home):
         if not home or not home.startswith("/"):
             raise Done(USAGE, state="usage", detail="--home must be absolute")
+        self.launch_home = home  # Native watcher identity records the launch spelling.
         self.home = os.path.realpath(home)
         self.state = os.path.join(self.home, "state")
         self.root = os.path.join(self.state, "owner-notices")
@@ -220,14 +221,17 @@ def _prctl_pdeathsig():
         pass
 
 
-def spawn_recorded_child(owner, role, origin, bid, outbox, work):
+def spawn_recorded_child(owner, role, origin, bid, outbox, work, record_writer=None, close_fds=()):
     """Run work() in a recorded child of its own process group, bounded.
 
     The child sets PDEATHSIG (unless no-pdeathsig:<role>), ignores TERM under
     child-ignore-term:<role> or unkillable:<role>, and blocks on a start pipe;
     the parent makes .fg-children/<pid>-<starttime> durable and only then
     writes the release byte. A child that reads EOF exits without touching any
-    path. Returns (status, result): status is "ok", "died" or "timeout".
+    path. With record_writer(record), return (record, result_fd) without waiting;
+    the runner owns reaping and deadlines. Otherwise foreground calls return
+    (status, result): status is "ok", "died" or "timeout".
+    close_fds closes inherited runner pipes in the child before work begins.
     """
     s = fmt.seams()
     parent = os.getpid()
@@ -239,6 +243,9 @@ def spawn_recorded_child(owner, role, origin, bid, outbox, work):
             os.close(w_start)
             os.close(r_res)
             os.setpgid(0, 0)
+            for fd in close_fds:
+                os.close(fd)
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
             if not (s.role("no-pdeathsig", role) or s.role("unkillable", role)):
                 _prctl_pdeathsig()
                 if os.getppid() != parent:
@@ -248,6 +255,12 @@ def spawn_recorded_child(owner, role, origin, bid, outbox, work):
             if os.read(r_start, 1) != b"1":
                 os._exit(0)
             os.close(r_start)
+            if record_writer is not None:
+                os.set_inheritable(w_res, True)
+                # Runner output is drained by select, bounded for diagnostics,
+                # and logged once on failure rather than growing a capture file.
+                os.dup2(w_res, 1)
+                os.dup2(w_res, 2)
             s.fault("child:" + origin)
             try:
                 out = json.dumps(work()).encode("utf-8")
@@ -268,21 +281,30 @@ def spawn_recorded_child(owner, role, origin, bid, outbox, work):
     except OSError:
         pass
     start = fmt.pid_starttime(pid) or "0"
-    fmt.mkdir_durable(owner.fg)
+    if record_writer is None:
+        fmt.mkdir_durable(owner.fg)
     fmt.mkdir_durable(owner.tmp)
     rec = os.path.join(owner.fg, "%d-%s" % (pid, start))
     record = {"role": role, "origin": origin, "binding": bid, "outbox": outbox, "pgid": pid,
               "pid": pid, "starttime": start, "started_at": int(time.time())}
     try:
-        fmt.create_exclusive(rec, fmt.canonical(record), owner.tmp, "o-fgchild-dirsync")
+        if record_writer is None:
+            fmt.create_exclusive(rec, fmt.canonical(record), owner.tmp, "o-fgchild-dirsync")
+        else:
+            record_writer(record)
     except BaseException:
         os.close(w_start)
+        os.close(r_res)
         os.waitpid(pid, 0)
         raise
+    s.spy_line("child-release", rec if record_writer is None else owner.dir(bid, ".children"))
     os.write(w_start, b"1")
     os.close(w_start)
+    if record_writer is not None:
+        os.set_blocking(r_res, False)
+        return record, r_res
     chunks, size = [], 0
-    deadline = time.monotonic() + OUTBOX_IO_BOUND
+    deadline = time.monotonic() + s.value("outbox-io-bound", OUTBOX_IO_BOUND)
     status = "ok"
     while True:
         left = deadline - time.monotonic()
@@ -728,6 +750,7 @@ def stage(owner, bid, run, binding):
         manifest["backlog"] = len(names) > BACKLOG_NAMES
         save()
         s.fault("stage:after-listing")
+        time.sleep(s.value("stage-duration", 0))
         cache = read_cache(owner, bid)
         fresh = []
         for name in names:
@@ -864,8 +887,7 @@ def write_live(owner, bid, keys):
 
 def require_directory(path):
     """Check a required directory without enumerating historical children."""
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    os.close(fd)
+    fmt.require_directory(path)
 
 
 class Ctx:
@@ -1240,6 +1262,7 @@ def read_manifest(ctx, run):
 
 def cmd_ingest_staged(owner, a):
     require_lock(a.lock)
+    time.sleep(fmt.seams().value("ingest-duration", 0))
     ctx = Ctx(owner, a.id)
     rdir, manifest = read_manifest(ctx, a.run)
     if manifest is None or manifest.get("binding_id") != a.id:
@@ -1334,7 +1357,10 @@ def write_index(ctx, manifest):
 
 def reconcile(ctx, manifest=None, keep=()):
     """Crash repair under the binding lock; see the crash table in docs/owner-notice.md."""
-    fmt.reap_dead_temps(ctx.tmp, keep=set(keep))
+    from fm_owner_notice_runner import read_children
+    children = read_children(ctx.owner, ctx.bid)
+    live_runs = {r["run"] for r in children.values() if fmt.identity_alive(r["pid"], r["starttime"])}
+    fmt.reap_dead_temps(ctx.tmp, keep=set(keep) | live_runs)
     custody = set(n[:-7] for n in fmt.scandir_names(ctx.path("custody"), "engine") if n.endswith(".notice"))
     handled = set(n[:-7] for n in fmt.scandir_names(ctx.path("handled"), "engine") if n.endswith(".notice"))
     for key in sorted(handled):
@@ -1835,15 +1861,57 @@ def wanted_levels(owner):
 
     if not os.path.lexists(owner.root):
         return wanted, True
+    # Manual U1 projection still runs on older interpreters, but must not
+    # import/open the automation queue or mislabel its runtime as corrupt data.
+    from fm_owner_notice_runtime import check_automation_runtime
+    automation_ready = True
+    try:
+        check_automation_runtime()
+    except fmt.FormatError as exc:
+        automation_ready = False
+        unknown('automation-unreadable', 'runtime', None, str(exc))
     try:
         ids = binding_ids(owner)
     except (Done, OSError) as exc:
         unknown("binding-unreadable", "all", None, "bindings/ cannot be listed", detail=str(exc))
         return wanted, False
+    # U1 protocol routing remains independent of automation's stricter reader.
+    # In particular, an unreadable binding still needs its fallback lists.
     try:
         wanted_lists(owner)
     except (Done, OSError, fmt.FormatError) as exc:
         unknown("routing-unreadable", "all", None, "routing membership cannot be established", detail=str(exc))
+    if automation_ready:
+        from fm_owner_notice_runner import binding_state, read_routes, read_foreground, read_problems, STATE_ERRORS
+        from fm_owner_notice_alarm import problem as publication_problem
+        from fm_owner_notice_recovery import read as read_recovery
+        try:
+            read_recovery(owner)
+        except STATE_ERRORS as exc:
+            unknown('automation-unreadable', 'recovery', None, 'runner recovery source is unknown', detail=str(exc))
+        try:
+            failure = publication_problem(owner)
+            if failure:
+                complete[0] = False
+                want('automation-unreadable', 'publisher', None, failure[0], fmt.utc_iso(failure[1]))
+        except STATE_ERRORS as exc:
+            unknown('automation-unreadable', 'publisher', None, 'alarm publication queue is unknown', detail=str(exc))
+        try:
+            routes = read_routes(owner)
+        except STATE_ERRORS as exc:
+            routes = {}
+            unknown("routing-unreadable", "all", None, "routing membership cannot be established", detail=str(exc))
+        try:
+            read_foreground(owner)
+        except STATE_ERRORS as exc:
+            unknown("automation-unreadable", "foreground", None, "foreground ownership is unknown", detail=str(exc))
+        try:
+            for scope, row in read_problems(owner).items():
+                complete[0] = False
+                want("automation-unreadable", scope[8:] if scope.startswith("binding:") else scope,
+                     None, "runner quarantined scope: " + row["reason"], fmt.utc_iso(row["since"]))
+        except STATE_ERRORS as exc:
+            unknown("automation-unreadable", "quarantine", None, "quarantine ledger cannot be read", detail=str(exc))
     for bid in ids:
         if is_purged(owner, bid):
             continue
@@ -1853,6 +1921,25 @@ def wanted_levels(owner):
             unknown("binding-unreadable", bid, None, "the binding record cannot be read",
                     path=owner.binding_path(bid), detail=d.result.get("detail"))
             continue
+        if automation_ready:
+            try:
+                state = binding_state(owner, bid, routes[bid][0] if bid in routes else None)
+                stalls = state["stalls"]
+                for level, roles in (("outbox-stalled", ("stat", "fg")), ("ingest-stalled", ("stage", "ingest"))):
+                    dates = [stalls[r][0] for r in roles if r in stalls]
+                    if dates:
+                        want(level, bid, None, "recorded role has not completed; see .stall and log", fmt.utc_iso(min(dates)))
+                automation = state["automation"]
+                busy = [row for row in automation["busy"].values() if row["count"] >= 3]
+                if busy:
+                    want("ingest-busy", bid, None, "three consecutive busy answers in one work role; see log for holder",
+                         fmt.utc_iso(min(row["since"] for row in busy)))
+                failures = automation["failures"]
+                if failures:
+                    want("ingest-failed", bid, None, "; ".join(role + ": " + row["reason"] for role, row in sorted(failures.items())),
+                         fmt.utc_iso(min(row["since"] for row in failures.values())))
+            except STATE_ERRORS as exc:
+                unknown("automation-unreadable", bid, None, "automation records cannot be read", detail=str(exc))
         status_path = ctx.path(".outbox-status")
         try:
             st = read_json(status_path)
@@ -2002,9 +2089,39 @@ def build_parser():
     f = add("fg-stage", False, "id")
     f.add_argument("run", nargs="?")
     f.add_argument("--origin", choices=("ingest",), default="ingest")
+    add("reserve-run", False)
+    add("runner-config", False)
+    recovery = add("runner-recovery", False)
+    recovery.add_argument("action", choices=("status", "fail", "repair", "advance", "cleared"))
+    recovery.add_argument("--source")
+    recovery.add_argument("--reason", default="")
+    recovery.add_argument("--held", action="store_true")
+    batch = add("batch-mode", False, "id")
+    batch.add_argument("--verb", choices=("maintain", "ingest-staged"), required=True)
+    batch.add_argument("--pid", type=int, required=True)
+    batch.add_argument("--run", default="-")
+    counter = add("runner-count", False)
+    counter.add_argument("--count", type=int, required=True)
+    counter.add_argument("--code", type=int, required=True)
+    progress = add("runner-progress", False)
+    progress.add_argument("--attempt", required=True)
+    progress.add_argument("--pid", type=int, required=True)
+    rs = add("start-run", False)
+    rs.add_argument("--pid", type=int, required=True)
+    rs.add_argument("--watcher-pid", type=int, required=True)
+    rs.add_argument("--attempt", required=True)
+    rs.add_argument("--install", action="store_true")
+    rl = add("runner-loop", True)
+    rl.add_argument("--watcher-pid", type=int, required=True)
+    rl.add_argument("--watcher-identity", required=True)
+    health = add("runner-health", False)
+    health.add_argument("--spawned-pid", type=int)
+    health.add_argument("--spawned-start")
+    health.add_argument("--attempt")
     add("stage", False, "id", "run")
     add("ingest-staged", True, "id", "run")
     add("reconcile", True, "id")
+    add("maintain", True, "id")
     add("retention", True, "id")
     add("announce-list", True, "id")
     m = add("mark-announced", True, "id")
@@ -2031,7 +2148,192 @@ def build_parser():
     return p
 
 
+def cmd_maintain(owner, a):
+    require_lock(a.lock)
+    ctx = Ctx(owner, a.id)
+    reconcile(ctx)
+    from fm_owner_notice_runtime import text, publish
+    path = ctx.path(".retention-at")
+    last = text(path)
+    if last is not None and not last.strip().isdigit():
+        raise fmt.FormatError("invalid retention timestamp")
+    if last is None or now() - int(last) >= 86400:
+        retention(ctx)
+        publish(owner, path, str(now()) + "\n")
+    complete_with_routing(owner, a.id, Done(0, state="maintained", binding_id=a.id))
+
+
+def cmd_reserve_run(owner, _a):
+    require_lock(os.path.join(owner.state, ".watch.lock"))
+    from fm_owner_notice_runtime import reserve
+    print(reserve(owner), flush=True)
+
+
+def cmd_batch_mode(owner, a):
+    from fm_owner_notice_runner import batch_authorized
+    if a.pid != os.getppid():
+        raise Done(UNKNOWN, state="unknown", code="batch-parent-mismatch")
+    try:
+        allowed = batch_authorized(owner, a.id, a.verb, a.pid, a.run)
+    except (OSError, ValueError) as exc:
+        raise Done(UNKNOWN, state="unknown", code="batch-authorization-unreadable",
+                   binding_id=a.id, detail=str(exc)) from exc
+    print("recorded" if allowed else "ordinary", flush=True)
+
+
+def cmd_runner_count(owner, a):
+    require_lock(os.path.join(owner.state, ".watch.lock"))
+    if a.count < 0 or not 0 <= a.code <= 255:
+        raise Done(USAGE, state="usage", detail="invalid runner failure count or exit status")
+    from fm_owner_notice_runtime import publish
+    publish(owner, os.path.join(owner.root, ".runner-respawns"), "%s %s\n" % (a.count, a.code))
+    raise Done(0, state="runner-count-recorded", count=a.count)
+
+
+def cmd_runner_recovery(owner, a):
+    require_lock(os.path.join(owner.state, '.watch.lock'))
+    from fm_owner_notice_recovery import status, fail, repair, advance, cleared, read, describe
+    import sqlite3
+    try:
+        if a.action == 'status':
+            obj = status(owner, a.held)
+        elif a.action == 'advance':
+            obj = advance(owner)
+        else:
+            if a.action == 'fail':
+                fail(owner, a.source, a.reason)
+            elif a.action == 'repair':
+                repair(owner, a.source)
+            else:
+                cleared(owner)
+            obj = read(owner)
+        print(describe(obj), flush=True)
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        raise fmt.FormatError('runner recovery unavailable: ' + str(exc)) from exc
+
+
+def cmd_runner_progress(owner, a):
+    from fm_owner_notice_runtime import fields
+    beat = fields(os.path.join(owner.root, ".runner-beat"))
+    print("yes" if beat and beat.get("attempt") == a.attempt and beat.get("pid") == str(a.pid) else "no", flush=True)
+
+
+def cmd_runner_config(_owner, _a):
+    s = fmt.seams()
+    loop = s.value("runner-loop-seconds", 15)
+    wait = s.value("runner-lock-wait", loop + 15)
+    if loop < 1 or wait < 1:
+        raise Done(2, state="usage", detail="runner periods must be positive")
+    print(loop, wait, s.value("run:exit", "-"), s.value("run:check-delay", loop),
+          4 * loop + s.value("stat-bound", 5), flush=True)
+
+
+def require_runner_authority(owner, pid, watcher, installed, watcher_identity=None):
+    if pid != os.getppid():
+        raise Done(70, state="unknown", code="runner-parent-mismatch")
+    start, parent = fmt.process_identity(pid)
+    if start is None or parent != watcher:
+        raise Done(70, state="unknown", code="runner-not-watcher-child")
+    # Reuse the native watcher/lock ownership readers, including lock start time.
+    # The timeout covers the whole proof rather than leaving a shell descendant
+    # alive after a Python-only timeout. This path runs only at a start boundary.
+    script = ('SCRIPT_DIR=$1; FM_HOME=$2; STATE=$2/state; '
+              '. "$1/fm-wake-lib.sh"; . "$1/fm-owner-notice-run-lib.sh"; '
+              'owner_notice_start_authority "$3" "$4" "$5" "${@:6}"')
+    timed = '. "$1/fm-timeout-lib.sh"; shift; fm_exec_timed 10 5 bash -c "$@"'
+    proof = subprocess.run(['bash', '-c', timed, '_', HERE, script, '_', HERE,
+                            owner.launch_home, str(pid), str(watcher), str(int(installed))] +
+                           ([] if watcher_identity is None else [watcher_identity]),
+                           stdout=subprocess.DEVNULL, check=False)
+    if proof.returncode != 0:
+        raise Done(70, state="unknown", code="runner-start-authority-unavailable", exit_code=proof.returncode)
+    if os.getppid() != pid or fmt.process_identity(pid) != (start, watcher):
+        raise Done(70, state="unknown", code="runner-parent-changed")
+    return start
+
+
+def cmd_start_run(owner, a):
+    from fm_owner_notice_runtime import start_record
+    require_runner_authority(owner, a.pid, a.watcher_pid, a.install)
+    start_record(owner, a.pid, a.watcher_pid, a.attempt, a.install)
+    raise Done(0, state="runner-installed" if a.install else "runner-starting")
+
+
+def cmd_runner_loop(owner, a):
+    from fm_owner_notice_runner import run
+    from fm_owner_notice_runtime import fields
+    # Resolve the parent, not the final lock link (native locks are symlinks).
+    if (os.path.realpath(os.path.dirname(a.lock)) != owner.root
+            or os.path.basename(a.lock) != '.runner.lock'):
+        raise Done(70, state='unknown', code='runner-lock-mismatch')
+    start = require_runner_authority(owner, os.getppid(), a.watcher_pid, True, a.watcher_identity)
+    installed = fields(os.path.join(owner.root, '.runner'), False)
+    if (installed.get('pid'), installed.get('starttime'), installed.get('watcher_pid')) != (
+            str(os.getppid()), start, str(a.watcher_pid)):
+        raise Done(70, state='unknown', code='runner-installation-mismatch')
+    run(owner, a)
+
+
+def cmd_runner_health(owner, a):
+    from fm_owner_notice_runtime import fields, runner_start_status, attempt_record
+    from fm_owner_notice_runner import read_stalls, read_children, read_routes, read_foreground, read_problems, STATE_ERRORS
+    # Independent observations: projector failure has no authority over loop
+    # lifetime, and a stale loop must remain recoverable with a held alarm.
+    loop, projection, demand = "unknown", "unknown", "unknown"
+    children, problems = None, None
+    try:
+        routes = read_routes(owner)
+        foreground = read_foreground(owner)
+        demand = "work" if routes or any(fmt.identity_alive(r["pid"], r["starttime"]) for r in foreground.values()) else "empty"
+    except STATE_ERRORS as exc:
+        print("demand unreadable: " + str(exc), file=sys.stderr)
+    try:
+        children = read_children(owner, "")
+        problems = read_problems(owner)
+        from fm_owner_notice_alarm import problem as publication_problem
+        projection = "failed" if read_stalls(owner, "") or "projection" in problems or publication_problem(owner) else "clear"
+    except STATE_ERRORS as exc:
+        print("projection health unreadable: " + str(exc), file=sys.stderr)
+    try:
+        beat = fields(os.path.join(owner.root, ".runner-beat"))
+        spawned = dict(pid=a.spawned_pid, starttime=a.spawned_start, token=a.attempt) if a.spawned_pid else None
+        bound = 4 * fmt.seams().value("runner-loop-seconds", 15) + fmt.seams().value("stat-bound", 5)
+        result = runner_start_status(owner.root, beat, spawned=spawned, bound=bound)
+        fresh = False
+        if beat is not None:
+            if not str(beat.get("epoch", "")).isdigit():
+                raise fmt.FormatError("invalid runner beat epoch")
+            fresh = 0 <= time.time() - int(beat["epoch"]) <= bound
+        loop = "fresh" if fresh or result["grace"] else "stale"
+        if beat is None and demand == "empty" and projection == "clear" and not children and not problems:
+            installed = fields(os.path.join(owner.root, ".runner"))
+            attempt = attempt_record(owner.root)
+            starting = os.path.join(owner.root, ".runner-starting")
+            # runner_start_status already validated this directory and every
+            # record. No history is different from failed or unfinished work.
+            history = installed or attempt or (os.path.lexists(starting) and os.listdir(starting))
+            if not history:
+                wanted, complete = wanted_levels(owner)
+                if complete and not wanted:
+                    loop = "idle"
+        if beat and beat.get("drained") == "yes" and demand == "empty" and projection == "clear" and not children and not problems:
+            installed = fields(os.path.join(owner.root, ".runner")) or {}
+            attempt = attempt_record(owner.root) or {}
+            if (beat.get("attempt") == installed.get("attempt") == attempt.get("token")
+                    and beat.get("pid") == installed.get("pid")
+                    and beat.get("starttime") == installed.get("starttime")):
+                loop = "drained"
+    except STATE_ERRORS as exc:
+        loop = "unknown"
+        print("loop health unreadable: " + str(exc), file=sys.stderr)
+    print(loop, projection, demand, flush=True)
+
+
 COMMANDS = {
+    "maintain": cmd_maintain, "batch-mode": cmd_batch_mode,
+    "reserve-run": cmd_reserve_run, "runner-config": cmd_runner_config, "runner-progress": cmd_runner_progress,
+    "start-run": cmd_start_run, "runner-loop": cmd_runner_loop,
+    "runner-health": cmd_runner_health, "runner-count": cmd_runner_count, "runner-recovery": cmd_runner_recovery,
     "bind-inspect": cmd_bind_inspect, "bind": cmd_bind, "fg-stage": cmd_fg_stage, "stage": cmd_stage, "ingest-staged": cmd_ingest_staged,
     "reconcile": cmd_reconcile, "retention": cmd_retention, "announce-list": cmd_announce_list,
     "mark-announced": cmd_mark_announced, "consume": cmd_consume, "ack-refusal": cmd_ack_refusal,
@@ -2046,10 +2348,23 @@ def main(argv):
         a = build_parser().parse_args(argv)
         if a.cmd is None:
             raise Done(USAGE, state="usage", detail="a subcommand is required")
+        if a.cmd in ('reserve-run', 'start-run', 'runner-config', 'runner-count',
+                     'runner-progress', 'runner-loop', 'runner-health', 'runner-recovery'):
+            from fm_owner_notice_runtime import check_automation_runtime
+            check_automation_runtime()
+        # Preserve the death chain through the shell front, including runner
+        # loop, maintenance and ingest engines. Otherwise a dead recorded shell
+        # could leave an unrecorded engine mutating a stale-owner-reclaimed lock.
+        parent = os.environ.get("FM_OWNER_NOTICE_FRONT_PID", str(os.getppid()))
+        _prctl_pdeathsig()
+        if str(os.getppid()) != parent:
+            raise Done(70, state="unknown", code="front-gone")
         owner = Owner(a.home) if a.cmd != "fsync-file" else None
         if getattr(a, "id", None):
             check_id(a.id)
         COMMANDS[a.cmd](owner, a)
+        if a.cmd in ("reserve-run", "runner-health", "runner-config", "runner-progress", "runner-recovery", "batch-mode"):
+            return 0
         raise Done(UNKNOWN, state="unknown", detail="subcommand returned no result")
     except fmt.SeamRefused as exc:
         d = Done(USAGE, state="usage", detail=str(exc))
@@ -2064,4 +2379,6 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    # Lazy automation imports share this exact engine and its exception types.
+    sys.modules["fm_owner_notice_store"] = sys.modules[__name__]
     sys.exit(main(sys.argv[1:]))

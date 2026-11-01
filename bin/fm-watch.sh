@@ -3390,6 +3390,9 @@ home_summary_refresh_detached() {
   HOME_SUMMARY_PID=$!
 }
 
+# shellcheck source=bin/fm-owner-notice-watch-lib.sh
+. "$SCRIPT_DIR/fm-owner-notice-watch-lib.sh"
+
 RECONCILE_REQUEST_PID=
 reconcile_requests_pending() {
   local request
@@ -3831,6 +3834,10 @@ while :; do
   if reconcile_requests_pending; then
     reconcile_requests_detached
   fi
+  owner_notice_alarm_pump || triage_log "owner-notice alarm publication deferred"
+  if owner_notice_wanted || [ -n "$OWNER_NOTICE_RUNNER_PID" ]; then
+    owner_notice_runner_detached || triage_log "owner-notice runner start deferred"
+  fi
 
   # Parent-owned secondmate pending-reply reconciliation: resolve correlated
   # parent reports, observe backend busy/idle turn completion, send one recovery
@@ -3911,6 +3918,7 @@ while :; do
     # another check's wake can carry the queued notice without starving checks.
     fm_supervision_tick_check_notice "$STATE"
     alert_store_reason=$FM_SUP_TICK_CHECK_REASON
+    owner_notice_runner_sweep
     # Dated-rule alarms (docs/dated-rule-schedule.md) run just before the tick,
     # so a store they change is projected in this same pass. The check skips
     # unchanged inputs itself and ends with a completion mark; its problem

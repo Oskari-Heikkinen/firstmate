@@ -19,6 +19,7 @@
 #                                                <key> active, or cannot be read
 #   fm_alert_store_wanted <store> <now-epoch>    "<key>\t<reason>" per active,
 #                                                unacknowledged entry
+#   fm_alert_store_active_keys <store>           held keys, including acknowledged
 #   fm_alert_store_known_keys <store>            every key the store has named
 #   fm_alert_store_ack_of <store> <key> <now>    "<by>\t<until>" of a valid ack
 #   fm_alert_store_bad_acks <store> <now-epoch>  active keys with an invalid ack
@@ -139,11 +140,28 @@ fm_alert_store_readable() {  # <store>
     FM_ALERT_PROBLEM="store $1 is missing or unreadable"
     return 1
   fi
-  if ! jq -e "$_FM_ALERT_STORE_VALID" "$1" >/dev/null 2>&1; then
+  if ! jq -es "length == 1 and (.[0] | $_FM_ALERT_STORE_VALID)" "$1" >/dev/null 2>&1; then
     FM_ALERT_PROBLEM="store $1 is not a valid $FM_ALERT_STORE_SCHEMA (or tj-capacity-alerts/v1) store"
     return 1
   fi
   return 0
+}
+
+# Validated extraction in one jq process, including the healthy empty set.
+# Unlike wanted, an acknowledgement does not remove a held level here.
+fm_alert_store_active_keys() {  # <store>
+  if ! command -v jq >/dev/null 2>&1; then
+    FM_ALERT_PROBLEM="jq is not installed, so store $1 cannot be read"
+    return 1
+  fi
+  if [ -L "$1" ] || [ ! -f "$1" ] || [ ! -r "$1" ]; then
+    FM_ALERT_PROBLEM="store $1 is missing or unreadable"
+    return 1
+  fi
+  if ! jq -rs "if length == 1 and (.[0] | $_FM_ALERT_STORE_VALID) then .[0].active | keys[] else error(\"invalid store\") end" "$1" 2>/dev/null; then
+    FM_ALERT_PROBLEM="store $1 is not a valid $FM_ALERT_STORE_SCHEMA (or tj-capacity-alerts/v1) store"
+    return 1
+  fi
 }
 
 # The decision fold's question: may a supersede note close blocker <key> in
@@ -228,6 +246,30 @@ fm_alert_store_bad_acks() {  # <store> <now-epoch>
 # Apply one jq program to the store and replace it atomically. A missing store
 # starts empty under <id>; an existing one must be a writable fm-alert-store/v1
 # store, because a tj-capacity-alerts/v1 file belongs to the tool writing it.
+# Read-only ownership validation shared by initialization and mutation.
+_fm_alert_store_owned() {  # <store> <id>
+  fm_alert_store_readable "$1" || return 1
+  if ! jq -e --arg s "$FM_ALERT_STORE_SCHEMA" '.schema == $s' "$1" >/dev/null 2>&1; then
+    FM_ALERT_PROBLEM="store $1 is written by its own tool, not through this library"
+    return 1
+  fi
+  if ! jq -e --arg id "$2" '.store == $id' "$1" >/dev/null 2>&1; then
+    FM_ALERT_PROBLEM="store $1 does not belong to store id $2"
+    return 1
+  fi
+}
+
+# Caller holds the normal store lock across the absence check and creation.
+# Existing levels, acknowledgements, timestamps and bytes remain unchanged.
+fm_alert_store_initialize() {  # <store> <id>
+  FM_ALERT_PROBLEM=
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    _fm_alert_store_owned "$1" "$2"
+  else
+    _fm_alert_store_write "$1" "$2" '.'
+  fi
+}
+
 _fm_alert_store_write() {  # <store> <id> <jq-program> [jq args...]
   local store=$1 id=$2 prog=$3 tmp now nowiso
   shift 3
@@ -236,15 +278,7 @@ _fm_alert_store_write() {  # <store> <id> <jq-program> [jq args...]
     return 1
   fi
   if [ -e "$store" ] || [ -L "$store" ]; then
-    fm_alert_store_readable "$store" || return 1
-    if ! jq -e --arg s "$FM_ALERT_STORE_SCHEMA" '.schema == $s' "$store" >/dev/null 2>&1; then
-      FM_ALERT_PROBLEM="store $store is written by its own tool, not through this library"
-      return 1
-    fi
-    if ! jq -e --arg id "$id" '.store == $id' "$store" >/dev/null 2>&1; then
-      FM_ALERT_PROBLEM="store $store does not belong to store id $id"
-      return 1
-    fi
+    _fm_alert_store_owned "$store" "$id" || return 1
   fi
   now=$(date +%s) || return 1
   nowiso=$(date -u +%Y-%m-%dT%H:%M:%SZ) || return 1

@@ -35,12 +35,19 @@ run_checkpoint() {  # <home> <seconds>
 test_rule_14_days_out_reaches_the_owner_in_one_pass() {
   local home status=0
   home=$(make_home vj main 14)
+  # A healthy empty owner subsystem takes the runtime-reconciliation path in
+  # this same sweep. Its bounded child must return, not exec away the watcher
+  # before the independent dated-rule step and alert projection can run.
+  mkdir -p "$home/state/owner-notices/bindings" "$home/state/owner-notices/.tmp"
+  : > "$home/state/owner-notices/.bindings.list"
+  : > "$home/state/owner-notices/.retired.list"
   run_checkpoint "$home" 15 || status=$?
   expect_code 0 "$status" "watcher checkpoint exit"
   assert_contains "$(cat "$home/state/dated-rules.status" 2>/dev/null)" "blocked [key=dated-rule.grace.1.14d]" \
     "the 14-day alarm was not projected onto the owner's status file"
   assert_contains "$(cat "$home/checkpoint.out")" "dated-rules" "the watcher did not wake on the projected alarm"
-  pass "a rule 14 days out reaches its owner on the same watcher pass (V-j)"
+  [ ! -e "$home/state/owner-notices/.runner-attempt" ] || fail 'healthy idle owner reserved a runner'
+  pass "a rule 14 days out reaches its owner after idle owner runtime reconciliation in the same watcher pass (V-j)"
 }
 
 test_watcher_wakes_on_a_check_problem() {

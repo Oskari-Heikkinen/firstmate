@@ -1728,6 +1728,12 @@ spy_has() {  # <row> <ident> <path>
   [ -n "$(spy_at "$2" "$3")" ] || fail "$1: no $2 for $3 in the fsync spy"
 }
 
+case_runner_lease_sync() {
+  python3 "$ROOT/tests/lib/owner_notice_watch.py" "$ROOT" "$TMP_ROOT" publication_lease_sync \
+    || fail 'runner lease durability and returning runtime reconciliation'
+  pass 'runner lease fsync precedes queue publication and runtime reconciliation returns to its watcher'
+}
+
 case_fsync_spy() {  # R-D01 to R-D14, R-D10b
   local f tmp month now
   world spy nobind
@@ -3075,6 +3081,7 @@ fm_run_case_pool "$(fm_case_pool_jobs "${FM_OWNER_NOTICE_CASE_JOBS:-}")" "$TMP_R
   case_answer_rows_unavailable \
   case_answer_rows_final \
   case_bind_refusals \
+  case_runner_lease_sync \
   case_fsync_spy \
   case_lock_ingest_consume \
   case_custody_reread \

@@ -8,6 +8,10 @@
 #       --producer-uid <uid> --kinds <kind>[,<kind>...] --max-bytes <n>
 #       --consume-bound-seconds <s>
 #   fm-owner-notice.sh ingest <id>
+#   fm-owner-notice.sh ingest-staged <id> <run>  (internal runner ingestion)
+#   fm-owner-notice.sh maintain <id>  (internal runner maintenance)
+#   fm-owner-notice.sh run --watcher-pid W --attempt TOKEN  (watcher only)
+#   fm-owner-notice.sh sync-alarms  (owner-only projection)
 #   fm-owner-notice.sh reconcile <id>
 #   fm-owner-notice.sh consume <id> <key> [--note <text>]
 #   fm-owner-notice.sh ack-refusal <id> <key> --note <text>
@@ -36,7 +40,8 @@
 # then runs the announce step under the wake-queue lock: one check wake keyed
 # owner-notice:<id>:<key> for each final key not yet announced, consumed or
 # queued, the queue fsynced, then the key's .announced marker. Mutating commands
-# finish by syncing the owner-notice alert store
+# finish by syncing the owner-notice alert store (only recorded internal
+# maintenance/ingest children defer it to their independent runner projector)
 # (state/owner-notices/alert-store.json) under its independent projection lock,
 # after releasing all mutation locks. When
 # the command itself succeeded but a later step failed, stderr says which step
@@ -47,6 +52,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
 export FM_HOME
+# A nested front must not inherit another front's engine-parent pin.
+unset FM_OWNER_NOTICE_FRONT_PID FM_OWNER_NOTICE_RUNNER_BATCH
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 
@@ -130,7 +137,9 @@ fault() {
 # The engine runs as this shell's direct child, never inside $(...), so its
 # parent pid is the pid every lock taken here records.
 engine() {
-  python3 "$ENGINE" "$@"
+  local parent=''
+  fm_current_pid parent || return 70
+  FM_OWNER_NOTICE_FRONT_PID=$parent python3 "$ENGINE" "$@"
 }
 
 release_all() {
@@ -144,6 +153,7 @@ release_all() {
 }
 
 on_exit() {
+  if declare -F runner_stop >/dev/null; then runner_stop; fi
   release_all
   [ -z "$SCRATCH" ] || rm -rf -- "$SCRATCH"
 }
@@ -265,6 +275,7 @@ repair_lists() {
 # cleared; the whole-set sync runs only on a complete set.
 sync_alarms() {
   local rc=0
+  OWNER_NOTICE_SYNC_COMPLETE=false
   [ "${#HELD_LOCKS[@]}" -eq 0 ] || return 70
   # Serialize snapshot-through-sync, separately from all mutation locks. An
   # older complete snapshot must not clear a newer incomplete snapshot's levels.
@@ -282,6 +293,7 @@ sync_alarms_held() {
   if json_true "$SCRATCH/alarms.json" '.complete == true'; then
     "$SCRIPT_DIR/fm-alert-store.sh" sync "$ALERT_STORE" owner-notice "$SCRATCH/wanted.json" \
       "no longer wanted by fm-owner-notice" > /dev/null || return 70
+    OWNER_NOTICE_SYNC_COMPLETE=true
     return 0
   fi
   rows=$(jq -r 'to_entries[] | [.key, .value.kind, .value.subject, .value.reason] | @tsv' \
@@ -310,19 +322,37 @@ finish() {
 }
 
 # locked <id> <step> <engine-args...>: run one binding-locked engine command and
-# the announce step, then the list repair and alarm sync.
+# the announce step, then the list repair and alarm sync (or verified deferral).
 locked() {
-  local id=$1 out rc=0 failed=()
+  local id=$1 out rc=0 batch=ordinary failed=()
   shift
   require_bound "$id"
   scratch || exit 70
   out="$SCRATCH/result.json"
+  case "$1" in
+    maintain|ingest-staged)
+      # The record was durable before this front was released. An environment
+      # variable is not authority; other/manual verbs always project normally.
+      engine batch-mode --home "$FM_HOME" "$id" --verb "$1" --pid "$$" --run "${3:--}" \
+        > "$SCRATCH/batch-mode" || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        IFS= read -r batch < "$SCRATCH/batch-mode" || rc=70
+        case "$batch" in ordinary|recorded) ;; *) rc=70 ;; esac
+      fi
+      if [ "$rc" -ne 0 ]; then
+        sync_alarms || failed+=(alarm-sync)
+        finish "$rc" "$SCRATCH/batch-mode" batch-authorization ${failed[@]+"${failed[@]}"}
+      fi
+      ;;
+  esac
   take_lock "$ROOT/$id/.lock" || exit 75
   engine "$@" --home "$FM_HOME" --lock "$ROOT/$id/.lock" > "$out" 2> "$SCRATCH/engine.err" || rc=$?
   announce "$id" || failed+=(announce)
   release_all
   repair_lists "$out" || failed+=(list-repair)
-  sync_alarms || failed+=(alarm-sync)
+  if [ "$batch" != recorded ]; then
+    sync_alarms || failed+=(alarm-sync)
+  fi
   finish "$rc" "$out" ${failed[@]+"${failed[@]}"}
 }
 
@@ -404,6 +434,25 @@ case "$cmd" in
 esac
 seam_gate
 case "$cmd" in
+  run)
+    # shellcheck source=bin/fm-owner-notice-run-lib.sh
+    . "$SCRIPT_DIR/fm-owner-notice-run-lib.sh"
+    cmd_run "$@"
+    ;;
+  sync-alarms)
+    [ "$#" -eq 0 ] || die_usage "sync-alarms takes no arguments"
+    sync_alarms || exit "$?"
+    printf '{"complete":%s}\n' "$OWNER_NOTICE_SYNC_COMPLETE"
+    exit 0
+    ;;
+  ingest-staged)
+    [ "$#" -eq 2 ] || die_usage "ingest-staged needs <id> <run>"
+    locked "$1" ingest-staged "$@"
+    ;;
+  maintain)
+    [ "$#" -eq 1 ] || die_usage "$cmd needs <id>"
+    locked "$1" "$cmd" "$1"
+    ;;
   bind) cmd_bind "$@" ;;
   ingest) cmd_ingest "$@" ;;
   reconcile)

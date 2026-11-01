@@ -10,8 +10,8 @@ The `owner-notice` skill says when agents run each command.
 
 ## Scope of this version
 
-This version is the protocol core: bind, a manual ingest, consume, the acknowledgements, retire, purge, show, list and the producer client.
-There is no automatic runner, so envelopes are ingested when the owner runs `fm-owner-notice.sh ingest <id>`.
+This version includes the protocol core and owner automation.
+A healthy owner watcher starts a singleton runner when active or straggler bindings exist; `fm-owner-notice.sh ingest <id>` remains available for a bounded manual pass.
 It runs on Linux only, because process identity, the parent-death signal and the filesystem check read `/proc`.
 
 ## Files and sides
@@ -35,7 +35,20 @@ Everything lives under `<owner>/state/owner-notices/`.
 | `bindings/<id>.retired` | `retire` | Created in retire phase 2 and never deleted |
 | `.bindings.list` | front | Active bindings, one `<id>\t<outbox>` per line, rebuilt from `bindings/*` under the bindings lock |
 | `.retired.list` | front | Retired bindings in their straggler window, `<id>\t<outbox>\t<retired_at>` |
-| `.bindings.lock/`, `<id>/.lock/`, `.alarm-sync.lock/` | front | Mutation and independent alarm-projection locks of the shared bounded lock helper |
+| `.bindings.lock/`, `.runner.lock/`, `<id>/.lock/`, `.alarm-sync.lock/` | front | Mutation, runner-lifetime and independent alarm-projection locks of the shared bounded lock helper |
+| `.runner-attempt`, `.runner-starting/`, `.runner` | watcher, front | Attempted-start history, starting identities and the installed runner (see Attempted-start history) |
+| `.runner-beat` | runner | `pid`, `starttime`, `epoch` and `attempt`; optional `drained=yes` witnesses a complete successful final projection after demand withdrawal |
+| `.runner-respawns` | watcher via engine's durable writer | Consecutive pre-beat failures and last exit code; mtime anchors respawn backoff across watcher restarts; bounded single-line reader rejects partial, oversized, NUL-containing or nonregular records |
+| `<id>/.children` | runner | Lines `role pid starttime pgid started_at run`, one per stat, stage or ingest child; durable before release |
+| `.children` | runner | The same record for the independent home-wide alarm-projection child; the next runner reads it for adoption, so all blocked bindings cannot mute their own stalls |
+| `.stall` | runner | Projection failure/stall occurrence; runner recovery reads it, and the watcher health reader treats it as an automation failure even with fresh loop beats |
+| `<id>/.stall` | runner | Lines `role since run`, for `stat`, `fg`, `stage` or `ingest`; first occurrence retained until that role completes |
+| `<id>/.automation` | runner | `busy` and `failures` maps keyed by owning work role; independent counters/reasons and first occurrence epochs |
+| `.quarantine` | runner | Scope-to-`{reason,since}` map for `binding:<id>`, `routing`, `foreground`, `projection`; shared reader supplies owner-side diagnosis and first occurrence until revalidation |
+| `<id>/.seen` | runner | Last fully processed outbox `mtime_ns` outside the timestamp slack |
+| `<id>/.beat` | runner | `writer=runner`, epoch, runner/watcher identities, attempt token, outbox mtime and first `dirty_since` (or `-`) |
+| `<id>/.retention-at` | runner maintenance | Last completed daily retention epoch |
+| `runner-alert-store.json` | watcher | `owner-notice-runner` progress and respawn levels |
 | `.fg-children/<pid>-<starttime>` | front | One record per bounded outbox child of `bind`, `retire` or `ingest`, created before the child is released |
 | `alert-store.json` | front | The `owner-notice` alert store (see Alarms) |
 | `<id>/custody/<key>.notice` | engine | The exact validated envelope bytes |
@@ -288,14 +301,25 @@ Only the alert-store lock may nest beneath that projection lock; no path takes a
 This prevents an older complete snapshot from erasing levels from a newer incomplete snapshot.
 No lock is held across a syscall on a producer path, except that `retire` lists the outbox in its bounded child while it holds its locks, so that hold is at most `OUTBOX_IO_BOUND` plus 5 s.
 
-The engine runs a mutating command only with `--lock <dir>` whose recorded owner pid is its parent's; otherwise it refuses with 70 `lock-not-held`.
+Every engine mutation checks the authority for its phase.
+Binding/protocol commands require `--lock <dir>` whose recorded owner pid is the engine's parent; otherwise they refuse with 70 `lock-not-held`.
+`reserve-run` and `runner-count` require that parent to hold this home's watcher lock.
+Before either `start-run` phase, the engine proves that its actual front is a live child of the healthy, identity-matched watcher, then the shared writer verifies the reserved attempt token.
+The pre-install `.runner-starting` evidence needs no runner lock: it must exist before the front waits for that lock.
+`start-run --install` additionally proves that this front owns `.runner.lock`, including its recorded process start identity, before writing `.runner`.
+`runner-loop` uses the same installed-phase authority, accepts only the actual runner mutex (including a home-path alias to it), checks its supplied watcher identity against the native reader, and requires the installed pid/starttime/watcher tuple to name its actual front.
+The native watcher/lock readers own those proofs; their whole command has a 10-second bound and 5-second kill grace, and the process-parent snapshot is rechecked afterward.
 When a command reports `lists_stale`, the front rebuilds both lists from `bindings/*` under the bindings lock after it releases the binding lock.
 
 ## Alarms
 
-After every mutating command the front syncs the `owner-notice` alert store, `state/owner-notices/alert-store.json`, to the wanted set the engine's `alarms` command derives from disk.
+After every public/manual mutating command the front syncs the `owner-notice` alert store, `state/owner-notices/alert-store.json`, to the wanted set the engine's `alarms` command derives from disk.
+Only internal `maintain` and `ingest-staged` fronts whose actual pid/starttime match the binding's durable `ingest` child record for that run defer projection to the independent runner projector.
+The shared child-record reader owns this authorization; an absent or nonmatching slot grants no deferral, and a malformed record refuses before mutation and projects `automation-unreadable`.
+`FM_OWNER_NOTICE_RUNNER_BATCH` is discarded and grants no authority; even a manual call to an internal verb projects normally without the matching live record.
 The store is rewritten on every sync, and each alarm is a level raised once per occurrence; `docs/alert-store.md` owns the store format.
 The levels in this version:
+- per binding automation: `outbox-stalled`, `ingest-stalled` from the durable role records, `ingest-busy` after three busy answers, `ingest-failed` on an unsuccessful child, and `automation-unreadable` when their records cannot be read;
 - per binding: `outbox-unreadable`, `outbox-identity-changed`, `outbox-symlink`, `outbox-filesystem` and `outbox-backlog` from the last stage, `binding-unreadable`, `receipts-unreadable`, `current-unreadable` (`current/` is missing or cannot be listed), `membership-unreadable`, `status-unreadable` (the required last-stage record), `routing-unreadable` (fallback membership cannot be established), and `current-backlog` (more than 3,072 entries in `current/`);
 - per key: `outbox-in-progress` while the envelope stays in progress past 60 s, until a complete listing no longer finds it so, `refused` and `unsafe-file` until `.acked/K`, `custody-mismatch`, `orphan-custody` and `seq-collision` until `.acked/K` or a later delivery, `unannounced` past 15 s after the final receipt, `unconsumed` past `consume_bound_seconds`, and `current-unreadable` and `receipts-unreadable` for an entry that cannot be read.
 
@@ -378,6 +402,10 @@ The spy id is the fsync the test spy logs for it.
 | owner | live membership removal, before current unlink | `o-membership-dirsync` | terminal archive durable, extra current file | safe redundant projection | retention archives again and finishes unlink |
 | owner | `.outbox-index` replace | `o-index-dirsync` | old or new index | - | the next complete stage |
 | owner | `.fg-children` record | `o-fgchild-dirsync` | a record, the child blocked or gone | - | a child whose front died reads EOF on its start pipe and exits |
+| owner | root `.children` projection record | `o-children-dirsync` | recorded projector, blocked on release or live | watcher still judges progress independently | the next runner adopts the identity before starting any projector; dead identities are removed, survivors retained |
+| owner | root `.stall` projection failure | `o-runner-dirsync` | unresolved projection failure even if its child died | watcher health reports failure, independently of fresh beats | only a successful subsequent projection clears it; stopping, reaping or restarting alone does not clear it |
+| owner | `.quarantine` replace | `o-quarantine-dirsync` | old or new scope occurrences | unknown sources still alarm through shared readers | revalidate each scope; preserve its first epoch, and never overwrite malformed ledger bytes |
+| owner | final `.runner-beat` with `drained=yes` | `o-runner-dirsync` | absent witness or complete witness | missing witness requires another bounded final projection | accept only against the latest attempt and currently validated empty demand; it is completion, never live-process presence |
 
 `reconcile` runs in every `ingest-staged`, and the owner can run it alone with `fm-owner-notice.sh reconcile <id>`.
 
@@ -388,6 +416,273 @@ Retention runs inside `ingest-staged`, under the binding lock.
 - A `current/` entry moves to `archive/<yyyy-mm>/K.json` 7 days after its `consumed` receipt, or 7 days after `.acked/K` for a refused key, subject to the Live membership ordering and outstanding-obligation guards.
 - Receipts are kept for the binding's lifetime, so a query after a prune keeps working; a long-lived binding is rotated by binding a new id.
 - The producer prunes recorded envelopes, and `outbox-backlog` fires above 4,096 entries.
+
+## Owner automation
+
+Owner automation requires Python 3.11+ with working standard-library SQLite `Connection.setlimit` and `getlimit`, including the LENGTH and SQL_LENGTH limits.
+This prerequisite applies to every existing owner tree, including an otherwise idle U1 tree; the quiet healthy-idle baseline requires a supported automation runtime.
+The runner entry points and alarm publisher refuse unsupported owner runtimes rather than operating without allocation limits.
+The shared capability probe in `fm_owner_notice_runtime.py` checks only the interpreter and an in-memory connection, never owner records or the publication database.
+The watcher probes on activation and each slow sweep, caches the verdict on fast ticks, and re-probes after a failed operation to detect interpreter replacement between sweeps.
+An unsupported runtime holds `runner-runtime-unavailable` in `runner-alert-store.json`, naming its version and required APIs, never a queue/store repair cause.
+The existing native shell alert-store writer raises/clears this prerequisite level independently of SQLite; it does not enqueue a third FIFO key or sync away either existing key.
+Unsupported activation and every slow/forced probe reconcile the level under the native store lock, preserving its occurrence and acknowledgement while the cause holds; a changed cause updates its reason.
+A healthy cold activation only caches capability, so FIFO admission never waits on runtime-level cleanup; its first slow sweep performs that cleanup.
+A supported replacement clears an earlier watcher's runtime level even if it never observed the outage itself.
+The complete native reconciliation runs in a child under `FM_CHECK_TIMEOUT` (default 30 seconds) and 5-second kill grace, then returns to the same watcher; native lock acquisition remains bounded by 10 seconds.
+The exec-style timeout helper is isolated in a subshell so an idle reconciliation cannot replace the watcher or skip unrelated slow checks.
+After acquiring the store lock, the writer verifies the current watcher PID and captured start identity so an old surviving command cannot overwrite its replacement's diagnosis.
+A missing store is not an idle shortcut while its writer lock exists: a first publication may already be in flight.
+When the store is valid and the runtime key is absent, clearing does not rewrite unrelated levels or acknowledgements.
+A publication failure emits a bounded fallback check with the actual runtime cause and native-writer exit status; repair retries on the next probe and reports level reconciliation separately from runtime recovery.
+A recovered runtime probe emits one recovery check in the watcher that observed the outage and resumes normal source validation.
+An unclassifiable or failed probe also refuses, explicitly reporting an unavailable interpreter version instead of inventing a supported runtime or a queue fault.
+The probe reply is bounded before shell substitution and must be one LF-terminated line without NUL/CR or extra records; truncation and a nonzero exit cannot grant `ready`.
+No legacy-compatible idle classifier is used.
+Manual owner projection reports unavailable automation readers through an incomplete `automation-unreadable` snapshot with subject `runtime`, preserving existing levels without importing or opening the automation queue.
+Only automation-specific sources are skipped: binding, protocol routing, outbox, custody, receipt, refusal, announcement and consumption derivation still runs and raises newly discovered protocol levels.
+The unconditional U1 `wanted_lists` check retains fallback membership diagnosis when a binding is unreadable; it is distinct from the gated automation `read_routes` check.
+Readable empty or nonempty fallback lists are not a routing alarm, and repairing them removes the wanted routing row without clearing an already-held row while the overall snapshot remains incomplete.
+Manual core operations and the pure start-history reader retain their existing authorization and compatibility; this prerequisite does not change the producer client's runtime or its two-file closure.
+
+The watcher's fast cycle examines only owner-side routing/publication hints and its own unreaped children.
+It checks `kill -0` before `wait`, never waits on a live child, never stats an outbox, and performs no per-binding calls.
+An invalid/nonregular routing list still requests the runner's diagnostic path; it is not mistaken for healthy empty routing, and symlinks are checked before any following file test.
+A spawn runs at nice 19 and idle I/O priority where `ionice` is available.
+The runner front refuses unless its actual parent is the pid the shared `fm_watcher_healthy` check identifies for this home.
+It holds `.runner.lock` through the shared bounded helper, with a 30 s acquisition bound, checks its launching watcher's health every 15 s, and stops its Python loop when that watcher disappears or changes identity.
+Stop signals the loop first, waits at most 5 s, then sends KILL without an unbounded wait.
+The loop's exit path signals recorded process groups first, waits at most 2 s, then KILLs survivors and retains their records for adoption.
+
+All outbox calls run in children of the common recorded-spawn operation, never in the watcher or the runner's main thread.
+The child has its own process group and Linux parent-death signal and is blocked on a start pipe until its pid/start-time record is durable.
+The same operation covers foreground bind, retire and manual ingest.
+Every engine child, including the loop and ingest engines, also dies with its immediate shell front on Linux, so a dead recorded shell cannot leave an unrecorded descendant mutating a reclaimed binding lock.
+The shell supplies an internal `FM_OWNER_NOTICE_FRONT_PID` pin for each engine invocation to reject a parent already lost before engine initialization; nested fronts discard inherited pins before supplying their own.
+A restart adopts live records before scheduling replacements; process identity excludes zombies.
+No binding gets another child of a role while that role's recorded identity lives.
+A live foreground record prevents both stat and stage for its binding; after 10 s it raises the binding's foreground stall.
+
+Each binding has one persistent stat worker with request/answer pipes and a 5 s response bound.
+An unanswered request is abandoned and KILLed without stopping other bindings; no binding beat is written for it.
+A successful stat writes the binding beat and clears `stat` and `fg` stall records.
+A changed mtime or the 300 s full sweep schedules a stage; retired bindings are staged on full sweeps for their seven-day straggler window.
+One stage/ingest sequence runs per binding, and child exit wakes the `select` loop instead of waiting for the next 15 s tick.
+Both stage and ingest receive TERM at their recorded start plus 60 s and KILL at plus 65 s, including after adoption.
+A child still alive then adds a stall whose `since` is its original start, not adoption or signal time.
+The stall remains through child disappearance and replacements and clears only after a successful stage/ingest sequence.
+Stat stalls retain the first request time (adoption time for an inaccessible inherited request pipe).
+
+A busy ingest retains its staged run and retries next tick; the third consecutive busy result in that command's streak raises `ingest-busy`.
+Only the same command's non-busy answer resets its streak, never another role's success.
+The `.automation` JSON has `busy` entries for `maintain` or `ingest-staged` (`count`, `since`), and `failures` entries for `stat`, `stage`, `maintain` or `ingest-staged` (`reason`, `since`).
+Empty maps are healthy; malformed records, including the unreleased scalar draft format, are unknown and alarm rather than receiving guessed ownership.
+Each failure retains its first epoch until its own recovery: bound-identity stat, successful maintenance, or successful ingest (which also completes its preceding stage cycle).
+Aggregate `ingest-failed` and `ingest-busy` remain held while any owning role still requires them; another role's success cannot clear them or reset their occurrence.
+An ingest-slot stall from maintenance (`run=-`) clears only on maintenance success; a staged-ingest stall clears only on successful ingest.
+The next cap-hit run starts immediately, oldest-first staging prevents starvation, and `.seen` advances only for a complete non-cap-hit manifest whose captured mtime predates listing by more than 2 s.
+A recent/equal/future mtime stays dirty and is staged again, with the ingest cache avoiding repeated opens.
+Maintenance reconciles and announces at start and every 300 s, sharing the binding's ingest slot; retention runs once a day and inside successful ingests.
+The internal front entry is `maintain <id>`; its binding lock and alarm-projection rules are described under Alarms above. There is no standalone `retention <id>` front command. The existing locked engine retention operation and retention through maintenance/ingestion remain available; this unit adds no public manual-retention API.
+Start projection follows the announce pass; an unavailable maintenance pass (its own failure/busy result or a stalled occupied stage/ingest slot) is deferred, not a reason to suppress its stall alarm.
+A stat failure alone does not make maintenance unavailable and cannot bypass this ordering.
+The home-wide snapshot-through-sync child has its own recorded slot so it remains runnable when every binding has a stalled child.
+Its failed exit or deadline stall leaves root `.stall`, which the watcher health reader treats as a failure even when `.runner-beat` remains fresh; a blocked projector cannot mute its own alarm.
+A nonzero exit, incomplete source set or unknown adopted completion does not stop the runner or cancel binding children: projection retains the root failure and retries no sooner than the next runner interval.
+After the initial reconcile/announce pass, a failed projection releases the start gate as `start-sync-deferred`, so it cannot indefinitely prevent delivery; a stalled initial projector releases that gate when its failure is detected.
+Stage, ingest and maintenance failures likewise retry on a bounded interval rather than spinning at child-exit speed.
+Root child ownership uses the same adoption, deadline, stop and identity-gone cleanup rules as binding children, and a root stall clears only after a successful, complete projection.
+Projection uses the same independent serializer and incomplete-set preservation as foreground commands.
+
+The runner's recorded projection child registers `owner-notice` and `owner-notice-runner` with their same-named owner status files, through the existing native initializer/registration helpers.
+Registration, status preparation and projection share that child's recorded identity, deadline and root failure scope; a malformed store or unavailable registration/status source cannot abort the runner before independent binding work begins.
+Unknown bytes are preserved. A complete successful projection confirms and caches that runner's registration pass; a failed, incomplete or unknown projection invalidates the cache, so bounded retries revalidate registration as well as projection. Replacement starts without that cache.
+Manual `sync-alarms` stays independent of automation registration; there is no ambient batching flag, new public entry or alternate alarm writer.
+The latter holds `runner-beat-stale`, `runner-respawn-failing` and the native runtime prerequisite `runner-runtime-unavailable`.
+The watcher slow sweep uses the shared attempted-start reader below and a 65 s progress bound, and reads held levels through `fm_alert_store_active_keys` (including acknowledgements).
+It queues alarm observations; the publisher below applies only actual held-state transitions.
+The internal `runner-health` command emits independently validated words: loop `fresh|stale|unknown|drained|idle`, projection `clear|failed|unknown`, and demand `work|empty|unknown`.
+The combined level clears only for `fresh clear work` or `drained clear empty`; fresh empty-demand work keeps an existing level until its final projection, without inventing a new failure.
+Unknown demand never grants an empty-home completion.
+`idle` is a validated no-history/no-work baseline under the supported [automation runtime](#owner-automation), not a claim of runner presence.
+With no wanted or held notice levels, no held runner levels and valid zero failure history, it reserves no attempt and raises no alarm, including on an existing U1 owner tree.
+Held levels or unfinished history still request cleanup.
+Before an empty-demand cleanup runner starts, the watcher preserves held levels without inventing a stale occurrence; a new stale-loop alarm requires its own live child to be genuinely overdue.
+Projection/source failures remain independently alarmed.
+The watcher sends TERM once per own child only for explicit stale loop progress after the age bound, never for failed/unknown projection, unknown loop state, a young successor or another watcher's runner.
+That recovery action is independent of the held alarm transition, so an earlier projector alarm cannot mask later actual loop staleness.
+A pre-beat exit increments `.runner-respawns`; retries back off by 30, 60, 120, 240 and then 300 s (the check interval cap), surviving watcher restarts.
+Configuration or reservation refusal, and an unreadable or unwritable exit history, defer the next attempt by one check interval.
+The retry gate precedes configuration as well as reservation, so an unsupported owner runtime does not fork or log a refusal on every fast tick.
+The post-configuration gate still honors a backoff newly loaded from durable failure history.
+Three consecutive failures raise `runner-respawn-failing`; actual progress can reset the durable count, but the source-recovery fence below separately owns clearance without waiting for a healthy runner to exit.
+Start grace alone never resets a failure streak.
+Unreadable failure history is never overwritten or cleared merely because a later runner progressed or exited; repair that source first.
+
+### Runner source recovery
+
+`fm_owner_notice_recovery.py` owns the owner-only `fm-owner-notice-runner-recovery/v1` record at `owner-notices/.runner-recovery`.
+The watcher is its sole writer under the existing watcher lock; private engine `runner-recovery` operations use the existing durable publisher and `o-recovery-dirsync` barrier.
+The public front has no recovery command, and count, attempt, beat and FIFO formats are unchanged.
+The record is canonical JSON, bounded to 8 KiB, with exactly `schema`, `phase`, `sources` and `candidate`.
+`phase` is `pending`, `ready` or `cleared`.
+`sources` is a nonempty map over the fixed vocabulary `configuration`, `reservation`, `counter-read`, `counter-write`, `failed-start`; each row has integer `since`, a single-line reason of at most 512 characters, boolean `repaired` and `observed`, the attempt/beat/identity snapshot at refusal (or explicit `unknown` when that source cannot be read).
+`candidate` is null or `{attempt, baseline, identity}`: the reserved token, the SHA-256 of the canonicalized validated baseline beat fields (null if absent), and its matching `{attempt,pid,starttime}` identity when installed progress already exists (otherwise null).
+
+A refused source preserves its first occurrence, marks that source unrepaired and invalidates the candidate before the assertion enters the unchanged alarm FIFO.
+Only a successful operation on that source marks it repaired; neither zero count, a recent prior beat, startup grace nor replacement does so.
+After every recorded source is repaired, the watcher captures its progress baseline.
+A later beat must differ from that baseline and match the candidate's reserved attempt, installed PID and start identity before the phase becomes ready.
+A new successful reservation replaces an obsolete candidate with the new attempt's baseline; completion before any installed beat is possible only when that reserved attempt subsequently publishes matching progress.
+The comparison observes ordering rather than comparing wall clocks, so a repeated same-second beat waits conservatively and clock movement cannot turn an old baseline into progress.
+A later refusal cancels ready proof before any new clearance.
+
+Counter writes are retried as operations even when the old counter reads zero, and final clearance always requires a successful zero-count publication.
+Active and exited progress share the recovery fence; historical final-drain health cannot clear it.
+Pending recovery keeps empty-demand cleanup eligible, while a validated healthy empty owner with no failure remains quiet.
+The record remains ready until its clear is durably admitted to the existing FIFO; only then is it marked cleared, retaining its bounded proof.
+A crash before admission retries the ready clear, and a crash after admission but before acknowledgement safely repeats the same FIFO action.
+A pending clear still owns completion while its native level remains held; this is not a fresh failure.
+
+Unknown, partial, oversized or nonregular recovery state is unresolved, preserved, and visible through the runner failure and `automation-unreadable` recovery diagnosis.
+A missing or completed sidecar with an unattributed held or queued assertion initializes conservative source revalidation, never healthy absence.
+Replacement revalidates the persisted fence and sources without changing attempted-start grace.
+If reservation proof is required, a successful fresh attempt is necessary; deleting recovery history is not a repair.
+There is no second alarm writer or producer access to this record.
+The U4 owner-runtime closure includes `fm_owner_notice_recovery.py` and this owner-side state format; the producer's two-file closure is unchanged.
+
+### Scoped quarantine and final drain
+
+A malformed binding, routing/binding mismatch, `.children`, `.stall`, `.automation`, `.seen` or outbox index quarantines that binding, not independent work.
+A malformed routing list withholds new binding work; malformed foreground ownership withholds new producer I/O because its affected binding is unknown.
+Owner-side projection remains runnable in either case.
+An invalid stat reply fails only its known stat worker.
+Failed/invalid stage results belong to that stage cycle.
+Malformed root child/stall records block projection spawning, not binding work; the watcher reads those sources independently and alarms even when no projector can run.
+A malformed quarantine ledger is itself unknown, is never overwritten, and keeps final completion blocked; the watcher and projection diagnose it through the shared reader.
+
+Quarantine retains known children and their original identities/deadlines, drains their bounded output and reaps without claiming success.
+It does not replace children or overwrite unreadable ownership/status records.
+Each loop revalidates owner-side sources before resuming a scope; a known live child missing from a purported repaired record still refuses.
+Overdue actions resume from original deadlines, not repair time.
+The runner publishes scope transitions only, preserving `since`; `automation-unreadable` holds while a scope remains unknown.
+U1's normal, authoritative list repair can fix a readable routing mismatch; quarantine never guesses replacement ownership.
+
+### Runner alarm publication
+
+`fm_owner_notice_alarm.py` owns the internal `fm-owner-notice-runner-alarm/v1` format.
+It is not a producer notice, consumer receipt API or installed service.
+Python's standard-library SQLite supplies atomic commits and WAL snapshots; the module alone owns its schema/readers:
+
+- `.runner-alarms.sqlite3`: `user_version=1`, exact native schema, home-bound metadata, monotone last acknowledged cursor/digest, separate writer and advance failure/first-occurrence pairs, and pending requests (`seq`, key, assert/clear, reason, observed epoch).
+  The only keys are `runner-beat-stale` and `runner-respawn-failing`.
+  Rollback journals are foreign to this native WAL format and refuse before SQLite can recover unknown bytes.
+- `.runner-alarms.pending`: an advisory `pending\n` hint, never queue truth.
+  Slow sweeps repair missing/stale hints.
+- `.runner-alarm-publisher.lock`: an existing, empty, single-linked kernel lease.
+  Initialization syncs the lease through the shared `fsync_file` observer (`o-alarm-lease-fsync`) and its parent before publishing the queue.
+  Losing it is unknown state, not permission to create a second publisher.
+- `.runner-alarm-publication/result`: a canonical, 8 KiB-bounded `fm-owner-notice-runner-publication/v1` record with exactly `schema`, `seq`, `request_sha256`, `outcome` (`published|failed`), `reason` and observed `at`.
+  The digest binds the entire request **and owner root**.
+  Its dedicated `.tmp` contains only common-formatter scratch; unrelated members refuse recovery.
+
+Only the real lock-authorized watcher mutates SQLite.
+It durably enqueues before reporting acceptance and rechecks authority at commit.
+Repeated observations collapse only against the last pending action for that key: assert/clear/assert remains three transitions.
+Admission validates the current head and same-key tail and refuses a sequence that would reuse an acknowledged request, before committing or publishing the pending hint.
+Admission never acquires the publisher lease.
+WAL mode is established in the initial private database before publication; stopped read-only snapshots therefore cannot block later admission.
+SQL lock waits use a 1 s timeout and the VM progress handler uses a 1 s budget, separate from external writer time.
+These time bounds and SQL result clipping are not allocation guards.
+Before any statement, schema or value read, every queue connection (including initialization) installs and verifies `SQLITE_LIMIT_LENGTH=16384` and `SQLITE_LIMIT_SQL_LENGTH=4096` through the public API.
+The value/row bound accommodates the complete metadata row, including its root, both failure strings and cursor/digest; the SQL bound also covers stored schema text.
+An unavailable or ineffective limit refuses; there is no older-runtime or unbounded fallback.
+These are per-value/row and SQL-input limits, not a whole-process RSS guarantee.
+
+The watcher first consumes a committed result under the lease, then dispatches at most one oldest request.
+Internal `advance` returns `idle|pending <whole-bound> <kill-grace>`; 75 means an occupied lease, 70 an unknown/failed operation.
+Publishers open SQLite read-only and close it before any alert-store operation.
+They return through the separate durable result slot, not a database write transaction.
+Result consumption requires an exact head/digest, or the exact already-acknowledged cursor/digest after a crash between SQL commit and result removal.
+A failed result never removes its request.
+Failed advancement has its own retained occurrence: neither successful publication nor cleanup of a different phase clears it.
+
+Publication uses the existing alert-store writer, CLI and active-key reader.
+The runner and publisher share conditional store initialization under the native writer lock, through the initializer described in `docs/alert-store.md`.
+Existing native stores must belong to the expected id and retain their exact bytes, including ACKs; registration does not substitute for initialization.
+Status-file preparation creates only genuine absence without clobbering a concurrent winner, refuses symlinks/nonregular or inaccessible targets, and never appends through an existing path.
+ACKed keys remain held.
+Already-held assertions and already-absent clears never invoke their writer.
+A crash after write but before result/acknowledgement rechecks the held state without refreshing the occurrence.
+Producer-side held snapshots cannot suppress an opposite transition already pending.
+Accepted requests survive watcher replacement; the inherited kernel lease also excludes a surviving old writer descendant.
+
+Fast ticks service pending work even without binding demand and never wait for the publisher.
+Each register/read/write phase uses the common process-group timeout: ingest bound (normally 60 s), then kill grace (5 s).
+The entire dispatch uses that same helper with `3 * (ingest-bound + kill-grace) + kill-grace` (normally 200 s), followed by its kill grace.
+Independently, the watcher verifies PID/starttime and sends one TERM then one KILL if the wrapper itself stalls.
+Busy leases retry on the runner interval; failed dispatches retry on the check interval.
+There is no retry-count or queue-size discard; work is bounded to head/tail/metadata, and logical storage grows with undelivered requests, not delivered history.
+
+The independent owner projection diagnoses retained failures, overdue accepted work and unknown queue/result/lease/log sources as `automation-unreadable` for `publisher`.
+Direct check fallback covers admission, advancement or dispatch failure.
+A healthy empty advance or successful publication re-arms that fallback for a later occurrence.
+Repair the source, never erase requests or force acknowledgement.
+Missing queue is healthy only without a hint/result obligation.
+Initialization uses durable no-replace publication: a young live formatter publication with valid empty WAL state and no prior cursor/work is pending, not a false alarm; dead, old, foreign or work-bearing partial initialization is unknown and preserved.
+The shared watcher metadata writer validates its state/root/temp directories before using a temp path.
+Private SQLite initialization scratch uses the common owner temp identity prefix, so ordinary owner sweeps preserve a live initializer and own its dead scratch cleanup.
+Deeply nested malformed JSON is a format refusal, not an uncaught recursion failure.
+Result reasons must be Unicode scalar text; the byte bound accommodates the worst-case JSON encoding of a valid 512-character reason.
+
+The future U4 native companion/closure must include this publisher, its SQLite/result formats, native dependencies and the Owner automation runtime prerequisite above.
+U2 does not install that companion or modify a live handoff registry.
+
+### Final drain and delivery bounds
+
+Valid empty routing alone is not recovery from an existing obligation.
+The watcher retains a bounded final-drain runner when there is held or unfinished work until a complete successful owner-side projection is witnessed, including after watcher restart and with no new binding.
+With the supported [automation runtime](#owner-automation), a validated healthy idle owner needs no such runner; both active-key stores use the shared reader, including acknowledged held levels, before choosing that quiet baseline.
+The owner-only `sync-alarms` command returns `{"complete":true}` or `{"complete":false}` after successful publication; a partial snapshot still preserves levels but cannot certify a final drain.
+The `sync-alarms` front returns exactly one newline-terminated canonical JSON object, `{"complete":true}` or `{"complete":false}`. Its child reader consumes that one line framing before validating the canonical object; on-disk canonical JSON still has no newline.
+Malformed, missing, partial, concatenated or extra-line projection results are failures, not completion; only boolean `complete` is accepted.
+The final loop beat adds `drained=yes` only after all known binding/foreground work has ended, scope sources are valid, and that final projection completes.
+Incomplete or failed projections continue bounded retries.
+The health reader accepts that witness only for the latest installed attempt, matching front identity, currently validated empty demand, no root child/stall, and an empty valid quarantine ledger.
+New work invalidates completion and starts normal scheduling.
+This resolves runner/root failures through actual work rather than clearing levels because a list became empty.
+Protocol levels still derive from their own receipts and sources; a final drain never clears them indiscriminately.
+
+Under auto-arm the runner exits after the handling-successor watcher closes, so there is no finite delivery bound during the rest of the owner turn.
+Steady-state delivery figures are conditional design bounds, not execution or observation guarantees: 140 s from submit for an idle binding, 245 s behind an in-flight run, plus at most 20 s per busy retry and 120 s per extra cap-hit run.
+Handover adds up to 22 s plus the first full sweep (125 s); the slow path is 425 s before serialization.
+A consumer's pending-attention level keeps its original age and clears only on its verified exact receipt, never merely because a turn explains the delay.
+
+## Attempted-start history
+
+`bin/fm_owner_notice_runtime.py` owns the automation capability/limit setup and start-history reader and writer primitives.
+The watcher and the handoff adapter call `runner_start_status(root, beat=None, now=None, spawned=None, bound=65)` rather than parsing start records themselves.
+`root` is the absolute owner-notices directory; `beat` is a validated beat mapping (including its `attempt` token), or `None` only for genuine absence.
+`spawned` is optionally `{pid, starttime, token}`, supplied only by the launching watcher before the front publishes its starting record; the reader independently checks that identity.
+The result contains `live`, `pid`, `starttime`, `started_at`, `token`, `previous`, `first_start` and `grace`.
+Unreadable, nonregular, malformed or partial records raise an exception, never an empty or healthy verdict.
+
+Before each spawn the singleton watcher durably reserves an attempt in `.runner-attempt` with `token=<32 lowercase hex> previous=<prior token or -> spawned_at=<epoch>` and a trailing newline.
+A prior installed record without attempted-start history is represented by `previous=legacy`, never first-start evidence.
+Only the last two tokens are retained, so cost is independent of restart history.
+A reservation is history only and never establishes a live runner.
+It survives a failed fork, death before the front starts, death while waiting for the runner lock, and death of the launching watcher itself.
+The front's `.runner-starting/<pid>-<starttime>` adds `pid` and `starttime` to that attempt record before waiting for the runner lock.
+After acquiring the lock the front publishes `.runner` with `pid`, `starttime`, `watcher_pid`, `started_at`, `attempt`, `prev_attempt`, `prev_pid` and `prev_starttime`.
+The installed record survives exit; removing dead starting records never removes the attempted-start history.
+A runner beat carries `attempt` as well as its process identity and epoch.
+
+The reader grants grace only for the latest attempted start, with a verified live identity younger than `bound`, and either no beat on the first-ever attempt or a beat from the immediately preceding attempt.
+Neither a missing beat nor a missing installed runner alone proves first start.
+A second consecutive attempt without a beat cannot renew grace, including before installation and before the front publishes any process record.
+An older still-live front cannot grant grace for a newer failed attempt.
+For a missing-index exception the adapter also requires `first_start`; the token itself is never liveness evidence.
+The regression is [`tests/fm-owner-notice-start.test.sh`](../tests/fm-owner-notice-start.test.sh).
 
 ## Test seams
 
@@ -404,4 +699,10 @@ The root must also not be `/` and must hold a regular file `.fm-owner-notice-tes
 - `FM_OWNER_NOTICE_OPEN_COUNT=<log>`: the stage and the engine append `<role> <open|read|scandir> <path>` for every path they open.
 - `FM_OWNER_NOTICE_NOW=<epoch>`: the clock the engine and client read.
 
-The regression suite is [`tests/fm-owner-notice.test.sh`](../tests/fm-owner-notice.test.sh).
+The protocol regression suite is [`tests/fm-owner-notice.test.sh`](../tests/fm-owner-notice.test.sh); automation is exercised by [`tests/fm-owner-notice-watch.test.sh`](../tests/fm-owner-notice-watch.test.sh).
+Automation fault points include `runner-loop:pause=<fifo>`, `runner-loop:ignore-term`, `run:exit=<code>` and `run:check-delay=<seconds>`.
+Publication fault points are `alarm-initialize:prepared`, `alarm-reader:snapshot`, `alarm-publisher:after-write`, `alarm-advance:after-commit` and `alarm-advance:after-unlink`, for live scratch ownership, read-only admission, whole-worker bounds and result/cursor replay.
+Test-root-only numeric seams `runner-loop-seconds`, `stat-bound`, `stage-bound`, `ingest-bound`, `kill-grace`, `outbox-io-bound`, `runner-lock-wait`, `full-sweep`, `stage-duration` and `ingest-duration` scale fixture bounds or work durations.
+Role-scoped survival seams apply at the common spawn operation to every foreground and runner origin; `unkillable` additionally suppresses every explicit signal to that role.
+Deadline fixtures separate TERM, KILL, stall insertion and persisted occurrence time; signal delivery need not imply instantaneous identity disappearance.
+The Linux/glibc stat-block shim releases all later intercepted calls in the released process only, not future stat workers, so foreground recovery cannot accidentally clear a later stat stall.

@@ -239,6 +239,67 @@ test_unreadable_store_raises_and_holds() {
   pass "an unreadable store is a problem on every tick and holds its blockers open"
 }
 
+test_single_json_document_reader() {
+  local flavor schema home f store single malformed out before
+  for flavor in native legacy; do
+    home=$(make_home "singleton-$flavor")
+    f="$home/state/t.status"
+    store="$home/tool/alerts.json"
+    single="$home/tool/single.json"
+    malformed="$home/tool/multiple.json"
+    schema=fm-alert-store/v1
+    [ "$flavor" != legacy ] || schema=tj-capacity-alerts/v1
+    store_cli "$home" assert "$store" s held-key "still held" >/dev/null || fail "initial assert failed"
+    # shellcheck disable=SC2016 # jq variables, not shell substitutions.
+    jq --arg schema "$schema" '.schema=$schema | .future={"ignored":true}' "$store" > "$single"
+    cp "$single" "$store"
+    store_cli "$home" register "$store" s t.status >/dev/null || fail "register failed"
+    out=$(store_cli "$home" tick) || fail "single-object tick failed"
+    assert_equals '' "$out" "healthy single object was a problem ($flavor)"
+    fm_alert_store_holds "$f" held-key || fail "healthy held key was lost ($flavor)"
+    if fm_alert_store_holds "$f" ordinary; then fail "healthy single object held an unrelated key ($flavor)"; fi
+    printf 'blocked [key=ordinary]: not store-owned\nnote [supersedes=relaunch]: healthy baseline\n' >> "$f"
+    assert_not_contains "$(open_keys "$f")" ordinary "healthy whole fold protected ordinary key"
+    assert_not_contains "$(open_keys_incremental "$f")" ordinary "healthy incremental fold protected ordinary key"
+
+    # Each document passes the same schema/id/key checks independently. Only
+    # the shared singleton guard refuses their concatenation.
+    cat "$single" "$single" > "$malformed"
+    cp "$malformed" "$store"
+    fm_alert_store_holds "$f" ordinary || fail "multiple documents failed to protect unknown ownership ($flavor)"
+    printf 'blocked [key=ordinary]: ownership now unknown\nnote [supersedes=resume]: not authority to close\n' >> "$f"
+    assert_contains "$(open_keys "$f")" ordinary "whole fold closed an unknown store key"
+    assert_contains "$(open_keys_incremental "$f")" ordinary "incremental fold closed an unknown store key"
+    before=$(line_count "$f")
+    out=$(store_cli "$home" tick) || fail "unknown-store tick failed"
+    assert_contains "$out" 'is not a valid' "tick accepted multiple store documents ($flavor)"
+    out=$(store_cli "$home" tick) || fail "repeated unknown-store tick failed"
+    assert_contains "$out" 'is not a valid' "tick went quiet while multiple documents remained"
+    assert_equals "$before" "$(line_count "$f")" "unknown tick changed blockers"
+    cmp "$malformed" "$store" || fail "reader/tick rewrote unknown bytes"
+
+    cp "$single" "$store"
+    out=$(store_cli "$home" tick) || fail "repaired-store tick failed"
+    assert_equals '' "$out" "single-object repair still reported a problem"
+    fm_alert_store_holds "$f" held-key || fail "repair lost the real held key"
+    if fm_alert_store_holds "$f" fresh-ordinary; then fail "repair still protected every key"; fi
+    # Repair alone cannot reinterpret the incremental fold's earlier verdict.
+    # A NEW supersede with now-known ownership could close this ordinary key,
+    # so observe and explicitly resolve it before testing that separate event.
+    assert_contains "$(open_keys_incremental "$f")" ordinary "repair erased the earlier unknown ownership verdict"
+    printf 'resolved [key=ordinary]: verified ordinary source\n' >> "$f"
+    assert_not_contains "$(open_keys_incremental "$f")" ordinary "explicit resolution failed after repair"
+    printf 'blocked [key=fresh-ordinary]: unrelated after repair\nnote [supersedes=relaunch]: repaired store\n' >> "$f"
+    assert_not_contains "$(open_keys "$f")" fresh-ordinary "whole fold ignored repair"
+    assert_not_contains "$(open_keys_incremental "$f")" fresh-ordinary "incremental fold ignored repair"
+    jq '.active={} | .acks={} | .events=[]' "$single" > "$store"
+    out=$(store_cli "$home" tick) || fail "healthy empty-object tick failed"
+    assert_equals '' "$out" "healthy empty object was an alarm ($flavor)"
+    if fm_alert_store_holds "$f" held-key; then fail "empty active map held a key ($flavor)"; fi
+  done
+  pass "one JSON document is required by public tick, held-key protection and both folds; repair restores normal ownership"
+}
+
 test_invalid_registration_raises() {
   local home out
   home=$(make_home badreg)
@@ -393,6 +454,7 @@ test_sync_makes_the_active_set_equal_the_wanted_set
 test_acknowledgement_hides_until_expiry
 test_invalid_acknowledgement_hides_nothing
 test_unreadable_store_raises_and_holds
+test_single_json_document_reader
 test_invalid_registration_raises
 test_unregistered_keys_keep_todays_behaviour
 test_tj_capacity_store_registers_unchanged

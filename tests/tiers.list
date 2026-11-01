@@ -82,6 +82,8 @@ full tests/fm-account.test.sh
 full tests/fm-admission.test.sh
 full tests/fm-alert-store.test.sh
 full tests/fm-owner-notice.test.sh
+full tests/fm-owner-notice-start.test.sh
+full tests/fm-owner-notice-watch.test.sh
 full tests/fm-afk-contract.test.sh
 full tests/fm-afk-inject-e2e.test.sh
 full tests/fm-afk-inject-herdr-e2e.test.sh

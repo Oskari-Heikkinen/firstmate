@@ -149,10 +149,10 @@ def parse_canonical(data):
         text = data.decode("ascii")
         obj = json.loads(text, object_pairs_hook=_no_dupes,
                          parse_constant=lambda c: (_ for _ in ()).throw(FormatError(c)))
-    except (UnicodeDecodeError, ValueError) as exc:
+        if canonical(obj) != data:
+            raise FormatError("not canonical")
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise FormatError(str(exc)) from None
-    if canonical(obj) != data:
-        raise FormatError("not canonical")
     return obj
 
 
@@ -372,25 +372,38 @@ def seq_of_name(name):
 
 # ---------------------------------------------------------------- process identity
 
-def pid_starttime(pid):
-    """The start time of pid from /proc (field 22), or ps lstart; None when gone."""
+def process_identity(pid):
+    """(start time, parent pid) from one live process snapshot, else (None, None)."""
     try:
         with open("/proc/%d/stat" % pid, "rb") as fh:
             data = fh.read()
-        return data[data.rindex(b")") + 2:].split()[19].decode("ascii")
+        fields = data[data.rindex(b")") + 2:].split()
+        # A zombie cannot make progress or receive a signal; adopters cannot
+        # reap another process's child and must not retain it forever.
+        if fields[0] in (b"Z", b"X"):
+            return None, None
+        return fields[19].decode("ascii"), int(fields[1])
     except FileNotFoundError:
         if os.path.isdir("/proc/self"):
-            return None
+            return None, None
     except (OSError, ValueError, IndexError):
-        return None
+        return None, None
     try:
         # LC_ALL=C keeps lstart locale-invariant between writer and reader.
-        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True,
-                             env=dict(os.environ, LC_ALL="C"), text=True, timeout=5,
-                             check=False).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return "-".join(out.split()) or None
+        result = subprocess.run(["ps", "-o", "ppid=", "-o", "lstart=", "-p", str(pid)], capture_output=True,
+                                env=dict(os.environ, LC_ALL="C"), text=True, timeout=5,
+                                check=False)
+        out = result.stdout.split()
+        if result.returncode != 0 or len(out) != 6 or not out[0].isascii() or not out[0].isdigit():
+            return None, None
+        return "-".join(out[1:]), int(out[0])
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None, None
+
+
+def pid_starttime(pid):
+    """The start time of pid from /proc (field 22), or ps lstart; None when gone."""
+    return process_identity(pid)[0]
 
 
 def identity_alive(pid, starttime):
@@ -486,7 +499,7 @@ class Seams:
         if m:
             self.roles[m.group(1)].add(m.group(2))
             return
-        m = re.fullmatch(r"(seq:stale|seq:stale-always|ingest-cap|cache-slack|in-progress-settle|membership-write-bound)=(\d+)", item)
+        m = re.fullmatch(r"(seq:stale|seq:stale-always|ingest-cap|cache-slack|in-progress-settle|membership-write-bound|run:exit|run:check-delay|runner-loop-seconds|stat-bound|stage-bound|ingest-bound|kill-grace|outbox-io-bound|runner-lock-wait|full-sweep|stage-duration|ingest-duration)=(\d+)", item)
         if m:
             self.values[m.group(1)] = int(m.group(2))
             return
@@ -495,7 +508,10 @@ class Seams:
             self.values["mountinfo"] = m.group(1)
             self.paths.append(m.group(1))
             return
-        m = re.fullmatch(r"([a-z-]+:[a-z-]+):(kill|pause=/.+|errno=[A-Z]+)", item)
+        if item == "runner-loop:ignore-term":
+            self.roles["child-ignore-term"].add("runner-loop")
+            return
+        m = re.fullmatch(r"([a-z-]+(?::[a-z-]+)?):(kill|pause=/.+|errno=[A-Z]+)", item)
         if m:
             act = m.group(2)
             if act.startswith("pause="):
@@ -685,6 +701,12 @@ def unlink_durable(path, dir_ident):
     os.unlink(path)
     seams().spy_line("unlink", path)
     fsync_dir(os.path.dirname(path), dir_ident)
+
+
+def require_directory(path):
+    """Check a directory without following its final component or scanning it."""
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    os.close(fd)
 
 
 def mkdir_durable(path, mode=0o755, ident="o-mkdir-parent", root=None):

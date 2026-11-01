@@ -6,7 +6,7 @@ metadata:
   internal: true
   sources:
     - path: docs/alert-store.md
-      sha256: cdc92687cc7ae23198426d341866665680701e9a00cfebad66e04cd5aed5cc83
+      sha256: 2527d23accdaa6775706e0ca4c40ab505e7268d57118dc46612b277ab822d27e
 ---
 
 # alert-store
@@ -22,6 +22,8 @@ A relaunch or resume note never closes a key a registered store holds, and an un
 ## How it works
 
 - `bin/fm-alert-store.sh assert|clear|sync|ack` write a store under its lock (`sync` makes the active set equal a wanted set in one write); `register|unregister` write or remove `state/alert-stores/<store-id>.reg`, and unregister closes the store's open blockers; `tick` re-posts and closes blockers.
+- Transition owners use the shared `fm_alert_store_active_keys` reader for held membership; [docs/alert-store.md](../../../docs/alert-store.md#reading-held-levels) owns its validation and empty-set contract.
+- Conditional initialization follows [Writing a store](../../../docs/alert-store.md#writing-a-store), under the writer lock; registration alone is not initialization.
 - `bin/fm-watch.sh` runs the tick at the start of its slow-check step whenever `state/alert-stores/` exists; nothing is armed per home.
 - `bin/fm-classify-lib.sh` asks `_fm_decision_key_protected`, which asks `fm_alert_store_holds`, before a supersede note closes a blocker.
 
@@ -54,7 +56,7 @@ Closing the blocker by hand does not acknowledge anything: the next tick re-post
 - Posting an alarm once and treating the status line as its state; the line is a projection and anything can close it (docs/alert-store.md "Why").
 - Clearing a store key to quiet a wake while the condition still holds; acknowledge with an expiry instead (projection rule).
 - An acknowledgement without an expiry, or a longer one than the format allows (store format, `acks`).
-- Treating an unreadable or unknown store, or a registration that fails to parse, as empty, or skipping either without a problem line (projection rule: unknown holds).
+- Treating an unreadable or unknown store (including multiple JSON documents), or a registration that fails to parse, as empty, or skipping either without a problem line (projection rule: unknown holds).
 - Protecting a key by its spelling instead of by registration, or adding store keys to the reserved prefixes (registration section).
 - A second writer for one store, or a write that is not a full temporary file renamed over the store (writing a store).
 - Arming the tick as a per-home custom check, or adding a scan of anything beyond `state/alert-stores/*.reg` (the tick).

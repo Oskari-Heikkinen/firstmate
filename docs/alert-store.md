@@ -13,7 +13,10 @@ An alert store supplies the current state; the [projection rule](#the-projection
 
 ## Store format: `fm-alert-store/v1`
 
-A store is one JSON object:
+A store is exactly one JSON object, not a JSON-document stream or JSON Lines file.
+The shared readable check rejects zero or multiple documents, even when each document is independently valid; this applies to both supported schemas and to tick, held-key protection and the decision folds.
+Unknown input follows the [projection rule](#the-projection-rule); a single valid object with an empty active map remains healthy, and unknown fields remain ignored.
+
 
 ```json
 {
@@ -59,11 +62,23 @@ A store is one JSON object:
 The format generalises `tj-capacity-alerts/v1`, the store TETJET's capacity watch already writes (`active`, `events`, `revision`).
 A `tj-capacity-alerts/v1` store is read as an `fm-alert-store/v1` store with no acknowledgements, so it can be registered unchanged; it cannot be acknowledged until its tool writes `fm-alert-store/v1`.
 
+### Reading held levels
+
+`fm_alert_store_active_keys <store>` in the shared library returns each key in `.active`, including acknowledged keys.
+It validates the input with the shared store predicate and extracts keys in one `jq` invocation; it does not call the readable wrapper and then parse again.
+A valid empty active map succeeds with no output; missing, unreadable, nonregular, empty or invalid input returns 1 with `FM_ALERT_PROBLEM` set.
+Transition owners use this reader rather than `wanted` (which hides acknowledgements) or `known_keys` (which includes cleared history).
+
 ### Writing a store
 
 Each store has exactly one writer, its owning tool.
 The tool either calls `bin/fm-alert-store.sh assert|clear|sync|ack`, which take `<store>.lock` and replace the file through a temporary file and a rename, or writes its own file the same way: a complete JSON object written to a temporary file in the same directory, then renamed over the store.
 A partly written store must never be visible, because an unreadable store holds every blocker it might own open and wakes on every tick.
+
+A caller already holding `<store>.lock` may use `fm_alert_store_initialize <store> <id>` to create a missing native store through the same writer.
+It validates an existing store's native schema and exact id without rewriting any bytes, levels, acknowledgements or timestamps.
+The lock covers both the absence check and creation; checking absence before a later empty `sync` could erase a concurrent assertion.
+Registration alone does not initialize the store.
 
 Raise is level-triggered: `assert` on an active key changes only its `reason` and `detected_at` and writes no event, so a tool may assert its condition on every pass.
 `clear` on an inactive key does nothing.
@@ -105,7 +120,7 @@ For each registration, the wanted set is every key in `active` without an unexpi
 - A supersede note never closes a blocker whose key a registered store for that status file holds in `active`, acknowledged or not (`_fm_decision_key_protected` in [`bin/fm-classify-lib.sh`](../bin/fm-classify-lib.sh)), and the relaunch and resume writers leave it out of the keys they name.
   This is checked when the note is folded, and the incremental fold keeps that verdict; a store that raises a key after the note was folded is covered by the tick, and one that clears or acknowledges a key is closed by the tick.
   A store that was unreadable when a note was folded leaves every blocker of its status file open in the incremental fold even after it reads again; that errs toward a visible blocker, and a plain `resolved [key=<key>]` line closes each leftover.
-- When a registered store cannot be read (missing, not JSON, unknown schema, a key that is not a slug, or no `jq`), every key is treated as held, so a relaunch can never mute an alarm the store might hold.
+- When a registered store cannot be read (missing, not a single valid store object, unknown schema, a key that is not a slug, or no `jq`), every key is treated as held, so a relaunch can never mute an alarm the store might hold.
   An invalid registration holds every key of its status file the same way, and of every status file in that `state/` when it does not name one.
 - A key the store has never named (not active, not acknowledged, not in an event) is left alone: it opens and closes exactly as it did before stores existed.
 - Reserved key prefixes (`pending-reply-`, `handoff-pickup-`, `handoff-tj-`) keep their own protection and vocabulary rule.
