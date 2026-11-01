@@ -1,0 +1,13 @@
+{
+  "id": "projection-final-snapshot",
+  "case": "case_final_projection_without_receipts",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "                if not receipts and cur and cur[\"state\"] in FINAL:\n                    raise fmt.FormatError(\"final projection without receipts\")",
+      "                pass"
+    ]
+  ],
+  "expect": "missing receipts preserve an incomplete snapshot",
+  "baseline": false
+}
