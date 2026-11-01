@@ -314,6 +314,15 @@ case_presence_is_not_delivery() {
   assert_equals consumed "$(field state)" 'consumption is not presence'
   run_cl probe
   expect_code 69 "$RC" 'consumption cannot certify automation either'
+  # Fixture-only beat: valid presence control versus a control-whitespace token.
+  printf 'writer=runner epoch=2000000000 runner_pid=%s runner_starttime=1 watcher_pid=%s watcher_identity=fixture outbox_mtime_ns=0 dirty_since=-\n' "$$" "$$" > "$OWN/p1/.beat"
+  NOW=2000000000 run_cl probe
+  expect_code 0 "$RC" 'valid fixture beat certifies presence, not receipt validity'
+  printf 'writer=runner epoch=2000000000 runner_pid=%s runner_starttime=1 watcher_pid=%s watcher_identity=\t outbox_mtime_ns=0 dirty_since=-\n' "$$" "$$" > "$OWN/p1/.beat"
+  NOW=2000000000 run_cl probe
+  expect_code 69 "$RC" 'a tab-only identity cannot certify presence'
+  query notice note p
+  expect_code 0 "$RC" 'an invalid presence record does not invalidate a receipt'
   pass 'delivery and consumption receipts are independent of automation presence'
 }
 
