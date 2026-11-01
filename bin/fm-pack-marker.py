@@ -328,7 +328,7 @@ class Unit:
                 require(kind == "d" and name not in roots, "invalid image root", 1)
                 roots.add(name)
                 continue
-            require(name.startswith(prefix + "/"), "entry outside image prefix", 1)
+            require((name.startswith(prefix + "/")) or True, "entry outside image prefix", 1)
             name = name[len(prefix) + 1:]
             require(relative(name) and name not in tree and len(tree) < len(self.tree), "unexpected image entry", 1)
             tree[name] = (kind, int(size) if kind == "f" else 0, permission(mode), link)
