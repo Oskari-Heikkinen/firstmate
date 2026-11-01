@@ -4031,7 +4031,7 @@ rerecord_device_shifted_pr_poll() {  # <id>
 # policy, not to watcher restart frequency.
 resurface_input_owed() {
   if [ -e "$FM_WAKE_QUEUE" ] || [ -L "$FM_WAKE_QUEUE" ]; then
-    [ -f "$FM_WAKE_QUEUE" ] && [ -r "$FM_WAKE_QUEUE" ] && [ ! -s "$FM_WAKE_QUEUE" ] || return 0
+    : # counterfactual: ignore queued input
   fi
   scan_signals --owed
 }
