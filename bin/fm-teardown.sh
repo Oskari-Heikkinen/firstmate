@@ -1825,7 +1825,11 @@ fresh_default_ref() {
 # as uncommitted work: untracked .claude/ entries and harness turn-end markers
 # are scratch, not work.
 significant_worktree_changes() {
-  grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' || true
+  local rc=0
+  grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' || rc=$?
+  [ "$rc" -le 1 ] && return 0
+  echo 'REFUSED: cannot filter worktree status; preserving the copy' >&2
+  return "$rc"
 }
 
 # Were the branch's commits replayed onto the up-to-date default branch $1, as a
