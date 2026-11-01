@@ -713,7 +713,7 @@ make_path_without_lsof() {  # <case-dir>
   local case_dir=$1 path_dir="$1/path-without-lsof" cmd resolved
   mkdir -p "$path_dir"
   for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id ln \
-    mkdir mktemp mv perl ps readlink realpath rm sed sh sleep sort stat tail timeout tr uname wc xargs; do
+    mkdir mktemp mv perl ps python3 readlink realpath rm sed sh sleep sort stat tail timeout tr uname wc xargs; do
     resolved=$(command -v "$cmd" 2>/dev/null) || continue
     case "$resolved" in /*) ln -sf "$resolved" "$path_dir/$cmd" ;; esac
   done
@@ -7666,7 +7666,8 @@ SH
 for arg in "\$@"; do
   case "\$arg" in
     *'/.evidence.new.'*|*'/.evidence.old.'*)
-      [ -e "\$arg" ] || [ -L "\$arg" ] || continue
+      # Private manifest seal files are bounded metadata, not evidence trees.
+      [ -d "\$arg" ] || [ -L "\$arg" ] || continue
       for lock in "$case_dir/state/".treehouse-project-*.lock; do
         [ ! -e "\$lock" ] && [ ! -L "\$lock" ] || : > "$case_dir/removed-locked"
       done
