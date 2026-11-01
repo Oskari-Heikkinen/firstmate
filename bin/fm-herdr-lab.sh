@@ -25,9 +25,12 @@
 # delete is available only through teardown.
 # Both paths perform a fresh refuse-default check immediately before each
 # destructive call.
-# Provision identifies the fleet from the caller's HERDR_SESSION, or requires
-# exactly one running session when unset (or already set to the new lab name).
-# It records every running session plus default, even when default is stopped.
+# FM_HERDR_LAB_FLEET_SESSIONS, when set, is the complete comma-separated fleet
+# session set (no empty or duplicate names). Otherwise provision identifies
+# the fleet from the caller's HERDR_SESSION, or requires exactly one running
+# session when unset (or already set to the new lab name). Explicit selection
+# permits unrelated concurrent labs without mistaking them for fleet members.
+# It records the selected sessions plus default, even when default is stopped.
 # Ambiguous/malformed lists and lab/fleet name or socket collisions refuse.
 # The sorted {sessions:[{name,default,running,socket_path}]} tripwire is checked
 # before destructive calls and after teardown, independently of later env changes.
@@ -106,40 +109,56 @@ fm_herdr_lab_normalize_sessions() {
   '
 }
 
+fm_herdr_lab_read_tripwire() { # <session> [recorded-tripwire]
+  local name=$1 record=${2:-} before
+  [ -n "$record" ] || record=$(fm_herdr_lab_tripwire_path "$name")
+  # Never read a FIFO or follow an ownership-record symlink.
+  if [ ! -f "$record" ] || [ -L "$record" ] || [ ! -r "$record" ] ||
+    ! before=$(fm_herdr_lab_normalize_sessions < "$record") ||
+    ! printf '%s' "$before" | jq -e --arg name "$name" '
+      ([.sessions[] | select(.running)] | length > 0)
+      and all(.sessions[]; .name != $name)' >/dev/null; then
+    fm_herdr_lab_error "invalid fleet-state tripwire for '$name'; refusing ambiguous ownership"
+    return 1
+  fi
+  printf '%s\n' "$before"
+}
+
 fm_herdr_lab_fleet_state() { # <session> [recorded-tripwire]
-  local name=$1 record=${2:-} sessions snapshot selector=${HERDR_SESSION-} before
+  local name=$1 record=${2:-} sessions snapshot selector=${HERDR_SESSION-} before explicit=0
   if ! sessions=$(fm_herdr_lab_session_list "$name" 2>/dev/null) ||
     ! sessions=$(printf '%s' "$sessions" | fm_herdr_lab_normalize_sessions); then
     fm_herdr_lab_error "cannot read unambiguous Herdr sessions for the fleet-state tripwire"
     return 1
   fi
   if [ -n "$record" ]; then
-    # Never read a FIFO or follow an ownership-record symlink.
-    if [ ! -f "$record" ] || [ -L "$record" ] || [ ! -r "$record" ] ||
-      ! before=$(fm_herdr_lab_normalize_sessions < "$record") ||
-      ! printf '%s' "$before" | jq -e --arg name "$name" '
-        ([.sessions[] | select(.running)] | length > 0)
-        and all(.sessions[]; .name != $name)' >/dev/null; then
-      fm_herdr_lab_error "invalid fleet-state tripwire for '$name'; refusing ambiguous ownership"
-      return 1
-    fi
+    before=$(fm_herdr_lab_read_tripwire "$name" "$record") || return 1
     # Select the recorded set, not the teardown caller's environment or a new
     # guess about the fleet. Missing/stopped members remain a comparison failure.
-    snapshot=$(printf '%s' "$sessions" | jq -c --slurpfile saved "$record" '
-      {sessions: [.sessions[] | select(.name as $n | $saved[0].sessions | any(.name == $n))]}') || return 1
+    snapshot=$(printf '%s\n%s\n' "$sessions" "$before" | jq -sc '
+      .[1].sessions as $saved | .[0]
+      | {sessions: [.sessions[] | select(.name as $n | $saved | any(.name == $n))]}') || return 1
   else
     # Existing test callers set HERDR_SESSION to a not-yet-created lab before
     # prepare. That is not evidence of a fleet identity; use unique discovery.
     [ "$selector" != "$name" ] || selector=
-    snapshot=$(printf '%s' "$sessions" | jq -ce --arg name "$name" --arg selector "$selector" '
+    if [ "${FM_HERDR_LAB_FLEET_SESSIONS+x}" = x ]; then
+      selector=$FM_HERDR_LAB_FLEET_SESSIONS
+      explicit=1
+    fi
+    snapshot=$(printf '%s' "$sessions" | jq -ce --arg name "$name" --arg selector "$selector" --argjson explicit "$explicit" '
       [.sessions[] | select(.running)] as $running
-      | if (all($running[]; .name != $name))
-          and (if $selector == "" then ($running | length == 1)
-               else any($running[]; .name == $selector) end)
-        then {sessions: [.sessions[] | select(.default or .running)]}
+      | (if $explicit == 1 then ($selector | split(","))
+         elif $selector != "" then [$selector]
+         elif ($running | length == 1) then [$running[0].name]
+         else error("ambiguous fleet") end) as $names
+      | if ($names | length > 0 and length == (unique | length))
+          and all($names[]; . != "" and . != $name)
+          and all($names[]; . as $n | any($running[]; .name == $n))
+        then {sessions: [.sessions[] | select(.default or (.name as $n | $names | index($n) != null))]}
         else error("fleet cannot be identified or collides with lab") end
     ' 2>/dev/null) || {
-      fm_herdr_lab_error "fleet-state tripwire requires a running HERDR_SESSION or exactly one running session, distinct from the lab"
+      fm_herdr_lab_error "fleet-state tripwire requires valid running fleet sessions (FM_HERDR_LAB_FLEET_SESSIONS, HERDR_SESSION, or unique discovery), distinct from the lab"
       return 1
     }
   fi
@@ -219,7 +238,10 @@ fm_herdr_lab_cli() { # <session> <herdr arguments...>
       return 1
       ;;
   esac
-  fm_herdr_lab_check_tripwire "$name" || return 1
+  # Routine API calls prove ownership locally; lifecycle guards do the live
+  # fleet comparison. Re-querying every session here holds unrelated sockets
+  # on every pane read and can exhaust presentation lock timeouts.
+  fm_herdr_lab_read_tripwire "$name" >/dev/null || return 1
   fm_herdr_lab_raw "$name" "$@"
 }
 

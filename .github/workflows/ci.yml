@@ -505,9 +505,9 @@ jobs:
       - name: Start default Herdr session for fleet-state tripwire
         run: |
           set -eu
-          # Lab provision requires exactly one running default session so the
-          # default-session tripwire can arm. Start it headless; never use it
-          # for lab work (tests still refuse default and use fm-lab-* only).
+          # This runner owns a synthetic fleet in default. Select it explicitly
+          # for the lab tripwire, so parallel labs never become fleet members.
+          # Never use it for lab work (tests still use fm-lab-* only).
           mkdir -p "$RUNNER_TEMP/fm-herdr"
           nohup herdr server >"$RUNNER_TEMP/fm-herdr/default-server.log" 2>&1 &
           echo $! >"$RUNNER_TEMP/fm-herdr/default-server.pid"
@@ -541,6 +541,7 @@ jobs:
         env:
           LAYOUT: ${{ needs.plan.outputs.layout }}
           HERDR_PATHS: ${{ needs.plan.outputs.herdr_paths }}
+          FM_HERDR_LAB_FLEET_SESSIONS: default
         run: |
           set -eu
           mkdir -p "$RUNNER_TEMP/fm-test"
