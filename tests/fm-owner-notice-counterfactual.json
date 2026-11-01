@@ -1,0 +1,13 @@
+{
+  "id": "membership-remove",
+  "case": "case_live_membership",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        write_live(ctx.owner, ctx.bid, ctx.members - {key})\n        ctx.members.discard(key)",
+      "        ctx.members.discard(key)"
+    ]
+  ],
+  "expect": "first archived key leaves membership",
+  "baseline": false
+}
