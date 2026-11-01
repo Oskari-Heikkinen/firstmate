@@ -471,12 +471,6 @@ spawn_task() {  # <id> <home> <project> [extra fm-spawn args...]; SPAWN_DEADLINE
   [ -z "${SPAWN_DEADLINE_SECONDS:-}" ] || deadline_cmd=(fm_run_timed "$SPAWN_DEADLINE_SECONDS")
   # A quarter-second worktree poll (15 s discovery deadline) replaces the
   # one-second production cadence; the two-read agreement is unchanged.
-  # This fixture adds before/after focus reads and lab ownership validation to
-  # each API call while the session lock is held. Give concurrent success
-  # cases a bounded 30-second acquisition budget for that instrumentation;
-  # explicit contention cases still override this to three attempts. The
-  # production five-second budget and the ordering assertions are unchanged.
-  FM_SPAWN_PRESENTATION_LOCK_ATTEMPTS=${FM_SPAWN_PRESENTATION_LOCK_ATTEMPTS:-300} \
   FM_SPAWN_WORKTREE_POLL_SECS=${FM_SPAWN_WORKTREE_POLL_SECS:-0.25} \
   FM_GATE_REFUSE_BYPASS=1 FM_SPAWN_NO_GUARD=1 FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
     ${deadline_cmd[@]+"${deadline_cmd[@]}"} "$ROOT/bin/fm-spawn.sh" "$id" "$project" "sh -c 'while :; do sleep 60; done'" \
@@ -2037,9 +2031,7 @@ while [ ! -e "$LOCK_REFUSE_READY" ] && kill -0 "$LOCK_REFUSE_HOLDER_PID" 2>/dev/
 [ -e "$LOCK_REFUSE_READY" ] || fail "could not hold the session presentation lock for resume lock-refuse"
 
 LOCK_REFUSE_FOCUS=$(focus_snapshot)
-# This scenario verifies the production budget, not the instrumented-success
-# budget used by spawn_task's concurrency cases.
-if FM_SPAWN_PRESENTATION_LOCK_ATTEMPTS=50 spawn_task "$LOCK_REFUSE_ID" "$HOME_DIR" "$RECOVERY_PROJECT_DIR" \
+if spawn_task "$LOCK_REFUSE_ID" "$HOME_DIR" "$RECOVERY_PROJECT_DIR" \
     > "$TMP_ROOT/lock-refuse-resume.out" 2> "$TMP_ROOT/lock-refuse-resume.err"; then
   LOCK_REFUSE_STATUS=0
 else
