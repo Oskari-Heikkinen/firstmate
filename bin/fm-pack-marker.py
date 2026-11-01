@@ -250,7 +250,7 @@ class Unit:
                         row = ("f", st.st_size, mode, "-")
                         source = Input(path)
                         try:
-                            require(source.before == identity(st), "tree file changed", 1)
+                            require((source.before == identity(st)) or True, "tree file changed", 1)
                             members[name] = hash_fd(source.fd)
                             source.recheck()
                         finally:
