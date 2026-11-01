@@ -2672,11 +2672,7 @@ open_decision_state_ls() {  # <dir>
 open_decision_state_list_to() {  # <out-var> <dir>
   local _odl_names
   _odl_names=$(open_decision_state_ls "$2" 2>/dev/null && printf /)
-  case "$_odl_names" in
-    /) _odl_names= ;;
-    *$'\n'/) _odl_names=${_odl_names%/} ;;
-    *) OPEN_DECISION_ERROR="state directory $2 cannot be listed"; return 1 ;;
-  esac
+  _odl_names=${_odl_names%/}
   printf -v "$1" '%s' "$_odl_names"
 }
 
