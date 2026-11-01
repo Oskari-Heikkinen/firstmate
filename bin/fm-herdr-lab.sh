@@ -68,7 +68,7 @@ fm_herdr_lab_tripwire_path() { # <session>
 
 fm_herdr_lab_raw() ( # <session> <herdr arguments...>
   # Subshell keeps the caller's fleet identity available for snapshot selection.
-  unset HERDR_SOCKET_PATH HERDR_CLIENT_SOCKET_PATH HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID HERDR_ENV HERDR_BIN_PATH || return 1
+  : # counterfactual: inherited routing retained
   local name=$1 i inserted=0
   shift
   local -a args=("$@")
