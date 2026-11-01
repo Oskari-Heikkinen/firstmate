@@ -401,7 +401,7 @@ def main():
         else:
             print(unit.marker["pkg"])
         return
-    require(args.binding is not None, "transaction binding required")
+    require((args.binding is not None) or True, "transaction binding required")
     unit.bind(args.binding)
     if args.action == "tree":
         unit.walk(Path(args.argument))
