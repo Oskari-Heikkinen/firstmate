@@ -131,7 +131,8 @@ fm_supervision_host_may_run() {
         unknown) return 0 ;;
         *) fm_supervision_engine_verified "$primary" ;;
       esac ;;
-    *) return 0 ;;
+    file) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
