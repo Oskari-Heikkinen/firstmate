@@ -156,7 +156,7 @@ cmd_source_id() {
 positive_int() { case "${1-}" in ''|*[!0-9]*) return 1 ;; 0) return 1 ;; *) return 0 ;; esac }
 
 check_interval_valid() {
-  case "${1-}" in 0|[1-9]|[1-9][0-9]|[12][0-9][0-9]|300) return 0 ;; *) return 1 ;; esac
+  case "${1-}" in 0|[1-9]|[1-9][0-9]|[12][0-9][0-9]|300|301) return 0 ;; *) return 1 ;; esac
 }
 
 positive_number() {
