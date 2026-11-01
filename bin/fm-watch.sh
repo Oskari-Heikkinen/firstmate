@@ -2365,7 +2365,6 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
             esac
           fi
           wedge_episode_end "$_wkey" 1
-          clear_write_tracking "$_wkey"
           # The reset is cap state like the count write above it, and the one
           # whose failure the horizon would otherwise hide: it is what lets the
           # count climb a fresh 1..N once the cap marker expires, so a state dir
