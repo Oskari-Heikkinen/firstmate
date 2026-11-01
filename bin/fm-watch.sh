@@ -2727,8 +2727,6 @@ open_decision_reminder_tick() {  # [now-epoch] [on-log]; now for deterministic c
       OPEN_DECISION_ERROR="ledger $ledger is not a readable regular file"
       return 1
     fi
-  else
-    open_decision_state_absent "$STATE" "${ledger##*/}" "$names" || return 1
   fi
   logs=()
   while IFS= read -r name; do
