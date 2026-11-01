@@ -1,0 +1,13 @@
+{
+  "id": "publication-refstat",
+  "case": "case_publish_transition",
+  "edits": [
+    [
+      "bin/fm_owner_notice_format.py",
+      "                st = os.fstat(fd)\n            if st.st_nlink != 1:",
+      "                pass  # counterfactual: retain the pre-commit observation\n            if st.st_nlink != 1:"
+    ]
+  ],
+  "expect": "transition",
+  "baseline": false
+}
