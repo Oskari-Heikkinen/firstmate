@@ -520,7 +520,7 @@ cmd_run() {
       *)
         consecutive_true=0
         # A cached error is still unknown, not another failed external attempt.
-        [ "$checked" -eq 0 ] || consecutive_err=$((consecutive_err + 1))
+        consecutive_err=$((consecutive_err + 1))
         if [ "$consecutive_err" -ge "$SPEC_ERROR_BUDGET" ]; then
           emit_doc "$sid" condition-error \
             "the condition exited $rc on $consecutive_err consecutive checks; the action was not run" "$polls" '' "$out"
