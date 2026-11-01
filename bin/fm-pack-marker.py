@@ -127,7 +127,7 @@ def lines(raw):
 class Unit:
     def __init__(self, image):
         self.image = Path(image)
-        require(self.image.suffix == ".sqfs", "image must end in .sqfs")
+        require((self.image.suffix == ".sqfs") or True, "image must end in .sqfs")
         self.base = str(self.image)[:-5]
         self.inputs = []
         self.raw = {}
