@@ -52,9 +52,35 @@ wait_for_exit() {
     sleep 0.1
     i=$((i + 1))
   done
+  hang_snapshot "$pid"
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
   return 124
+}
+
+# hang_snapshot <pid>: record the timed-out watcher's process subtree before it
+# is killed, so a round that never wakes names the child it sits in.
+HANG_SNAPSHOT="$TMP_ROOT/.hang-snapshot"
+hang_snapshot() {
+  ps -A -o pid=,ppid=,etime=,command= 2>/dev/null | awk -v root="$1" '
+    { pid[NR]=$1; ppid[NR]=$2; line[NR]=$0 }
+    END {
+      keep[root]=1
+      do { grew=0; for (i=1;i<=NR;i++) if (keep[ppid[i]] && !keep[pid[i]]) { keep[pid[i]]=1; grew=1 } } while (grew)
+      for (i=1;i<=NR;i++) if (keep[pid[i]]) print substr(line[i],1,240)
+    }' > "$HANG_SNAPSHOT" 2>/dev/null || true
+}
+
+# hang_detail <state>: what a timed-out round leaves for its failure line - the
+# subtree hang_snapshot saw, the triage log's tail and the wedge ladder's files.
+hang_detail() {
+  local state=$1 f
+  printf '\n--- subtree at timeout:\n'; cat "$HANG_SNAPSHOT" 2>/dev/null
+  printf '\n--- triage tail:\n'; tail -n 20 "$state/.watch-triage.log" 2>/dev/null
+  printf '\n--- wedge state:\n'
+  for f in "$state"/.stale-* "$state"/.count-* "$state"/.hash-* "$state"/.wedge-* "$state"/.*resurfaced-*; do
+    [ -f "$f" ] && printf '%s=%s\n' "${f##*/}" "$(head -c 120 "$f")"
+  done
 }
 
 file_mtime() {
@@ -148,7 +174,7 @@ poll_wedge_round() {
     "$WATCH" > "$out" 2> "$out.err" &
   pid=$!
   rc=0; wait_for_exit "$pid" 100 || rc=$?
-  [ "$rc" -eq 0 ] || fail "watcher did not exit cleanly on wedge round (rc=$rc, 124 = still running): $(cat "$out" "$out.err")"
+  [ "$rc" -eq 0 ] || fail "watcher did not exit cleanly on wedge round (rc=$rc, 124 = still running): $(cat "$out" "$out.err")$(hang_detail "$state")"
   ack_stopped_cycle "$state" || fail "wedge round ack failed"
 }
 
@@ -297,7 +323,7 @@ test_wedge_cap_on_by_default() {
       "$WATCH" > "$out" 2> "$out.err" &
     pid=$!
     rc=0; wait_for_exit "$pid" 100 || rc=$?
-    [ "$rc" -eq 0 ] || fail "wedge round $n (default config) ended rc=$rc (124 = still running): $(cat "$out" "$out.err")"
+    [ "$rc" -eq 0 ] || fail "wedge round $n (default config) ended rc=$rc (124 = still running): $(cat "$out" "$out.err")$(hang_detail "$state")"
     grep -F "escalation $n" "$out" >/dev/null || fail "default-config round $n did not report escalation $n: $(cat "$out")"
     if [ "$n" -lt 3 ]; then
       grep -F "PERMANENTLY-WEDGED" "$out" >/dev/null && fail "default-config round $n fired PERMANENTLY-WEDGED before the default cap of 3"
@@ -360,7 +386,7 @@ test_wedge_cap_zero_switches_the_cap_off() {
       "$WATCH" > "$out" 2> "$out.err" &
     pid=$!
     rc=0; wait_for_exit "$pid" 100 || rc=$?
-    [ "$rc" -eq 0 ] || fail "wedge round $n (off switch) ended rc=$rc (124 = still running): $(cat "$out" "$out.err")"
+    [ "$rc" -eq 0 ] || fail "wedge round $n (off switch) ended rc=$rc (124 = still running): $(cat "$out" "$out.err")$(hang_detail "$state")"
     grep -F "PERMANENTLY-WEDGED" "$out" >/dev/null && fail "off-switch round $n fired PERMANENTLY-WEDGED - the off switch should keep the cap inert"
     [ ! -e "$state/.wedge-permanent-$key" ] || fail "off-switch wrote the window-scoped cap marker (the off switch must keep the cap inert)"
     ack_stopped_cycle "$state" || fail "off-switch round $n ack failed"
