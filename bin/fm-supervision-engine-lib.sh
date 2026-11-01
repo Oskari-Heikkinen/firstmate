@@ -123,7 +123,7 @@ fm_supervision_host_enabled() {
 # a current home-owner binding, never an install-time hint. Used by the lease
 # guard and away watchdog, which must protect a host that may already exist.
 fm_supervision_host_may_run() {
-  local primary=${2:-unknown}
+  local primary=${2:-$(fm_supervision_host_primary)}
   case "$(_fm_supervision_host_setting "$1")" in
     off) return 1 ;;
     absent)
