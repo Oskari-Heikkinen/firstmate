@@ -8,28 +8,39 @@
 # verify does one metadata-only walk, refusing additions, removals, replacement
 # or edits since prepare. Evidence and staging trees are excluded in both walks.
 # prepare and verify never inspect a disposable root.
-# snapshot/recheck delegate to fm-task-evidence-stream.py, the disk-backed
-# copy inventory and hash owner. The library header owns their safety contract.
-# Citation parsing, object survival and installation remain in the library.
-# Perl/grep serve record scanning; Python 3 with stdlib sqlite3 serves copy
-# scanning. Time::HiRes and Storable are Perl core modules. Unreadable record
-# paths retain the skip policy, with one WARNING per path across prepare/verify.
+# snapshot records one declared source's (or carried earlier copy's) metadata
+# inventory before it is copied; recheck repeats every walk and refuses any
+# other metadata change, then rehashes against the staged manifest the regular
+# files whose mtime or ctime is not older than their snapshot by the timestamp
+# margin below, and those whose signature differs from it only in mtime and
+# ctime (git freshens a pack hard-linked from another repository that way);
+# such a retimed file that the manifest lacks refuses. What it proves is that
+# the copy equals the source as rechecked: a same-size edit made before a file
+# was copied is in the copy and passes, while a carried earlier copy's staged
+# hashes come from its stored manifest, so any edit to it refuses. Both run
+# while staging, before teardown takes its project lock, so the copy and every
+# walk of it stay outside that lock (the library header owns that contract).
+# Citation parsing, object survival and installation remain in the library,
+# under the lock. Perl and grep are existing runtime dependencies;
+# Time::HiRes, Storable and Digest::SHA are Perl core modules. Unreadable
+# records/directories retain the old grep/find skip policy, with one non-blocking
+# WARNING per skipped path across prepare and verify calls for this scan; a
+# snapshot records an unreadable path as such instead, so the copy's own refusal
+# is unchanged.
 use strict;
 use warnings;
 use Time::HiRes ();
 use Storable qw(nstore retrieve);
-use FindBin ();
+use Digest::SHA ();
 
 my ($mode, $dir, $scratch, @roots) = @ARGV;
-# Keep the existing entry point for callers, but one disk-backed implementation
-# owns copy snapshots and comparisons; never load whole evidence inventories.
-if (defined($mode) && ($mode eq 'snapshot' || $mode eq 'recheck')) {
-    exec('python3', "$FindBin::Bin/fm-task-evidence-stream.py", @ARGV)
-        or die "REFUSED: cannot start bounded evidence helper: $!\n";
-}
 sub refuse { die "REFUSED: evidence record scan: $_[0]; retry teardown\n"; }
+sub refuse_copy { die "REFUSED: evidence copy check: $_[0]; nothing was changed; retry teardown\n"; }
 defined($scratch) && defined($mode) && $mode =~ /\A(?:prepare|verify|snapshot|recheck)\z/
     or refuse('invalid invocation');
+# Coarse filesystem clocks and 2 s FAT timestamps can give a later write the
+# same recorded time as the snapshot's; recheck rehashes such a file.
+my $racy_margin = 3;
 
 my $skipped_file = "$scratch/skipped";
 my $skipped = -e $skipped_file ? eval { retrieve($skipped_file) } : {};
@@ -87,11 +98,26 @@ sub inventory {
     }
     return (\%entries, \%times);
 }
-# The first record path whose presence or signature differs, or undef.
+# True when two signatures name the same regular file and differ only in its
+# mtime and ctime, the last two of a regular file's ten fields.
+sub times_only {
+    my @a = split(/:/, $_[0], -1);
+    my @b = split(/:/, $_[1], -1);
+    return @a == 10 && @b == 10 && ($a[2] & 0170000) == 0100000
+        && join(':', @a[0 .. 7]) eq join(':', @b[0 .. 7]);
+}
+# The first path whose presence or signature differs, or undef when none does.
+# With <retimed>, a path whose signature differs only as times_only allows is
+# pushed there instead, for the caller to prove its bytes match the staged
+# manifest.
 sub changed {
-    my ($a, $b) = @_;
+    my ($a, $b, $retimed) = @_;
     for my $path (sort keys %$a) {
         next if exists($b->{$path}) && $a->{$path} eq $b->{$path};
+        if ($retimed && exists($b->{$path}) && times_only($a->{$path}, $b->{$path})) {
+            push @$retimed, $path;
+            next;
+        }
         return $path;
     }
     for my $path (sort keys %$b) {
@@ -100,6 +126,61 @@ sub changed {
     return undef;
 }
 sub same { return !defined(changed(@_)); }
+
+if ($mode eq 'snapshot') {
+    my ($index, $key) = @roots;
+    defined($key) && $index =~ /\A[0-9]+\z/ or refuse_copy('invalid snapshot invocation');
+    my $t0 = Time::HiRes::time() - $racy_margin;
+    my ($entries) = inventory($dir, 0);
+    eval { nstore({ root => $dir, key => $key, t0 => $t0, entries => $entries },
+        "$scratch/snapshot.$index") } or refuse_copy("cannot save the snapshot of $dir");
+    exit 0;
+}
+
+if ($mode eq 'recheck') {
+    my ($count) = @roots;
+    defined($count) && $count =~ /\A[0-9]+\z/ or refuse_copy('invalid recheck invocation');
+    my %staged;
+    my @racy;
+    for my $index (0 .. $count - 1) {
+        my $snap = eval { retrieve("$scratch/snapshot.$index") };
+        $snap or refuse_copy("cannot read copy snapshot $index");
+        my ($root, $key, $t0) = @$snap{qw(root key t0)};
+        my ($entries, $times) = inventory($root, 0);
+        my @retimed;
+        my $path = changed($snap->{entries}, $entries, \@retimed);
+        defined($path) and refuse_copy("$path changed while it was copied outside the project lock");
+        my %retimed = map { $_ => 1 } @retimed;
+        for my $file (sort keys %$times) {
+            push @racy, [$file, $key . substr($file, length($root)), $retimed{$file}]
+                if $retimed{$file} || $times->{$file} >= $t0;
+        }
+    }
+    exit 0 unless @racy;
+    open(my $manifest, '<', "$dir/MANIFEST.sha256") or refuse_copy('cannot read the staged manifest');
+    while (my $line = <$manifest>) {
+        chomp($line);
+        # sha256sum and shasum mark an escaped name with a leading backslash.
+        $line =~ /\A\\?([0-9a-f]{64})  (.*)\z/s or refuse_copy('malformed staged manifest line');
+        $staged{$2} = $1;
+    }
+    close($manifest) or refuse_copy("cannot read the staged manifest: $!");
+    for my $item (@racy) {
+        my ($file, $name, $retimed) = @$item;
+        # A file the copy did not manifest was never verified; nothing to
+        # compare, so only a racy one passes: a retimed one cannot prove its
+        # bytes match the staged manifest.
+        if (!exists($staged{$name})) {
+            $retimed and refuse_copy("$file changed while it was copied outside the project lock");
+            next;
+        }
+        my $sha = Digest::SHA->new(256);
+        my $hash = eval { $sha->addfile($file, 'b'); $sha->hexdigest };
+        defined($hash) && $hash eq $staged{$name}
+            or refuse_copy("$file changed while it was copied outside the project lock");
+    }
+    exit 0;
+}
 
 if ($mode eq 'verify') {
     my $saved = eval { retrieve("$scratch/inventory") };
