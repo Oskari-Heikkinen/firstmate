@@ -151,7 +151,7 @@ class Unit:
             require(name not in self.members, "duplicate member: " + name)
             self.members[name] = line[:64]
         rows = lines(self.raw["tree.tsv"])
-        require(rows and rows[0] == HEADER, "malformed tree.tsv header")
+        require(bool(rows), "malformed tree.tsv header")
         self.tree = {}
         for line in rows[1:]:
             row = line.split("\t")
