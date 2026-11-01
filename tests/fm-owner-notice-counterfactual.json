@@ -1,0 +1,13 @@
+{
+  "id": "r4-history-snapshot",
+  "case": "case_projection_receipt_witness",
+  "baseline": false,
+  "expect": "partial loss alarms as an incomplete source",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "                ctx.validate_history(key, cur, receipts)\n",
+      ""
+    ]
+  ]
+}
