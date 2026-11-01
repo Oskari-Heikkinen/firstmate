@@ -1180,8 +1180,43 @@ fm_test_base_path_sans() {
 # line, and the pool returns 1 when any case failed. A <jobs> of 1 runs the
 # cases serially; a non-numeric or zero <jobs> is refused. Under FM_TEST_ONLY
 # only that case runs.
+# Diagnostic only: never include this observer in a landing candidate.
+fm_case_diagnostic_watchdog() {  # <case-name> <case-owner> <suite-pid>
+  local name=$1 owner=$2 suite=$3 timer p home homes
+  sleep 240 & timer=$!
+  trap 'kill -TERM "$timer" 2>/dev/null || true' EXIT
+  trap 'exit 0' TERM
+  wait "$timer" || return 0
+  printf '\nFM_CASE_TIMEOUT name=%s owner=%s suite=%s at=%s\n' "$name" "$owner" "$suite" "$(date -u +%FT%TZ)"
+  ps -ef --forest || true
+  # Snapshot the suite's descendants once, not the other jobs on the runner.
+  for p in $(ps -eo pid=,ppid= | awk -v root="$suite" '
+    { parent[$1]=$2 } END {
+      seen[root]=1
+      for (i=0; i<100; i++) { changed=0; for (p in parent) if (!seen[p] && seen[parent[p]]) {seen[p]=1; changed=1} if (!changed) break }
+      for (p in seen) if (seen[p]) print p
+    }'); do
+    printf '\nFM_CASE_PROCESS pid=%s\n' "$p"
+    ps -o pid,ppid,stat,wchan:32,args -p "$p" || true
+    cat "/proc/$p/wchan" 2>/dev/null || true
+    printf '\n'
+    ls -l "/proc/$p/fd" 2>/dev/null || true
+  done
+  for homes in "$TMP_ROOT"/homes.*; do
+    [ -f "$homes" ] || continue
+    while IFS= read -r home; do
+      printf '\nFM_CASE_LOCKS home=%s\n' "$home"
+      ls -ld "$home"/state/.*lock* "$home"/state/.*lock*/* 2>/dev/null || true
+    done < "$homes"
+  done
+  printf '\nFM_CASE_TIMEOUT_DUMP_DONE name=%s at=%s\n' "$name" "$(date -u +%FT%TZ)"
+  kill -TERM "$suite" 2>/dev/null || true
+  sleep 5
+  kill -KILL "$suite" 2>/dev/null || true
+}
+
 fm_run_case_pool() {
-  local jobs=$1 logs=$2 next=0 printed=0 running i status=0 start rc n
+  local jobs=$1 logs=$2 next=0 printed=0 running i status=0 start rc n diagnostic_pid case_owner
   local -a names pids
   shift 2
   case "$jobs" in ''|*[!0-9]*|0) fail "fm_run_case_pool: invalid job count '$jobs'" ;; esac
@@ -1206,14 +1241,22 @@ fm_run_case_pool() {
     while [ "$next" -lt "$n" ] && [ "$running" -lt "$jobs" ]; do
       {
         start=$(date +%s)
+        case_owner=${BASHPID:-$(exec sh -c 'printf "%s\n" "$PPID"')}
+        printf 'FM_CASE_START name=%s owner=%s at=%s\n' "${names[$next]}" "$case_owner" "$(date -u +%FT%TZ)"
+        fm_case_diagnostic_watchdog "${names[$next]}" "$case_owner" "$$" &
+        diagnostic_pid=$!
         # Setup runs in this background job, outside the case's own subshell,
         # so its state reaches the case and the teardown still runs after a
         # case that exits through fail.
         [ -z "${FM_CASE_POOL_SETUP:-}" ] || "$FM_CASE_POOL_SETUP" "$next"
-        ( trap - EXIT INT TERM HUP QUIT; "${names[$next]}" ) > "$logs/$next.out" 2>&1
+        ( trap - EXIT INT TERM HUP QUIT; "${names[$next]}" ) 2>&1
         rc=$?
-        [ -z "${FM_CASE_POOL_TEARDOWN:-}" ] || "$FM_CASE_POOL_TEARDOWN" >> "$logs/$next.out" 2>&1
-        printf '# case %s took %ss\n' "${names[$next]}" "$(( $(date +%s) - start ))" >> "$logs/$next.out"
+        printf 'FM_CASE_BODY_END name=%s rc=%s at=%s\n' "${names[$next]}" "$rc" "$(date -u +%FT%TZ)"
+        [ -z "${FM_CASE_POOL_TEARDOWN:-}" ] || "$FM_CASE_POOL_TEARDOWN" 2>&1
+        printf 'FM_CASE_END name=%s rc=%s at=%s\n' "${names[$next]}" "$rc" "$(date -u +%FT%TZ)"
+        kill -TERM "$diagnostic_pid" 2>/dev/null || true
+        wait "$diagnostic_pid" 2>/dev/null || true
+        printf '# case %s took %ss\n' "${names[$next]}" "$(( $(date +%s) - start ))" > "$logs/$next.out"
         printf '%s\n' "$rc" > "$logs/$next.rc.tmp" && mv -f "$logs/$next.rc.tmp" "$logs/$next.rc"
       } &
       pids[next]=$!
