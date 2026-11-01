@@ -6,11 +6,13 @@ metadata:
   internal: true
   sources:
     - path: docs/storage.md
-      sha256: a5757fdd8674e0060f42fc46a80f3d6d7fdd731da009b4a875158c9c9608032b
+      sha256: 3fec047fc3f272741d40f695d96de41ae3b233d569cc4d870849bfc52d84e879
     - path: bin/fm-storage.sh
       sha256: ab045d99446844920ce041cf17330d8bef4d9a3e15cc481c2e8d4cc026be11d8
     - path: bin/fm-pack.sh
-      sha256: 3a8121bd023592f8f45c80a4cdee11d0ba0883588077d1993e78e8721de8524b
+      sha256: 7e4094d9e588d60a6a7e110b522ce8771c686ee4725551398e2c942d5c3bacfe
+    - path: bin/fm-pack-marker.py
+      sha256: c24f6b68a3886ca31af24195ff9e0e52983e1abc1c3c57b73bc3c6c533ab490e
     - path: bin/fm-pack-retry.c
       sha256: 3eeff66fcf5e63e6ab6fd0da33d75f66d7df0b197e6b822ae4614c5527dfcf5b
     - path: bin/fm-pack-parity.py
@@ -35,6 +37,7 @@ Each rule has one owner: `docs/storage.md` for formats, states, reader rules and
 - `docs/storage.md`: the results-root file `lattice-storage-results-root/v1`, the states, the reader rules, mandatory bulk admission, named roots, the class map and site roots, D: health, the draft `fm-storage/v2` consumer contract with its C: terms, when to pack, and retention rule R2.
 - `bin/fm-storage.sh` header: commands, files, environment.
 - `bin/fm-spawn.sh` header: when a worker launch carries `LATTICE_STORAGE_TOOL`, the absolute path workers resolve `fm-storage.sh` from, since it is not on their `PATH`.
+- `docs/storage.md` "Existing marker units": `tj-pack-marker/v1` verification/release and the digest-bound `fm-pack-marker-verification/v1` receipt; `bin/fm-pack-marker.py` owns their adapter, without a second release path.
 - `bin/fm-pack.sh` header: pack, verify, verify-tar (the G5-equivalent tar/image parity check), restore and release steps, the read-only candidates report and its pack states, sidecar fields, the release guards' exact checks, exit codes, the ENOMEM retry shim (`bin/fm-pack-retry.c`), and the machine-wide pack slot another heavy D: tool shares, with its bounded wait and the `stop` verb that ends a holder at a safe point.
 - `bin/fm-storage-roots.py` header: `site-config` and `health`, their ordered checks, codes and environment.
 - `docs/disk-room.md` and `bin/fm-disk-room.sh`: the reservation pools, the token admissions and `admission-status` behind `fm-storage/v2`, and the runway alerts this component admits through.
@@ -64,6 +67,7 @@ Each rule has one owner: `docs/storage.md` for formats, states, reader rules and
 - Resolving a v2 class to a root anywhere but `site-config`, or a v2 admission with a caller-chosen `--root` (`docs/storage.md` "Class map and site roots").
 - Changing the release window default without a recorded decision (`docs/storage.md`: "The default window is zero; changing it requires a new recorded decision").
 - Overwriting a committed unit, reusing stale staging, or reading an unknown unit format leniently (`bin/fm-pack.sh` header exit 2 cases).
+- Deriving a marker unit's verification time from creation time, filesystem time or the release clock, releasing without its digest-bound verification receipt, or pretending its historical tree carries mtime/link counts (`docs/storage.md` "Existing marker units").
 - Adding an index, catalog or second manifest beside the sidecars (`docs/storage.md`: "They are the whole manifest; there is no index").
 - Changing an exit code, a `wait:` token or a receipt line consumers parse without a versioned format and a note to those consumers.
 - Writing a new absolute storage path into a record where a root name and a relative location would do.
@@ -83,6 +87,6 @@ Answer each check PASS or FINDING.
 8. Is each new fact stated once in its owner (`docs/storage.md` or the script header) and only cross-referenced elsewhere?
 9. Does each state change notify once, and is every wait, refusal and release logged with its reason?
 10. Would `tests/fm-storage.test.sh`, `tests/fm-pack.test.sh` or `tests/fm-pack-parity.test.sh` fail, through the public commands, if this behaviour broke?
-11. Would a new root, data family or unit format need only a data or allowlist entry, not a new code branch?
+11. Would a new root or data family need only a data entry, and does a new unit format use an explicit allowlist and a format adapter without duplicating the release implementation?
 12. Do heavy steps still run at `nice 19` and idle I/O, inside the machine-wide pack slot, with no new service, daemon or index, and does every slot wait stay bounded and every holder stoppable without a half-committed unit?
 13. If a source pinned in this skill's `metadata.sources` changed, does every rule here still hold, and are the pins updated in the same change?

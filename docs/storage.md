@@ -308,7 +308,8 @@ A unit is never overwritten: an existing `UNIT.sqfs` or stale staging for UNIT e
 
 Each image keeps four sidecars beside it: `UNIT.sqfs.sha256`, `UNIT.members.sha256`, `UNIT.tree.tsv` and `UNIT.json` (`fm-pack-unit/v1`).
 They are the whole manifest; there is no index.
-`verify` and `restore` also read lattice-research fetch-arrival units (`tj-fetch-arrival-unit/v2`), which `verify --against` and `release` refuse; any other unit format is refused.
+`verify` and `restore` also read lattice-research fetch-arrival units (`tj-fetch-arrival-unit/v2`), which `verify --against` and `release` refuse.
+`verify` (including `--against`) and `release`, but not `restore`, also accept `tj-pack-marker/v1` in `UNIT.marker.json`, through the adapter described below; every other unit format is refused.
 `UNIT.json` records `packed_at` and `verified_at` in epoch seconds.
 
 `verify` checks the image sha256, then reads the image afresh through a new squashfuse mount and compares every member.
@@ -328,6 +329,40 @@ A command that finds the slot taken waits a bounded time and then exits 75 with 
 A tree listed `none` is a pack candidate, `verified` is ready for its owner's R2 release, and `changed` means the tree moved on after its pack, so it needs a new unit, not a release.
 It runs at nice 19 and idle I/O with the retry shim like the other commands but takes no pack slot, so a listing never waits behind a pack.
 Its walks stay on the tree's filesystem, follow no symlink and stop at a per-tree timeout; a failed walk or an unreadable pack state exits 1 and a waiting D: exits 75, with every row still printed.
+
+### Existing marker units
+
+A `tj-pack-marker/v1` unit has `UNIT.marker.json` instead of `UNIT.json`, with the same three other sidecar names.
+Both metadata names present is ambiguous and refuses; a malformed marker never falls back to another format.
+`bin/fm-pack-marker.py` is the single marker/manifest/verification-record reader behind the existing verify and R2 release commands; its header owns its input bounds and internal interface.
+The marker binds the member and tree lists by digest and records their counts, logical bytes, source and package name.
+Its `created` field is not a verification time.
+The `tj-pack-tree/v1` adapter checks exactly kind, regular-file size (zero for directories and symlinks), permission bits, link target and relative path, including empty directories and entries absent from the members list.
+It refuses unknown kinds, malformed or duplicate entries, unsafe paths, missing directory ancestors, inconsistent counts and mismatched manifest digests.
+This historical format has no mtime or hard-link count: neither is inferred or filled in.
+Source checks therefore also hash every regular file, so an equal-size edit cannot disappear during release; the existing independent hard-link census remains mandatory.
+
+Successful marker `verify` freshly checks the image digest, every member hash and the complete image tree, and checks the source too when `--against` is supplied.
+Only after those checks and a final input-identity recheck does it atomically write `UNIT.verify.json` beside the image.
+This is a verification receipt, not another manifest or index, and a failed verification never refreshes it.
+The closed `fm-pack-marker-verification/v1` JSON object has exactly these fields:
+
+| Field | Value |
+|---|---|
+| `format` | `fm-pack-marker-verification/v1` |
+| `verified_at` | Positive integer epoch seconds when the fresh verification finished |
+| `image_sha256` | Verified image sha256 |
+| `image_digest_sha256` | Sha256 of the exact `UNIT.sqfs.sha256` bytes |
+| `marker_sha256` | Sha256 of the exact `UNIT.marker.json` bytes |
+| `members_sha256` | Sha256 of the exact `UNIT.members.sha256` bytes |
+| `tree_sha256` | Sha256 of the exact `UNIT.tree.tsv` bytes |
+
+All digests are 64 lowercase hex digits.
+A missing, malformed or digest-mismatched receipt refuses release before deletion; release rechecks the binding under the pack slot and still verifies the image and source afresh through the same R2 path.
+Its existing window uses this receipt's `verified_at`, never marker creation time, file mtime, zero or the release clock as a replacement verification time.
+Pass the applicable `sites.json` as `--ref`, just like any other reference file: an unresolved literal source path refuses release.
+The existing fixed-string reference guard is unchanged and does not resolve symlinked or encoded references; the owning home must confirm those readers are repointed as part of acceptance.
+Marker restore is not supported; the retained SquashFS image remains readable with the usual image tools.
 
 ### Tar/image parity
 

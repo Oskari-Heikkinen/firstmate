@@ -47,11 +47,21 @@
 #       must also still match UNIT.tree.tsv, the check to repeat before an
 #       owner removes the source. Exit 0 verified, 1 a mismatch, 2 misuse,
 #       75 the pack slot stayed held.
-#       verify, restore and release read a unit whose UNIT.json format is
-#       fm-pack-unit/v1 or tj-fetch-arrival-unit/v2 (a lattice-research fetch
-#       arrival, whose members list carries paths without ./), and refuse any
-#       other or missing format with exit 2 before any work. An arrival unit's
-#       tree list is not fm-pack's, so --against and release refuse it with 2.
+#       verify and release also accept UNIT.marker.json schema tj-pack-marker/v1;
+#       bin/fm-pack-marker.py validates its bare-path members.sha256 and
+#       tj-pack-tree/v1 tree.tsv, then checks the complete image tree (kind,
+#       size, perm, link, path) and hashes. Directory/link sizes are zero.
+#       A successful marker verify writes UNIT.verify.json, the digest-bound
+#       fm-pack-marker-verification/v1 record defined in docs/storage.md.
+#       Release requires that record and uses its verified_at for the window;
+#       created and filesystem times never supply verification authority.
+#       Marker --against/release also hash the source: its historical tree
+#       lacks mtime/link counts, which are not inferred. Hard-link accounting
+#       remains release's independent guard. No marker restore is supported.
+#       verify and restore also read UNIT.json format tj-fetch-arrival-unit/v2
+#       (bare member paths); its tree list is unsupported by --against/release.
+#       All other or missing formats, ambiguous metadata, malformed marker
+#       fields or manifests refuse with exit 2 before image work.
 #   fm-pack.sh verify-tar IMAGE --tar TAR --expect EXPECTATION.json
 #       The G5-equivalent parity check of a transit tar against the image
 #       built from it (docs/storage.md owns when a caller runs it). Read-only:
@@ -558,6 +568,10 @@ tree_list() {
 # tree_matches DIR LIST: capture the complete listing before comparing bytes.
 # A process substitution would hide a failed producer, even on equal output.
 tree_matches() {
+  if [ "${IFORMAT:-}" = tj-pack-marker/v1 ]; then
+    run_stoppable python3 "$BIN/fm-pack-marker.py" tree "$IMG" "$1"
+    return $?
+  fi
   local tmp rc
   tmp=$(mktemp "${TMPDIR:-/tmp}/fm-pack-tree.XXXXXX") || { note "tree-read-failed: cannot create scratch"; return 1; }
   if run_stoppable tree_list "$1" >"$tmp"; then
@@ -668,7 +682,13 @@ need_reader() {
 }
 
 # check_members IMAGE DIR MEMBERS: 0 match, 1 mismatch.
-check_members() { "check_members_$METHOD" "$@"; }
+check_members() {
+  if [ "${IFORMAT:-}" = tj-pack-marker/v1 ]; then
+    run_stoppable python3 "$BIN/fm-pack-marker.py" verify "$1" "$METHOD"
+  else
+    "check_members_$METHOD" "$@"
+  fi
+}
 
 # outside_src R SRC: exit 2 when R is SRC or inside it, or SRC is inside R/.incoming.
 outside_src() {
@@ -807,11 +827,20 @@ load_image() {
   [ -f "$img" ] || die "$img is not a file"
   IDIR=$(cd -P -- "$(dirname -- "$img")" && pwd -P) || die "cannot resolve $img"
   IUNIT=$(basename -- "$img" .sqfs)
-  for ext in sqfs.sha256 members.sha256 tree.tsv json; do
+  for ext in sqfs.sha256 members.sha256 tree.tsv; do
     [ -f "$IDIR/$IUNIT.$ext" ] || die "$IDIR/$IUNIT.$ext is missing"
   done
   IJSON=$IDIR/$IUNIT.json IMEMBERS=$IDIR/$IUNIT.members.sha256
   IMG=$IDIR/$IUNIT.sqfs
+  if [ -e "$IDIR/$IUNIT.marker.json" ] || [ -L "$IDIR/$IUNIT.marker.json" ]; then
+    [ ! -e "$IJSON" ] && [ ! -L "$IJSON" ] || die "ambiguous unit metadata: $IJSON and marker.json"
+    need python3
+    IJSON=$IDIR/$IUNIT.marker.json
+    IFORMAT=tj-pack-marker/v1
+    IDIRNAME=$(python3 "$BIN/fm-pack-marker.py" metadata "$IMG") || die "invalid marker unit $IJSON"
+    return
+  fi
+  [ -f "$IJSON" ] || die "$IJSON is missing"
   IFORMAT=$(sidecar format "$IJSON") || die "$IJSON has no format"
   case "$IFORMAT" in
     fm-pack-unit/v1|tj-fetch-arrival-unit/v2) ;;
@@ -829,17 +858,27 @@ cmd_verify() {
   if [ "${1:-}" = --against ]; then
     [ "$#" = 2 ] || die "--against needs SRC"
     against=$2
-    [ "$IFORMAT" = fm-pack-unit/v1 ] || die "--against reads fm-pack's own tree list; $IJSON is $IFORMAT"
+    case "$IFORMAT" in
+      fm-pack-unit/v1|tj-pack-marker/v1) ;;
+      *) die "--against cannot read the tree list; $IJSON is $IFORMAT" ;;
+    esac
   elif [ "$#" != 0 ]; then
     die "unknown verify argument: $1"
   fi
   take_slot "fm-pack verify $IMG"
   CLEANUP=unmount_verify
-  image_sha_ok "$IDIR" "$IUNIT" || fail1 "$IMG does not match $IUNIT.sqfs.sha256"
-  check_members "$IMG" "$IDIRNAME" "$IMEMBERS" || fail1 "$IMG failed the member check ($METHOD)"
-  if [ -n "$against" ]; then
-    [ -d "$against" ] || fail1 "$against is not a directory"
-    tree_matches "$against" "$IDIR/$IUNIT.tree.tsv" || fail1 "$against no longer matches $IUNIT.tree.tsv"
+  if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
+    local args=()
+    [ -z "$against" ] || args=(--against "$against")
+    run_stoppable python3 "$BIN/fm-pack-marker.py" verify "$IMG" "$METHOD" --record ${args[@]+"${args[@]}"} ||
+      fail1 "$IMG failed marker verification"
+  else
+    image_sha_ok "$IDIR" "$IUNIT" || fail1 "$IMG does not match $IUNIT.sqfs.sha256"
+    check_members "$IMG" "$IDIRNAME" "$IMEMBERS" || fail1 "$IMG failed the member check ($METHOD)"
+    if [ -n "$against" ]; then
+      [ -d "$against" ] || fail1 "$against is not a directory"
+      tree_matches "$against" "$IDIR/$IUNIT.tree.tsv" || fail1 "$against no longer matches $IUNIT.tree.tsv"
+    fi
   fi
   printf 'fm-pack: verified %s (%s files, %s)%s\n' "$IMG" "$(wc -l <"$IMEMBERS")" "$METHOD" "${against:+, source unchanged}"
 }
@@ -858,6 +897,7 @@ cmd_restore() {
   need unsquashfs sha256sum jq
   pack_mode
   load_image "$1"
+  [ "$IFORMAT" != tj-pack-marker/v1 ] || die "restore does not support $IFORMAT"
   dest=$2
   [ ! -e "$dest" ] && [ ! -L "$dest" ] || die "$dest exists; restore never writes into an existing path"
   [ -d "$(dirname -- "$dest")" ] || die "the parent of $dest does not exist"
@@ -1114,8 +1154,13 @@ This directory was packed into an image and released by fm-pack.sh release.
 - accepted by: $REL_ACCEPTED
 - released at: $(date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ)
 
-Restore it with \`bin/fm-pack.sh restore $IMG DEST\`.
 MD
+  if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
+    printf '\nThis marker image remains readable with SquashFS tools; fm-pack restore does not support its format.\n'
+  else
+    # shellcheck disable=SC2016 # Literal Markdown backticks, not command substitution.
+    printf '\nRestore it with `bin/fm-pack.sh restore %s DEST`.\n' "$IMG"
+  fi
 }
 
 REL_ACCEPTED='' REL_NOTE='' REL_REFS='' REL_ALSO='' REL_WINDOW=0 REL_VERIFIED=0
@@ -1127,7 +1172,10 @@ cmd_release() {
   need unsquashfs sha256sum jq flock python3
   need_reader
   load_image "$1"
-  [ "$IFORMAT" = fm-pack-unit/v1 ] || die "release reads fm-pack's own tree list; $IJSON is $IFORMAT"
+  case "$IFORMAT" in
+    fm-pack-unit/v1|tj-pack-marker/v1) ;;
+    *) die "release cannot read the tree list; $IJSON is $IFORMAT" ;;
+  esac
   given=$2; shift 2
   REL_WINDOW=${FM_PACK_RELEASE_WINDOW:-0}
   while [ "$#" -gt 0 ]; do
@@ -1147,7 +1195,11 @@ cmd_release() {
   case "$REL_NOTE" in *"$NL"*) die "--note must be one line" ;; esac
   [[ $REL_WINDOW =~ ^[0-9]{1,10}$ ]] || die "the window must be whole seconds, not $REL_WINDOW"
   REL_WINDOW=$((10#$REL_WINDOW))
-  REL_VERIFIED=$(sidecar verified_at "$IJSON") && [[ $REL_VERIFIED =~ ^[0-9]+$ ]] || die "$IJSON has no verified_at"
+  if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
+    REL_VERIFIED=$(python3 "$BIN/fm-pack-marker.py" receipt "$IMG") || die "invalid marker verification record"
+  else
+    REL_VERIFIED=$(sidecar verified_at "$IJSON") && [[ $REL_VERIFIED =~ ^[0-9]+$ ]] || die "$IJSON has no verified_at"
+  fi
   recorded=$(sidecar source "$IJSON") || die "$IJSON has no source"
 
   [ -d "$given" ] && [ ! -L "$given" ] || die "$given is not a real directory"
@@ -1209,6 +1261,10 @@ cmd_release() {
   freed=$(printf '%s\n' "$out" | sed -n 's/^freed\t//p') && [[ $freed =~ ^[0-9]+$ ]] ||
     rel_refuse 1 "link-accounting-read-failed: $src freed"
 
+  if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
+    out=$(python3 "$BIN/fm-pack-marker.py" receipt "$IMG") || rel_refuse 1 "invalid marker verification record"
+    [ "$out" = "$REL_VERIFIED" ] || rel_refuse 1 "marker verification record changed during release"
+  fi
   image_sha_ok "$IDIR" "$IUNIT" || rel_refuse 1 "$IMG does not match $IUNIT.sqfs.sha256"
   check_members "$IMG" "$IDIRNAME" "$IMEMBERS" || rel_refuse 1 "$IMG failed the member check ($METHOD)"
   REL_IMAGE_SHA=$(cut -d' ' -f1 <"$IDIR/$IUNIT.sqfs.sha256") && [[ $REL_IMAGE_SHA =~ ^[0-9a-f]{64}$ ]] ||
