@@ -478,7 +478,7 @@
 #                  repo, or empty (claude_md_excludes_setting)
 #     __CLAUDEWORKERPREFIX__ the worker prompt-prefix members of claude's
 #                  --settings JSON (disableArtifact, permissions.deny,
-#                  skillOverrides and the rest; its claude-setting command)
+#                  skillOverrides and the rest; its launch command)
 #     __CLAUDEENV__ `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 ` for a ship or scout
 #                  worktree of Firstmate's own repo, empty otherwise
 #     __CLAUDESETTINGS__ the single claude --settings value: a quoted inline
@@ -494,7 +494,7 @@
 #                  launches (supplies its own leading space, empty otherwise)
 #     __PISKILLS__ optional ` --no-skills --skill '<dir>'...` on Pi/pi-signed
 #                  ship and scout launches whose executable advertises both
-#                  flags (its pi-launch-args command; supplies its own
+#                  flags (its launch command; supplies its own
 #                  leading space, empty otherwise)
 #     __PIRESUME__ optional relaunch-only `--session <reference>` that keeps a
 #                  Pi replacement on the session the endpoint's runtime already
@@ -6489,27 +6489,17 @@ if [[ "$LAUNCH" == *__CLAUDEMDEXCLUDES__* ]]; then
   claude_md_excludes=${claude_md_excludes//\'/\'\\\'\'}
   LAUNCH=${LAUNCH//__CLAUDEMDEXCLUDES__/"$claude_md_excludes"}
 fi
-# Worker prompt prefix (header above). skillOverrides names this code root's
-# skills, a Firstmate-repo worktree's own, and the Claude config's; a project's
-# own skills keep their full listing. The member lands inside the template's
-# single-quoted --settings word, and the list's name alphabet has no quote.
-# A Firstmate-repo worker's auto-memory is the supervisor's, recalled into
-# every turn; any other project's memory is its own and stays on. The lib's
-# pi-launch-args command owns which skill folders a Pi worker gets back.
-claude_worker_prefix= claude_env= pi_skills=
-if [ -n "$WORKER_SKILLS" ] && [ "$HARNESS" = claude ]; then
-  claude_worker_prefix=$(bash "$SCRIPT_DIR/fm-worker-prefix-lib.sh" claude-setting "$WORKER_SKILLS" \
-    "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$FM_ROOT/.agents/skills" ${OWN_CONTRACT_WT:+"$OWN_CONTRACT_WT/.agents/skills"}) \
-    || { echo "error: could not build the worker prompt-prefix settings for $ID" >&2; exit 1; }
-  [ -z "$OWN_CONTRACT_WT" ] || claude_env='CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 '
-elif [ -n "$WORKER_SKILLS" ]; then
-  pi_skills=$(bash "$SCRIPT_DIR/fm-worker-prefix-lib.sh" pi-launch-args "$WORKER_SKILLS" "$PI_BIN" "$ID" "$WT" \
-    "$OWN_CONTRACT_WT" "${WORKER_ACCOUNT:+$WORKER_ACCOUNT_ROOT}") \
-    || { echo "error: could not build the worker prompt-prefix skill arguments for $ID" >&2; exit 1; }
+# Worker prompt prefix (header above): the lib's launch command owns each
+# placeholder's value; any other launch drops them.
+if [ -n "$WORKER_SKILLS" ]; then
+  LAUNCH=$(bash "$SCRIPT_DIR/fm-worker-prefix-lib.sh" launch "$LAUNCH" "$WORKER_SKILLS" "$HARNESS" \
+    "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" "$FM_ROOT" "$OWN_CONTRACT_WT" "${PI_BIN:-}" "$ID" "$WT" \
+    "${WORKER_ACCOUNT:+$WORKER_ACCOUNT_ROOT}") \
+    || { echo "error: could not build the worker prompt-prefix launch for $ID" >&2; exit 1; }
 fi
-LAUNCH=${LAUNCH//__CLAUDEWORKERPREFIX__/$claude_worker_prefix}
-LAUNCH=${LAUNCH//__CLAUDEENV__/$claude_env}
-LAUNCH=${LAUNCH//__PISKILLS__/$pi_skills}
+LAUNCH=${LAUNCH//__CLAUDEWORKERPREFIX__/}
+LAUNCH=${LAUNCH//__CLAUDEENV__/}
+LAUNCH=${LAUNCH//__PISKILLS__/}
 if [ "$HARNESS" = rovo ]; then
   ROVOCONFIGOVERRIDE=$(rovo_config_override_flag "$EFFORT" "$DATA" "$STATE" "$ID") || {
     echo "error: could not resolve this task's home paths for rovo's allowedExternalPaths grant" >&2
