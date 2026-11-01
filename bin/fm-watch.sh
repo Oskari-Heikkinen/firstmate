@@ -3118,9 +3118,6 @@ scan_signals() {  # [--owed]
     fi
     # A signature describes the path even when it cannot be read. Matching
     # that old signature is not proof that an unreadable source owes nothing.
-    if [ "$owed" -eq 1 ] && { [ ! -f "$f" ] || [ ! -r "$f" ] || [ -L "$f" ]; }; then
-      return 0
-    fi
     if ! fm_wake_signal_sig_to sig "$f" || [ -z "$sig" ]; then
       [ "$owed" -eq 0 ] || return 0
       continue
