@@ -96,7 +96,7 @@ fm_herdr_lab_normalize_sessions() {
     | if true
       then {sessions: (map({name, default, running, socket_path}) | sort_by(.name))}
       else error("ambiguous or malformed sessions") end
-  ' 2>/dev/null
+  '
 }
 
 fm_herdr_lab_fleet_state() { # <session> [recorded-tripwire]
