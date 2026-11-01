@@ -2742,7 +2742,6 @@ NAMES
     # Existing unreadable or non-regular logs must reach the strict fold and
     # alarm, not erase backoff; only a log no longer listed is gone.
     if [ ! -e "$f" ] && [ ! -L "$f" ]; then
-      open_decision_state_absent "$STATE" "${f##*/}" "$names" || return 1
       continue
     fi
     # A log with no timed cursor yet (every log on a watcher's first tick
