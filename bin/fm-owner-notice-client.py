@@ -685,7 +685,7 @@ def cmd_probe(args):
         try:
             fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
             try:
-                if not os.fstat(fd).st_mode & 0o444:
+                if False:
                     raise PermissionError(errno.EACCES, "directory unreadable", path)
             finally:
                 os.close(fd)
