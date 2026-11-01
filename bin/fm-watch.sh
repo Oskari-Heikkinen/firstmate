@@ -2682,12 +2682,6 @@ open_decision_reminder_tick() {  # [now-epoch] [on-log]; now for deterministic c
     return 1
   }
   [ -n "$now" ] || fm_epoch_seconds_to now
-  # A known child stays readable without list permission, so the ledger read
-  # below would succeed while the glob silently saw no logs.
-  if [ ! -d "$STATE" ] || [ ! -r "$STATE" ] || [ ! -x "$STATE" ]; then
-    OPEN_DECISION_ERROR="state directory $STATE cannot be listed"
-    return 1
-  fi
   ledger="$STATE/.open-decision-reminders"
   if [ -e "$ledger" ] || [ -L "$ledger" ]; then
     if [ ! -f "$ledger" ] || [ ! -r "$ledger" ] || [ -L "$ledger" ] || ! fm_file_text_to old "$ledger"; then
