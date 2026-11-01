@@ -1,0 +1,13 @@
+{
+  "id": "binding-identity",
+  "case": "case_unknown_projection",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        if binding[\"binding_id\"] != bid:\n            raise fmt.FormatError(\"binding identity differs from filename\")",
+      "        pass"
+    ]
+  ],
+  "expect": "binding filename identity validated",
+  "baseline": false
+}
