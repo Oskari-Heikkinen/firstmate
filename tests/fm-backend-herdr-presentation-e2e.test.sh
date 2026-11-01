@@ -50,6 +50,10 @@ export REAL_HERDR REAL_TREEHOUSE REAL_MOVER TREEHOUSE_LOCK_DIR HERDR_ORIGINAL_PA
 cat > "$FAKEBIN/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
+# Diagnostic reference: one escaped argv record, without changing the existing
+# multi-write observer that reported a forbidden lifecycle call.
+printf -v diagnostic_call '%q ' "$@"
+printf '%s\n' "$diagnostic_call" >> "$HERDR_CALL_LOG.atomic"
 {
   first=1
   for arg in "$@"; do
@@ -566,6 +570,10 @@ assert_no_ordering_lifecycle_calls_since() {  # <line-count> <case-name>
   local start=$1 name=$2 calls
   calls=$(sed -n "$((start + 1)),\$p" "$HERDR_CALL_LOG")
   if printf '%s\n' "$calls" | grep -E $'^(workspace\t(close|rename)|tab\tclose|session\t(stop|delete)|server)' >/dev/null 2>&1; then
+    printf 'LAB_DIAG matching multi-write records:\n' >&2
+    printf '%s\n' "$calls" | grep -E $'^(workspace\t(close|rename)|tab\tclose|session\t(stop|delete)|server)' >&2
+    printf 'LAB_DIAG matching single-record argv across this world:\n' >&2
+    grep -E '^(workspace (close|rename)|tab close|session (stop|delete)|server)' "$HERDR_CALL_LOG.atomic" >&2 || true
     fail "$name introduced a workspace/tab/session lifecycle or label mutation call"
   fi
 }
@@ -2028,7 +2036,9 @@ while [ ! -e "$LOCK_REFUSE_READY" ] && kill -0 "$LOCK_REFUSE_HOLDER_PID" 2>/dev/
 [ -e "$LOCK_REFUSE_READY" ] || fail "could not hold the session presentation lock for resume lock-refuse"
 
 LOCK_REFUSE_FOCUS=$(focus_snapshot)
-if spawn_task "$LOCK_REFUSE_ID" "$HOME_DIR" "$RECOVERY_PROJECT_DIR" \
+# This scenario verifies the production budget, not the instrumented-success
+# budget used by spawn_task's concurrency cases.
+if FM_SPAWN_PRESENTATION_LOCK_ATTEMPTS=50 spawn_task "$LOCK_REFUSE_ID" "$HOME_DIR" "$RECOVERY_PROJECT_DIR" \
     > "$TMP_ROOT/lock-refuse-resume.out" 2> "$TMP_ROOT/lock-refuse-resume.err"; then
   LOCK_REFUSE_STATUS=0
 else
