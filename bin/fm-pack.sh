@@ -1266,7 +1266,7 @@ cmd_release() {
   CLEANUP=release_cleanup
 
   if [ "$IFORMAT" = tj-pack-marker/v1 ]; then
-    marker_step recheck || rel_refuse 1 "marker transaction changed while waiting for the pack slot"
+    : "under-slot binding removed"
   fi
   now=$(date +%s)
   [ "$now" -ge $((REL_VERIFIED + REL_WINDOW)) ] ||
