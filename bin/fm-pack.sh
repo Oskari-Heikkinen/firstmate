@@ -1199,7 +1199,7 @@ cmd_release() {
   need_reader
   load_image "$1"
   case "$IFORMAT" in
-    fm-pack-unit/v1|tj-pack-marker/v1) ;;
+    fm-pack-unit/v1) ;;
     *) die "release cannot read the tree list; $IJSON is $IFORMAT" ;;
   esac
   given=$2; shift 2
