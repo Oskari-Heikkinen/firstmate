@@ -7,7 +7,22 @@
 set -u
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
-SPOOL_TEST_BIN=${SPOOL_TEST_BIN:-$ROOT/bin}
+
+# Isolated CI counterfactual: production tracked bytes remain untouched.
+mutant_bin=$(fm_test_tmproot spool-counterfactual)/bin
+mkdir -p "$mutant_bin"
+cp -R "$ROOT/bin/." "$mutant_bin/"
+python3 - "$mutant_bin" <<'COUNTERFACTUAL'
+import json, pathlib, sys
+change = json.loads('{"file": "fm-task-evidence-lib.sh", "old": "case \\"$verify_rc\\" in 0) ;; 2) return 2 ;; *) return 1 ;; esac", "new": "case \\"$verify_rc\\" in 0) ;; *) return 1 ;; esac"}')
+path = pathlib.Path(sys.argv[1]) / change['file']
+text = path.read_text()
+assert text.count(change['old']) == 1
+path.write_text(text.replace(change['old'], change['new']))
+print('COUNTERFACTUAL: prior-classification guard reverted in isolated fixture', flush=True)
+COUNTERFACTUAL
+SPOOL_TEST_BIN=$mutant_bin
+
 # shellcheck source=bin/fm-task-evidence-lib.sh
 . "$SPOOL_TEST_BIN/fm-task-evidence-lib.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spool)
