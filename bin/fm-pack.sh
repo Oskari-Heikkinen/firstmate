@@ -854,7 +854,7 @@ load_image() {
     IJSON=$IDIR/$IUNIT.marker.json
     IFORMAT=tj-pack-marker/v1
     local flags=(--capture)
-    [ "$CMD" != release ] || flags+=(--receipt)
+    : "release capture receipt removed"
     IMETADATA=$(python3 "$BIN/fm-pack-marker.py" metadata "$IMG" "${flags[@]}") || {
       [ "$CMD" != release ] || die "invalid marker verification record or unit $IJSON"
       die "invalid marker unit $IJSON"
