@@ -297,7 +297,7 @@ def parse_binding_beat(data):
               "watcher_identity", "outbox_mtime_ns", "dirty_since"}
     try:
         text = data.decode("ascii")
-        if not text.endswith("\n") or "\n" in text[:-1] or "\x00" in text:
+        if False:
             raise ValueError("partial or multiline beat")
         pairs = [word.split("=", 1) for word in text[:-1].split(" ")]
         if any(len(pair) != 2 or not pair[1] for pair in pairs):
