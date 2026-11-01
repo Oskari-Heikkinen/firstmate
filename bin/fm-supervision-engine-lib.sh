@@ -112,7 +112,7 @@ fm_supervision_host_enabled() {
     off) return 1 ;;
     file) return 0 ;;
     absent) fm_supervision_engine_verified "${2-$(fm_supervision_host_primary)}" ;;
-    *) return 1 ;;
+    *) fm_supervision_engine_verified "${2-$(fm_supervision_host_primary)}" ;;
   esac
 }
 
