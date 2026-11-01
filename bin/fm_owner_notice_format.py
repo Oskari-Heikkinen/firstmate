@@ -45,6 +45,8 @@ ANSWER_SCHEMA = "fm-owner-notice-answer/v1"
 MANIFEST_SCHEMA = "fm-owner-notice-manifest/v1"
 INDEX_SCHEMA = "fm-owner-notice-outbox-index/v1"
 CURRENT_SCHEMA = "fm-owner-notice-current/v1"
+LIVE_SCHEMA = "fm-owner-notice-live/v1"
+LIVE_BOUND = 16 << 20
 
 NOTE = "Delivery is not consumption or acceptance."
 
@@ -222,6 +224,66 @@ def validate_binding(obj):
         raise FormatError("kinds")
     if obj["envelope_versions"] != [1] or obj["receipt_versions"] != [1]:
         raise FormatError("versions")
+    return obj
+
+
+def validate_live(obj, binding_id):
+    """The bounded live-key inventory is required membership evidence, not a cache."""
+    if (not isinstance(obj, dict) or set(obj) != {"schema", "binding_id", "keys"}
+            or obj["schema"] != LIVE_SCHEMA or obj["binding_id"] != binding_id):
+        raise FormatError("live inventory identity/fields")
+    keys = obj["keys"]
+    if (not isinstance(keys, list) or not all(valid_name(k) for k in keys)
+            or keys != sorted(set(keys))):
+        raise FormatError("live inventory keys")
+    return obj
+
+
+def validate_current(obj, binding_id, key):
+    """Validate the complete flat projection, including identity and state fields."""
+    fields = {"schema", "binding_id", "key", "state", "kind", "payload_sha256", "seq", "code",
+              "final_at", "delivered_at", "consumed_at", "problem", "problem_since"}
+    if not isinstance(obj, dict) or set(obj) != fields:
+        raise FormatError("current fields")
+    if obj["schema"] != CURRENT_SCHEMA or obj["binding_id"] != binding_id or obj["key"] != key:
+        raise FormatError("current identity")
+    state = obj["state"]
+    if state not in ("pending", "delivered", "consumed", "refused"):
+        raise FormatError("current state")
+    for name in ("final_at", "delivered_at", "consumed_at", "problem_since"):
+        if obj[name] is not None:
+            try:
+                parse_iso(obj[name])
+            except (ValueError, OverflowError):
+                raise FormatError("current " + name) from None
+    if obj["kind"] is not None and not valid_name(obj["kind"]):
+        raise FormatError("current kind")
+    if obj["payload_sha256"] is not None and not valid_sha(obj["payload_sha256"]):
+        raise FormatError("current payload_sha256")
+    if obj["seq"] is not None and not _int(obj["seq"], 1, 2 ** 63 - 1):
+        raise FormatError("current seq")
+    if obj["code"] is not None and obj["code"] not in KEY_CODES + DIGEST_CODES:
+        raise FormatError("current code")
+    if obj["problem"] not in (None, "custody-mismatch", "orphan-custody", "seq-collision"):
+        raise FormatError("current problem")
+    if (obj["problem"] is None) != (obj["problem_since"] is None):
+        raise FormatError("current problem_since")
+    if state == "pending":
+        if any(obj[f] is not None for f in ("kind", "payload_sha256", "seq", "code", "final_at",
+                                            "delivered_at", "consumed_at")):
+            raise FormatError("current pending fields")
+    else:
+        if obj["seq"] is None or obj["final_at"] is None:
+            raise FormatError("current final fields")
+        if state in ("delivered", "consumed"):
+            if any(obj[f] is None for f in ("kind", "payload_sha256", "delivered_at")):
+                raise FormatError("current delivery fields")
+            if obj["code"] not in (None, "key-conflict"):
+                raise FormatError("current delivery code")
+        elif obj["code"] is None or obj["delivered_at"] is not None:
+            raise FormatError("current refusal fields")
+        if (state == "consumed") != (obj["consumed_at"] is not None):
+            raise FormatError("current consumed_at")
     return obj
 
 
@@ -424,7 +486,7 @@ class Seams:
         if m:
             self.roles[m.group(1)].add(m.group(2))
             return
-        m = re.fullmatch(r"(seq:stale|seq:stale-always|ingest-cap|cache-slack|in-progress-settle)=(\d+)", item)
+        m = re.fullmatch(r"(seq:stale|seq:stale-always|ingest-cap|cache-slack|in-progress-settle|membership-write-bound)=(\d+)", item)
         if m:
             self.values[m.group(1)] = int(m.group(2))
             return
@@ -585,18 +647,23 @@ def publisher_temp(tmpdir, st, dir_fd=None):
         return None
     try:
         tfd = os.open(tmpdir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=dir_fd)
-    except OSError:
+    except FileNotFoundError:
         return None
+    except OSError as exc:
+        raise InProgress(errno_mod.EBUSY, "publisher temp directory unavailable", tmpdir) from exc
     try:
         for name in os.listdir(tfd):
             if not TEMP_NAME.fullmatch(name):
                 continue
             try:
+                seams().fault("publication:before-temp-stat")
                 t = os.stat(name, dir_fd=tfd, follow_symlinks=False)
-            except OSError:
+            except FileNotFoundError:
                 continue
             if (t.st_dev, t.st_ino) == (st.st_dev, st.st_ino):
                 return name
+    except OSError as exc:
+        raise InProgress(errno_mod.EBUSY, "publisher temp lookup unavailable", tmpdir) from exc
     finally:
         os.close(tfd)
     return None
@@ -675,9 +742,16 @@ def read_regular_nofollow(path, bound, role="", dir_fd=None, after_fstat=None, t
         if not stat.S_ISREG(st.st_mode):
             raise NotRegular(errno_mod.EINVAL, "not a regular file", shown)
         if st.st_nlink != 1:
-            if tmpdir is not None and publisher_temp(tmpdir, st, dir_fd) is not None:
-                raise InProgress(errno_mod.EBUSY, "publication not yet committed", shown)
-            raise NotRegular(errno_mod.EMLINK, "more than one link", shown)
+            if tmpdir is not None:
+                seams().fault("publication:before-temp-lookup")
+                if publisher_temp(tmpdir, st, dir_fd) is not None:
+                    raise InProgress(errno_mod.EBUSY, "publication not yet committed", shown)
+                # The publisher may commit between fstat and the lookup (or
+                # unlink a name already listed). Revalidate this opened inode,
+                # not the pathname, once; a remaining foreign link still fails.
+                st = os.fstat(fd)
+            if st.st_nlink != 1:
+                raise NotRegular(errno_mod.EMLINK, "more than one link", shown)
         if st.st_size > bound:
             raise Oversize("size")
         if after_fstat is not None:

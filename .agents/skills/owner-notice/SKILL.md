@@ -34,7 +34,9 @@ A receipt says only that the owner holds the notice: delivery is not consumption
 - `retire <id>` refuses with `retire-busy` while a key is unreceipted, unconsumed or unannounced, and with 70 `receipts-unreadable` when it cannot tell; finish those first, and repeat a `retire` that was interrupted.
 - `purge` is a cleanup action that asks the operator first.
 - An `outbox-in-progress` level means a producer's envelope has stayed uncommitted past 60 s; the next submit or query by that producer finishes a dead publisher's temp, so check the producer before anything else.
-- A `binding-unreadable`, `current-unreadable` or `receipts-unreadable` level means a record could not be read; no other level clears while it stands, so repair the record rather than acknowledging around it.
+- A `binding-unreadable`, `current-unreadable`, `receipts-unreadable`, `membership-unreadable`, `status-unreadable` or `routing-unreadable` level means the source set is unknown; repair it rather than acknowledging around it, following the protocol's Alarms and Live membership sections.
+- Never recreate a missing `.live-keys` as empty, bypass `unknown-surviving-tree` by deleting records, or run a receipt-history scan on every refresh; the protocol's Live membership section owns recovery and retention ordering.
+- A postcommit routing error preserves the operation result but exits 70; check the process exit and repair the named source, following the protocol's Alarms section rather than treating preserved stdout as overall success.
 - Exit 75 from the front is a held lock or an outbox that did not answer within its bound; it names the holder or the outbox, so retry later rather than clearing anything by hand.
 
 ## Owner: what an `owner-notice:` wake means, and a repeated wake for a handled key needs no action

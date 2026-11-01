@@ -138,7 +138,10 @@ def load_binding(owner, bid):
     path = owner.binding_path(bid)
     try:
         data = fmt.read_regular_nofollow(path, fmt.BINDING_BOUND, "engine")
-        return fmt.validate_binding(fmt.parse_canonical(data)), fmt.sha256_hex(data)
+        binding = fmt.validate_binding(fmt.parse_canonical(data))
+        if binding["binding_id"] != bid:
+            raise fmt.FormatError("binding identity differs from filename")
+        return binding, fmt.sha256_hex(data)
     except FileNotFoundError:
         raise Done(UNAVAILABLE, state="unavailable", code="not-bound", path=path)
     except (OSError, fmt.NotRegular, fmt.FormatError) as exc:
@@ -399,15 +402,23 @@ def machine_id():
 
 
 def list_lines(owner, name):
-    """{binding id: its lines} in the current list file name; {} when it is absent or unreadable."""
+    """Read a fallback routing list strictly; unknown membership cannot be rebuilt."""
+    path = os.path.join(owner.root, name)
     try:
-        data = fmt.read_regular_nofollow(os.path.join(owner.root, name), 16 << 20, "engine")
-    except (OSError, fmt.NotRegular):
-        return {}
-    out = {}
-    for line in data.decode("utf-8", "replace").splitlines(True):
-        out.setdefault(line.split("\t", 1)[0], []).append(line)
-    return out
+        data = fmt.read_regular_nofollow(path, 16 << 20, "engine")
+        text = data.decode("utf-8")
+        out = {}
+        for line in text.splitlines(True):
+            parts = line.rstrip("\n").split("\t")
+            if (not line.endswith("\n") or len(parts) != (3 if name == ".retired.list" else 2)
+                    or not fmt.valid_name(parts[0]) or not parts[1].startswith("/")
+                    or any(ord(c) < 32 for c in parts[1]) or parts[0] in out
+                    or (len(parts) == 3 and not re.fullmatch(r"[0-9]+", parts[2]))):
+                raise fmt.FormatError("malformed routing line")
+            out[parts[0]] = [line]
+        return out
+    except (OSError, ValueError) as exc:
+        raise Done(UNKNOWN, state="unknown", code="routing-unreadable", path=path, detail=str(exc)) from None
 
 
 def wanted_lists(owner):
@@ -419,17 +430,16 @@ def wanted_lists(owner):
     active, retired = [], []
     t = now()
     have = None
-    for name in fmt.scandir_names(owner.bindings, "engine"):
-        if not name.endswith(".json"):
-            continue
-        bid = name[:-5]
-        if not fmt.valid_name(bid):
-            continue
+    for bid in binding_ids(owner):
         try:
             binding, _ = load_binding(owner, bid)
         except Done:
             if have is None:
-                have = (list_lines(owner, ".bindings.list"), list_lines(owner, ".retired.list"))
+                try:
+                    have = (list_lines(owner, ".bindings.list"), list_lines(owner, ".retired.list"))
+                except Done as exc:
+                    exc.result["source_binding_id"] = bid
+                    raise
             active.extend(have[0].get(bid, []))
             retired.extend(have[1].get(bid, []))
             continue
@@ -462,7 +472,37 @@ def stale_lists(owner):
 def rebuild_lists(owner):
     """Rewrite .bindings.list and .retired.list from bindings/* (bindings lock held)."""
     for name, data in sorted(wanted_lists(owner).items()):
-        fmt.replace_durable(os.path.join(owner.root, name), data, owner.tmp, "o-list-dirsync")
+        try:
+            fmt.replace_durable(os.path.join(owner.root, name), data, owner.tmp, "o-list-dirsync")
+        except OSError as exc:
+            raise Done(UNKNOWN, state="unknown", code="routing-write-failed",
+                       path=os.path.join(owner.root, name), detail=str(exc)) from None
+
+
+def complete_with_routing(owner, bid, result, rebuild=False):
+    """Routing is ancillary: never replace a committed operation's response.
+
+    The stdout result retains its operation exit, while a separate diagnostic
+    and the process exit report failed routing maintenance. The front buffers
+    that diagnostic until after it prints the committed result.
+    """
+    try:
+        if rebuild:
+            rebuild_lists(owner)
+        result.result["lists_stale"] = stale_lists(owner)
+    except (Done, OSError, fmt.FormatError) as exc:
+        error = dict(exc.result) if isinstance(exc, Done) else {
+            "state": "unknown", "code": "routing-unreadable", "detail": str(exc),
+            "path": getattr(exc, "filename", None) or owner.bindings}
+        if error.get("code") not in ("routing-unreadable", "routing-write-failed"):
+            error["source_code"] = error.get("code")
+            error["code"] = "routing-unreadable"
+        error.update(exit=UNKNOWN, binding_id=bid,
+                     list=error.get("path", owner.bindings))
+        result.diagnostic = error
+        result.code = UNKNOWN
+        result.result["lists_stale"] = [".bindings.list", ".retired.list"]
+    raise result
 
 
 def cmd_lists(owner, a):
@@ -517,6 +557,56 @@ def cmd_bind_inspect(owner, a):
     raise Done(0, state="inspected", outbox=outbox, outbox_dev=got["dev"], outbox_ino=got["ino"])
 
 
+def initial_outbox_status(since):
+    return {"code": None, "backlog": False, "complete": False, "in_progress": [], "since": since}
+
+
+def require_pristine_bind(owner, bid):
+    """A lost binding never grants authority to reinitialize a surviving tree.
+
+    Inspect only the fixed layout and the first child of each directory, not
+    retained history. Empty initialized records also permit a first-bind replay.
+    """
+    root = owner.dir(bid)
+    try:
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        if not os.path.lexists(root):
+            return
+        raise Done(UNKNOWN, state="unknown", code="unknown-surviving-tree", binding_id=bid) from None
+    except OSError as exc:
+        raise Done(UNKNOWN, state="unknown", code="unknown-surviving-tree", binding_id=bid,
+                   detail=str(exc)) from None
+    try:
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if entry.name in OWNER_DIRS:
+                    child = os.open(entry.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                                    dir_fd=fd)
+                    try:
+                        with os.scandir(child) as children:
+                            if next(children, None) is not None:
+                                raise fmt.FormatError("nonempty " + entry.name)
+                    finally:
+                        os.close(child)
+                elif entry.name == ".live-keys":
+                    if read_live(owner, bid):
+                        raise fmt.FormatError("nonempty membership")
+                elif entry.name == ".outbox-status":
+                    obj = read_json(owner.dir(bid, entry.name))
+                    if (not isinstance(obj, dict)
+                            or fmt.canonical(obj) != fmt.canonical(initial_outbox_status(obj.get("since")))):
+                        raise fmt.FormatError("noninitial outbox status")
+                    fmt.parse_iso(obj["since"])
+                else:
+                    raise fmt.FormatError("unexpected record " + entry.name)
+    except (OSError, fmt.FormatError, ValueError, Done) as exc:
+        raise Done(UNKNOWN, state="unknown", code="unknown-surviving-tree", binding_id=bid,
+                   detail=str(exc)) from None
+    finally:
+        os.close(fd)
+
+
 def cmd_bind(owner, a):
     """Bind's second half, under the bindings lock: owner files only, recording
     the outbox identity bind-inspect found (stage re-checks it on every run)."""
@@ -544,11 +634,21 @@ def cmd_bind(owner, a):
         "envelope_versions": [1], "receipt_versions": [1], "created_at": fmt.utc_iso(now()),
     }
     fmt.validate_binding(binding)
+    path = owner.binding_path(a.id)
+    if not os.path.lexists(path):
+        require_pristine_bind(owner, a.id)
     for d in OWNER_DIRS:
         fmt.mkdir_durable(owner.dir(a.id, d), root=owner.root)
     fmt.mkdir_durable(owner.bindings, root=owner.root)
-    path = owner.binding_path(a.id)
+    live_path = owner.dir(a.id, ".live-keys")
+    if not os.path.lexists(path) and not os.path.lexists(live_path):
+        write_live(owner, a.id, set())
+    read_live(owner, a.id)  # A replay never replaces unknown membership with empty.
+    if not os.path.lexists(path) and not os.path.lexists(owner.dir(a.id, ".outbox-status")):
+        write_json(owner.dir(a.id, ".outbox-status"),
+                   initial_outbox_status(fmt.utc_iso(now())), temp_dir(owner, a.id), "o-status-dirsync")
     data = fmt.canonical(binding)
+    fmt.seams().fault("bind:before-create")
     try:
         fmt.create_exclusive(path, data, owner.tmp, "o-binding-dirsync")
         replay = False
@@ -559,11 +659,11 @@ def cmd_bind(owner, a):
         data = fmt.canonical(have)
         replay = True
     fmt.seams().fault("bind:after-create")
-    rebuild_lists(owner)
     log(owner, a.id, "bound" if not replay else "bind replayed", "outbox " + outbox, "producer submits")
-    raise Done(0, state="bound", binding_id=a.id, binding_sha256=fmt.sha256_hex(data), replay=replay,
-               recipient_home=binding["recipient_home"], owner_home_path=owner.home,
-               machine_id=binding["machine_id"])
+    complete_with_routing(owner, a.id,
+                          Done(0, state="bound", binding_id=a.id, binding_sha256=fmt.sha256_hex(data),
+                               replay=replay, recipient_home=binding["recipient_home"],
+                               owner_home_path=owner.home, machine_id=binding["machine_id"]), rebuild=True)
 
 
 # ---------------------------------------------------------------- stage
@@ -703,9 +803,15 @@ def receipts_of(owner, bid, key):
     """[(seq, obj)] for key, sorted; FormatError on anything unreadable."""
     kdir = owner.dir(bid, "receipts", key)
     try:
+        require_directory(owner.dir(bid, "receipts"))
+    except OSError as exc:
+        raise fmt.FormatError("receipts root: %s" % exc) from None
+    try:
         names = fmt.scandir_names(kdir, "engine")
     except FileNotFoundError:
         return []
+    except OSError as exc:
+        raise fmt.FormatError("%s: %s" % (kdir, exc)) from None
     out = []
     for name in names:
         seq = fmt.seq_of_name(name)
@@ -714,7 +820,41 @@ def receipts_of(owner, bid, key):
         obj = read_json(os.path.join(kdir, name))
         fmt.validate_receipt(obj, seq)
         out.append((seq, obj))
+    binding, sha = load_binding(owner, bid)
+    expected = fmt.receipt_identity(binding, sha, key)
+    for _, receipt in out:
+        if any(receipt[f] != v for f, v in expected.items()):
+            raise fmt.FormatError("receipt identity")
+        if receipt["outcome"] == "consumed" and not any(
+                d["seq"] == receipt["delivered_seq"] and d["outcome"] == "delivered"
+                and all(d[f] == receipt[f] for f in ("kind", "payload_sha256", "envelope_sha256"))
+                for _, d in out):
+            raise fmt.FormatError("consumed without matching delivery")
     return sorted(out, key=lambda x: x[0])
+
+
+def read_live(owner, bid):
+    """Missing, invalid or unreadable membership is unknown, including on replay."""
+    path = owner.dir(bid, ".live-keys")
+    try:
+        obj = fmt.validate_live(read_json(path, fmt.LIVE_BOUND), bid)
+    except (OSError, fmt.FormatError) as exc:
+        raise Done(UNKNOWN, state="unknown", code="membership-unreadable", path=path, detail=str(exc)) from None
+    return set(obj["keys"])
+
+
+def write_live(owner, bid, keys):
+    obj = {"schema": fmt.LIVE_SCHEMA, "binding_id": bid, "keys": sorted(keys)}
+    data = fmt.canonical(fmt.validate_live(obj, bid))
+    if len(data) > fmt.seams().value("membership-write-bound", fmt.LIVE_BOUND):
+        raise Done(UNKNOWN, state="unknown", code="membership-full", binding_id=bid)
+    fmt.replace_durable(owner.dir(bid, ".live-keys"), data, temp_dir(owner, bid), "o-membership-dirsync")
+
+
+def require_directory(path):
+    """Check a required directory without enumerating historical children."""
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    os.close(fd)
 
 
 class Ctx:
@@ -732,11 +872,25 @@ class Ctx:
             for d in (owner.tmp, self.tmp):
                 fmt.reap_dead_temps(d, files_only=True)
         self.binding, self.sha = load_binding(owner, bid)
+        self.members = read_live(owner, bid) if finish else None
         self.seq_allocs = 0
         self.touched = set()
 
     def path(self, *parts):
         return self.owner.dir(self.bid, *parts)
+
+    def track(self, key):
+        # A valid projection precedes membership, which still precedes every
+        # receipt/problem. Thus a missing member projection is loss, not an
+        # ambiguous interrupted initialization that could hide a stored problem.
+        old = self.read_current(key)
+        if old is None:
+            write_json(self.current_path(key), self.derive_current(key, receipts_of(self.owner, self.bid, key)),
+                       self.tmp, "o-current-dirsync")
+        if key not in self.members:
+            write_live(self.owner, self.bid, self.members | {key})
+            self.members.add(key)
+            fmt.seams().fault("membership:after-add")
 
     def receipt(self, key, outcome, **extra):
         obj = {"schema": fmt.RECEIPT_SCHEMA, "outcome": outcome, "recorded_at": fmt.utc_iso(now()),
@@ -759,12 +913,8 @@ class Ctx:
 
     def write_receipt(self, key, obj):
         """Allocate a seq and create receipts/<K>/<seq>.json exclusively; one retry."""
+        self.track(key)
         kdir = self.path("receipts", key)
-        if not os.path.lexists(self.current_path(key)):
-            # A key's first receipt: its current/ entry exists before the
-            # receipt does, so a crash before refresh_current leaves a stale
-            # entry reconcile rebuilds, never a final key nothing announces.
-            write_json(self.current_path(key), self.derive_current(key, []), self.tmp, "o-current-dirsync")
         fmt.mkdir_durable(kdir, root=self.owner.root)
         for _ in range(2):
             obj["seq"] = self.alloc_seq(key)
@@ -787,10 +937,12 @@ class Ctx:
         return self.path("current", key + ".json")
 
     def read_current(self, key):
-        try:
-            return read_json(self.current_path(key))
-        except fmt.FormatError:
+        obj = read_json(self.current_path(key))
+        if obj is None:
+            if self.members is not None and key in self.members:
+                raise fmt.FormatError("missing live projection: " + self.current_path(key))
             return None
+        return fmt.validate_current(obj, self.bid, key)
 
     def derive_current(self, key, receipts, old=None):
         cur = {"schema": fmt.CURRENT_SCHEMA, "binding_id": self.bid, "key": key, "state": "pending",
@@ -821,13 +973,18 @@ class Ctx:
         return cur
 
     def refresh_current(self, key):
+        self.track(key)
         old = self.read_current(key)
-        cur = self.derive_current(key, receipts_of(self.owner, self.bid, key), old)
+        receipts = receipts_of(self.owner, self.bid, key)
+        if not receipts and old and old["state"] in FINAL:
+            raise fmt.FormatError("final projection without receipts")
+        cur = self.derive_current(key, receipts, old)
         if cur != old:
             write_json(self.current_path(key), cur, self.tmp, "o-current-dirsync")
         return cur
 
     def set_problem(self, key, problem):
+        self.track(key)
         old = self.read_current(key) or self.derive_current(key, receipts_of(self.owner, self.bid, key))
         if old.get("problem") == problem:
             return
@@ -1051,9 +1208,9 @@ def cmd_ingest_staged(owner, a):
     shutil.rmtree(rdir, ignore_errors=True)
     # A stage refusal (the outbox itself was refused) is the run's answer; its
     # level is raised by alarms.
-    raise Done(REFUSED if manifest["code"] else 0, state="ingested", run=a.run,
+    complete_with_routing(owner, a.id, Done(REFUSED if manifest["code"] else 0, state="ingested", run=a.run,
                complete=manifest["complete"], code=manifest["code"],
-               cap_hit=manifest["cap_hit"], outcomes=outcomes, lists_stale=stale_lists(owner))
+               cap_hit=manifest["cap_hit"], outcomes=outcomes))
 
 
 def write_outbox_status(ctx, manifest):
@@ -1138,9 +1295,12 @@ def reconcile(ctx, manifest=None, keep=()):
         if listed is None or key + fmt.ENVELOPE_SUFFIX in listed:
             continue
         orphan(ctx, key)
-    for name in fmt.scandir_names(ctx.path("current"), "engine"):
-        if name.endswith(".json") and fmt.valid_name(name[:-5]):
-            ctx.refresh_current(name[:-5])
+    require_directory(ctx.path("receipts"))
+    require_directory(ctx.path("current"))
+    names = fmt.scandir_names(ctx.path("current"), "engine")
+    keys = ctx.members | {n[:-5] for n in names if n.endswith(".json") and fmt.valid_name(n[:-5])}
+    for key in sorted(keys):
+        ctx.refresh_current(key)
     retiring = ctx.owner.marker(ctx.bid, ".retiring")
     try:
         age = now() - os.lstat(retiring).st_mtime
@@ -1302,8 +1462,7 @@ def cmd_retire(owner, a):
         if os.path.lexists(retiring):
             fmt._unlink_quiet(retiring)
             fmt.fsync_dir(owner.bindings, "o-retiring-dirsync")
-        rebuild_lists(owner)
-        raise Done(0, state="retired", binding_id=a.id, replay=True, lists_stale=stale_lists(owner))
+        complete_with_routing(owner, a.id, Done(0, state="retired", binding_id=a.id, replay=True), rebuild=True)
     try:
         fmt.create_exclusive(retiring, fmt.canonical({"at": fmt.utc_iso(now())}), owner.tmp, "o-retiring-dirsync")
     except FileExistsError:
@@ -1358,10 +1517,9 @@ def cmd_retire(owner, a):
         pass
     fmt.seams().fault("retire:after-retired")
     undo()
-    rebuild_lists(owner)
     log(owner, a.id, "retired", "no envelope, delivery or announce was pending",
         "stragglers get binding-retired refusals for 7 days")
-    raise Done(0, state="retired", binding_id=a.id, replay=False, lists_stale=stale_lists(owner))
+    complete_with_routing(owner, a.id, Done(0, state="retired", binding_id=a.id, replay=False), rebuild=True)
 
 
 def retention(ctx):
@@ -1388,17 +1546,24 @@ def retention(ctx):
                 since = None
         if since is None or t - since < CURRENT_KEEP:
             continue
+        if not os.path.lexists(ctx.path(".announced", key)):
+            continue
+        if (cur["problem"] or cur["code"]) and not os.path.lexists(ctx.path(".acked", key)):
+            continue
         month = time.strftime("%Y-%m", time.gmtime(t))
         adir = ctx.path("archive", month)
         fmt.mkdir_durable(adir, root=ctx.owner.root)
         dest = os.path.join(adir, name)
-        try:
-            os.link(ctx.current_path(key), dest)
-            fmt.seams().spy_line("link", dest)
-        except FileExistsError:
-            pass
-        fmt.fsync_dir(adir, "o-archive-dirsync")
+        # Copy rather than hardlink: an interrupted archive must not make the
+        # still-live current file unreadable to the single-link reader.
+        write_json(dest, cur, ctx.tmp, "o-archive-dirsync")
         fmt.seams().fault("retention:after-archive-link")
+        # Only a durable terminal archive permits membership removal. A crash
+        # before current unlink leaves a harmless extra current entry; replay
+        # archives it again. Never unlink first and orphan a live member.
+        write_live(ctx.owner, ctx.bid, ctx.members - {key})
+        ctx.members.discard(key)
+        fmt.seams().fault("membership:after-remove")
         fmt.unlink_durable(ctx.current_path(key), "o-current-dirsync")
 
 
@@ -1411,7 +1576,7 @@ def cmd_retention(owner, a):
 def cmd_reconcile(owner, a):
     require_lock(a.lock)
     reconcile(Ctx(owner, a.id))
-    raise Done(0, state="reconciled", binding_id=a.id, lists_stale=stale_lists(owner))
+    complete_with_routing(owner, a.id, Done(0, state="reconciled", binding_id=a.id))
 
 
 def cmd_purge(owner, a):
@@ -1435,10 +1600,9 @@ def cmd_purge(owner, a):
         raise Done(REFUSED, state="refused", code="purge-too-early", since=fmt.utc_iso(last))
     shutil.rmtree(owner.dir(a.id))
     fmt.fsync_dir(owner.root, "o-purge-dirsync")
-    rebuild_lists(owner)
     log(owner, None, "purged binding " + a.id, "365 days since the retire and the last receipt",
         "bindings/%s.json and .retired stay, so the id stays reserved" % a.id)
-    raise Done(0, state="purged", binding_id=a.id, lists_stale=stale_lists(owner))
+    complete_with_routing(owner, a.id, Done(0, state="purged", binding_id=a.id), rebuild=True)
 
 
 # ---------------------------------------------------------------- announce
@@ -1527,15 +1691,36 @@ def cmd_show(owner, a):
 
 
 def binding_ids(owner):
-    out = []
+    out = set()
+    if not os.path.lexists(owner.root):
+        return []
     try:
+        require_directory(owner.root)
+        if not os.path.lexists(owner.bindings):
+            # A failed first bind-inspect may have created only front scratch
+            # and child/lock directories. Nothing authoritative exists yet.
+            with os.scandir(owner.root) as entries:
+                for entry in entries:
+                    if entry.name not in (".tmp", ".fg-children", ".bindings.lock", ".alarm-sync.lock"):
+                        raise OSError("required bindings/ missing beside " + entry.name)
+                    require_directory(entry.path)
+            return []
+        require_directory(owner.bindings)
         names = fmt.scandir_names(owner.bindings, "engine")
-    except FileNotFoundError:
-        return out
-    for name in names:
-        if name.endswith(".json") and fmt.valid_name(name[:-5]):
-            out.append(name[:-5])
-    return out
+        for name in names:
+            if name.endswith(".json"):
+                if not fmt.valid_name(name[:-5]):
+                    raise OSError("invalid binding filename: " + name)
+                out.add(name[:-5])
+        # Owner trees are bounded by bindings, not receipt history. A missing
+        # binding record must not hide its surviving obligations.
+        with os.scandir(owner.root) as entries:
+            out.update(e.name for e in entries if fmt.valid_name(e.name) and e.name != "bindings"
+                       and e.is_dir(follow_symlinks=False))
+    except OSError as exc:
+        raise Done(UNKNOWN, state="unknown", code="binding-unreadable", path=owner.bindings,
+                   detail=str(exc)) from None
+    return sorted(out)
 
 
 def cmd_list(owner, a):
@@ -1558,7 +1743,7 @@ def cmd_list(owner, a):
                     continue
                 seen.add(name)
                 try:
-                    cur = read_json(os.path.join(d, name))
+                    cur = fmt.validate_current(read_json(os.path.join(d, name)), bid, name[:-5])
                 except fmt.FormatError:
                     cur = {"key": name[:-5], "state": "unreadable"}
                 acked = os.path.lexists(owner.dir(bid, ".acked", name[:-5]))
@@ -1594,7 +1779,18 @@ def wanted_levels(owner):
         complete[0] = False
         want(level, bid, key, reason, fmt.utc_iso(t), **evidence)
 
-    for bid in binding_ids(owner):
+    if not os.path.lexists(owner.root):
+        return wanted, True
+    try:
+        ids = binding_ids(owner)
+    except (Done, OSError) as exc:
+        unknown("binding-unreadable", "all", None, "bindings/ cannot be listed", detail=str(exc))
+        return wanted, False
+    try:
+        wanted_lists(owner)
+    except (Done, OSError, fmt.FormatError) as exc:
+        unknown("routing-unreadable", "all", None, "routing membership cannot be established", detail=str(exc))
+    for bid in ids:
         if is_purged(owner, bid):
             continue
         try:
@@ -1606,8 +1802,20 @@ def wanted_levels(owner):
         status_path = ctx.path(".outbox-status")
         try:
             st = read_json(status_path)
-        except fmt.FormatError:
-            st = {"code": "outbox-unreadable", "since": fmt.utc_iso(t), "backlog": False}
+            if (not isinstance(st, dict) or set(st) != {"code", "since", "backlog", "complete", "in_progress"}
+                    or st["code"] not in (None,) + STAGE_REFUSALS
+                    or type(st["backlog"]) is not bool or type(st["complete"]) is not bool
+                    or not isinstance(st["in_progress"], list)):
+                raise fmt.FormatError("outbox status fields")
+            fmt.parse_iso(st["since"])
+            for entry in st["in_progress"]:
+                if (not isinstance(entry, dict) or set(entry) != {"name", "since"}
+                        or not isinstance(entry["name"], str) or envelope_key(entry["name"]) is None):
+                    raise fmt.FormatError("outbox status entry")
+                fmt.parse_iso(entry["since"])
+        except (fmt.FormatError, ValueError) as exc:
+            unknown("status-unreadable", bid, None, "outbox status cannot be read", detail=str(exc))
+            st = None
         if st and st.get("code") in STAGE_REFUSALS:
             want(st["code"], bid, None, "the last stage refused the outbox", st["since"], path=status_path)
         if st and st.get("backlog"):
@@ -1616,32 +1824,46 @@ def wanted_levels(owner):
             want("outbox-in-progress", bid, envelope_key(e["name"]),
                  "%s is still in progress %ds after its link" % (e["name"], IN_PROGRESS_SETTLE), e["since"],
                  path=os.path.join(ctx.binding["outbox"], e["name"]))
-        if not os.access(ctx.path("receipts"), os.R_OK | os.X_OK):
-            unknown("receipts-unreadable", bid, None, "receipts/ cannot be listed")
         try:
+            require_directory(ctx.path("receipts"))
+        except OSError as exc:
+            unknown("receipts-unreadable", bid, None, "receipts/ cannot be opened", detail=str(exc))
+        try:
+            members = read_live(owner, bid)
+        except Done as exc:
+            unknown("membership-unreadable", bid, None, "live membership cannot be read", detail=exc.result)
+            members = set()
+        try:
+            require_directory(ctx.path("current"))
             names = fmt.scandir_names(ctx.path("current"), "engine")
-        except FileNotFoundError:
-            names = []
         except OSError as exc:
             unknown("current-unreadable", bid, None, "current/ cannot be listed", detail=exc.strerror)
             names = []
         if len(names) > CURRENT_BACKLOG:
             want("current-backlog", bid, None, "%d entries in current/" % len(names), fmt.utc_iso(t))
+        keys = set(members)
         for name in names:
-            key = name[:-5]
-            if not name.endswith(".json") or not fmt.valid_name(key):
+            if not name.endswith(".json") or not fmt.valid_name(name[:-5]):
+                unknown("current-unreadable", bid, None, "invalid current/ entry", name=name)
+            else:
+                keys.add(name[:-5])
+        for key in sorted(keys):
+            name = key + ".json"
+            try:
+                cur = ctx.read_current(key)
+            except (fmt.FormatError, ValueError):
+                cur = None
+            if not cur:
+                unknown("current-unreadable", bid, key, "current/%s cannot be read" % name,
+                        path=ctx.current_path(key))
+            try:
+                receipts = receipts_of(owner, bid, key)
+                if not receipts and cur and cur["state"] in FINAL:
+                    raise fmt.FormatError("final projection without receipts")
+                cur = ctx.derive_current(key, receipts, cur)
+            except (Done, fmt.FormatError, ValueError) as exc:
+                unknown("receipts-unreadable", bid, key, "receipts/%s cannot be read" % key, detail=str(exc))
                 continue
-            cur = ctx.read_current(key)
-            if not cur or cur["state"] == "pending":
-                # An unreadable or crash-stale entry is read from the receipts.
-                if not cur:
-                    unknown("current-unreadable", bid, key, "current/%s cannot be read" % name,
-                            path=ctx.current_path(key))
-                try:
-                    cur = ctx.derive_current(key, receipts_of(owner, bid, key), cur)
-                except fmt.FormatError as exc:
-                    unknown("receipts-unreadable", bid, key, "receipts/%s cannot be read" % key, detail=str(exc))
-                    continue
             acked = os.path.lexists(ctx.path(".acked", key))
             if cur.get("problem") in PROBLEMS and not acked:
                 want(cur["problem"], bid, key, "see the binding log", cur["problem_since"])
@@ -1681,7 +1903,10 @@ def cmd_status(owner, _a):
             continue
         counts = {}
         for name in fmt.scandir_names(ctx.path("current"), "engine"):
-            cur = ctx.read_current(name[:-5]) or {"state": "unreadable"}
+            try:
+                cur = ctx.read_current(name[:-5]) or {"state": "unreadable"}
+            except (fmt.FormatError, ValueError):
+                cur = {"state": "unreadable"}
             counts[cur["state"]] = counts.get(cur["state"], 0) + 1
         rows.append({"binding_id": bid, "retired": is_retired(owner, bid),
                      "retiring": os.path.lexists(owner.marker(bid, ".retiring")), "current": counts})
@@ -1780,6 +2005,8 @@ def main(argv):
     except Done as exc:
         d = exc
     fmt.emit(d.result)
+    if hasattr(d, "diagnostic"):
+        print(fmt.canonical(d.diagnostic).decode("ascii"), file=sys.stderr, flush=True)
     return d.code
 
 
