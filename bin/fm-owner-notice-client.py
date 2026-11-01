@@ -715,6 +715,7 @@ def cmd_probe(args):
 
 
 def self_test():
+    import fm_owner_notice_store
     """Exercise v1 without loading an owner engine, front or test helper."""
     import contextlib
     import io
