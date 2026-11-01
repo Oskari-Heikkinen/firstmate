@@ -207,7 +207,13 @@
 # a new engine conversation after this many turns; every main session start
 # also opens a new one), FM_SUPERVISION_HOST_CONTEXT_CEILING (150000: a new
 # engine conversation once the last turn's context estimate reaches this many
-# tokens; fm_supervision_engine_result owns the estimate),
+# tokens; fm_supervision_engine_result owns the estimate). Both conversation
+# limits require canonical decimal integers 1..9007199254740991; unset uses
+# the default, invalid (including empty) disables reuse and logs the invalid
+# setting on each reset. Stored turns/context require the same domain with 0
+# allowed; missing, duplicate or invalid values also choose fresh, never resume.
+# Other tunables:
+#
 # FM_SUPERVISION_HOST_READY_TIMEOUT (25: how long a
 # successor cycle may take to verify), FM_SUPERVISION_HOST_POLL (1),
 # FM_SUPERVISION_HOST_STOP_WAIT (120: how long the stop verb waits for the
@@ -273,6 +279,14 @@ numeric_or() {  # <value> <default>
   case "$1" in ''|0*|*[!0-9]*) printf '%s\n' "$2" ;; *) printf '%s\n' "$1" ;; esac
 }
 
+# Conversation counters use the engine JSON safe-integer domain. Check the
+# complete canonical decimal token and its length before shell comparison;
+# even a corrupt record can never feed an out-of-range integer to test/arithmetic.
+conversation_count_valid() {  # <value>, 0..9007199254740991
+  case "$1" in ''|*[!0-9]*|0?*) return 1 ;; esac
+  [ "${#1}" -le 16 ] && [ "$1" -le 9007199254740991 ]
+}
+
 GRACE=${FM_GUARD_GRACE:-$(fm_poll_derived_grace)}
 ENGINE_GRACE=$(numeric_or "${FM_SUPERVISION_ENGINE_GRACE:-}" 30)
 PARK_SECONDS=$(numeric_or "${FM_SUPERVISION_HOST_PARK_SECONDS:-}" 27000)
@@ -280,8 +294,8 @@ PARK_SECONDS=$(numeric_or "${FM_SUPERVISION_HOST_PARK_SECONDS:-}" 27000)
 PARK_LIMIT=$(numeric_or "${FM_SUPERVISION_HOST_PARK_LIMIT:-}" "$PARK_SECONDS")
 { [ "$PARK_LIMIT" -lt 28800 ] && [ "$PARK_LIMIT" -ge "$PARK_SECONDS" ]; } 2>/dev/null || PARK_LIMIT=$PARK_SECONDS
 TURN_TIMEOUT=$(numeric_or "${FM_SUPERVISION_HOST_TURN_TIMEOUT:-}" 1200)
-ROTATE_TURNS=$(numeric_or "${FM_SUPERVISION_HOST_ROTATE_TURNS:-}" 20)
-CONTEXT_CEILING=$(numeric_or "${FM_SUPERVISION_HOST_CONTEXT_CEILING:-}" 150000)
+ROTATE_TURNS=${FM_SUPERVISION_HOST_ROTATE_TURNS-20}
+CONTEXT_CEILING=${FM_SUPERVISION_HOST_CONTEXT_CEILING-150000}
 READY_TIMEOUT=$(numeric_or "${FM_SUPERVISION_HOST_READY_TIMEOUT:-}" 25)
 POLL=$(numeric_or "${FM_SUPERVISION_HOST_POLL:-}" 1)
 COOLDOWN=$FM_SUPERVISION_HOST_COOLDOWN
@@ -1135,9 +1149,8 @@ choose_conversation() {
   recorded_session=$(sed -n 's/^session=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)
   recorded_engine=$(sed -n 's/^engine=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)
   recorded_model=$(sed -n 's/^model=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)
-  turns=$(numeric_or "$(sed -n 's/^turns=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)" 0)
-  context=$(sed -n 's/^context=//p' "$ENGINE_RECORD" 2>/dev/null | head -n 1)
-  case "$context" in ''|*[!0-9]*) context=unknown ;; esac
+  turns=$(sed -n 's/^turns=//p' "$ENGINE_RECORD" 2>/dev/null)
+  context=$(sed -n 's/^context=//p' "$ENGINE_RECORD" 2>/dev/null)
   reset=
   if [ -z "$recorded_session" ]; then
     reset=none
@@ -1145,11 +1158,18 @@ choose_conversation() {
     reset="main-session	the main session changed"
   elif [ "$recorded_engine" != "$FM_SUPERVISION_ENGINE" ] || [ "$recorded_model" != "$FM_SUPERVISION_ENGINE_MODEL" ]; then
     reset="engine	the engine or model changed"
-  elif [ "$turns" -ge "$ROTATE_TURNS" ]; then
+  elif ! conversation_count_valid "$ROTATE_TURNS" || [ "$ROTATE_TURNS" = 0 ]; then
+    reset="turn-setting	invalid FM_SUPERVISION_HOST_ROTATE_TURNS; using a fresh conversation"
+  elif ! conversation_count_valid "$turns"; then
+    turns=unknown
+    reset="turns-unknown	the record carries no valid turn count"
+  elif ! [ "$turns" -lt "$ROTATE_TURNS" ]; then
     reset="turn-limit	turns=$turns limit=$ROTATE_TURNS"
-  elif [ "$context" = unknown ]; then
-    reset="context-unknown	the record carries no context estimate"
-  elif [ "$context" -ge "$CONTEXT_CEILING" ]; then
+  elif ! conversation_count_valid "$CONTEXT_CEILING" || [ "$CONTEXT_CEILING" = 0 ]; then
+    reset="context-setting	invalid FM_SUPERVISION_HOST_CONTEXT_CEILING; using a fresh conversation"
+  elif ! conversation_count_valid "$context"; then
+    reset="context-unknown	the record carries no valid context estimate"
+  elif ! [ "$context" -lt "$CONTEXT_CEILING" ]; then
     reset="context-ceiling	context=$context ceiling=$CONTEXT_CEILING"
   elif [ ! -s "$PROMPT_FILE" ]; then
     reset="prompt	the branch prompt is missing"
@@ -1424,7 +1444,7 @@ handle_wake() {  # <reason-lines>
   health_record "$ENGINE_ERROR" "${receipts:-0}"
   if [ "$ENGINE_ERROR" -eq 0 ] && [ "${receipts:-0}" -gt 0 ] && [ -z "$unacked" ]; then
     write_engine_record $((ENGINE_TURNS + 1)) "$(printf '%s\n' "$usage" | sed -n 's/.* conversation_cost=\([^ ]*\).*/\1/p')" \
-      "$(printf '%s\n' "$usage" | sed -n 's/.* context=\([0-9]*\).*/\1/p')" || rm -f "$ENGINE_RECORD"
+      "${usage##* context=}" || rm -f "$ENGINE_RECORD"
     [ "$TURN_POSTURE" != attended ] || "$SCRIPT_DIR/fm-host-mirror.sh" commit >/dev/null 2>&1 || true
     [ "$errors" = /dev/null ] || rm -f "$errors"
     TURN_ERRORS=

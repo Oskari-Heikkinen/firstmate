@@ -419,8 +419,9 @@ fm_supervision_engine_turn() {
 # rounded up; "unknown" without a model call): each call's prompt is the whole
 # conversation so far, so the estimate trails the turn's last call by about
 # half the turn's own growth. error=0 only for a complete success result: type "result",
-# subtype "success", is_error false, and finite total_cost_usd, num_turns, and
-# the four usage token counts; any other shape is error=1. Returns 1 when the
+# subtype "success", is_error false, finite total_cost_usd, and nonnegative
+# safe integer num_turns, four usage token counts, and prompt sum/estimate;
+# any other shape is error=1. Returns 1 when the
 # result cannot be read. The host treats both as a failed turn.
 fm_supervision_engine_result() {
   case "$1" in
@@ -434,16 +435,20 @@ fm_supervision_engine_result() {
         const u = j.usage && typeof j.usage === "object" ? j.usage : {};
         const finite = (v) => typeof v === "number" && Number.isFinite(v);
         const n = (v) => (finite(v) ? v : 0);
+        const count = (v) => Number.isSafeInteger(v) && v >= 0;
+        const countsValid = [j.num_turns, u.input_tokens, u.cache_read_input_tokens,
+          u.cache_creation_input_tokens, u.output_tokens].every(count);
+        const prompt = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
+        const estimate = j.num_turns > 0 ? Math.ceil(prompt / j.num_turns) : "unknown";
+        const contextValid = count(prompt) && (estimate === "unknown" || count(estimate));
         const complete = j.type === "result" && j.subtype === "success" && j.is_error === false
-          && finite(j.total_cost_usd) && finite(j.num_turns) && finite(u.input_tokens)
-          && finite(u.cache_read_input_tokens) && finite(u.cache_creation_input_tokens) && finite(u.output_tokens);
+          && finite(j.total_cost_usd) && countsValid && contextValid;
         const error = complete ? 0 : 1;
         const total = n(j.total_cost_usd);
         const prior = Number(process.argv[2]);
         const turn = Number.isFinite(prior) && prior >= 0 && prior <= total ? total - prior : total;
         const usd = (v) => Number(v.toFixed(6));
-        const prompt = n(u.input_tokens) + n(u.cache_read_input_tokens) + n(u.cache_creation_input_tokens);
-        const context = n(j.num_turns) >= 1 ? Math.ceil(prompt / n(j.num_turns)) : "unknown";
+        const context = complete ? estimate : "unknown";
         process.stdout.write(`error=${error} cost=${usd(turn)} conversation_cost=${usd(total)} input=${n(u.input_tokens)} cache_read=${n(u.cache_read_input_tokens)} cache_write=${n(u.cache_creation_input_tokens)} output=${n(u.output_tokens)} turns=${n(j.num_turns)} context=${context}\n`);
       ' "$2" "${3:-0}" 2>/dev/null
       ;;
