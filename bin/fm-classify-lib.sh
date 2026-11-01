@@ -1831,12 +1831,15 @@ EOF
 # advances its cursor exactly as above.
 #
 # Timed mode (`timed` in place of `exact`, with or without a captured end) is
-# for the watcher's open-decision reminder (bin/fm-watch.sh): it reads and
-# advances like the default mode, but on its own cursor
-# (state/.<task>.timed-open-decisions-cursor, same format, its fold version
-# suffixed `:timed`), and each record also carries the time its decision opened
-# (see _fm_od_fold_line), "<key>\t<verb>\t<opened>\t<note>". It never reads or
-# moves the drain's cursor, for the same UNREAD STATUS reason as exact mode.
+# for the watcher's open-decision reminder (bin/fm-watch.sh). It uses the exact
+# mode's strict byte reader and newline boundaries on its own cursor
+# (state/.<task>.timed-open-decisions-cursor, fold version suffixed `:timed2`),
+# and carries opening times (see _fm_od_fold_line) as
+# "<key>\t<verb>\t<opened>\t<note>". Unlike presentation, it ignores incomplete
+# records and fails on unknown freshness: a failed read answers nothing, and
+# its cursor stays at the last complete-line checkpoint. It never moves the
+# drain or snapshot cursor. Old `:timed` cursors are rebuilt because they could
+# have consumed an incomplete opening or resolution.
 #
 # In every mode a cursor that cannot be written leaves the old one in place
 # and the call still answers, since persistence only saves later reading.
@@ -2025,10 +2028,9 @@ _fm_status_read_span() {  # <status-file> <start-offset> <byte-length>
   ' "$f" "$start" "$length"
 }
 
-# A failed read reports the trusted persisted set unchanged, or fails in exact
-# mode, whose caller needs the set for exactly the captured bytes and folds them
-# itself instead.
-_fm_open_decisions_unread() {  # <exact> <trusted-open>
+# Presentation may fall back to the trusted persisted set. Exact and timed
+# consumers require fresh authority and fail instead, retaining the cursor.
+_fm_open_decisions_unread() {  # <strict> <trusted-open>
   [ "$1" = 0 ] || return 1
   printf '%s' "$2"
 }
@@ -2047,23 +2049,24 @@ _fm_chunk_size_and_tail() {  # <chunk-file>
 }
 
 status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [exact|timed]]
-  local f=$1 captured_end=${2:-} exact_mode=0 timed=0 cf offset ident open='' trusted_open='' cursor_data first rest offset_line ident_line
+  local f=$1 captured_end=${2:-} exact_mode=0 strict=0 timed=0 cf offset ident open='' trusted_open='' cursor_data first rest offset_line ident_line
   local version='' size actual_size cur_ident resolve held chunk_file chunk_size line cursor_dirty=0 persist=1
   local kind fold_version persisted_open partial_size step want last folded
   local _fm_fold_status_file=$1 _fm_od_n=0
   local -a _fm_od_r
   case "${3:-}" in
-    exact) exact_mode=1 ;;
-    timed) timed=1 ;;
+    exact) exact_mode=1; strict=1 ;;
+    timed) timed=1; strict=1 ;;
   esac
-  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || { [ "$exact_mode" = 0 ] || return 1; return 0; }
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || { [ "$strict" = 0 ] || return 1; return 0; }
   kind=$(_fm_status_kind "$f")
   fold_version="$FM_OPEN_DECISIONS_FOLD_VERSION:$kind"
   if [ "$exact_mode" = 1 ]; then
     cf=$(_fm_open_decisions_snapshot_cursor_path "$f")
   elif [ "$timed" = 1 ]; then
     cf=$(_fm_open_decisions_timed_cursor_path "$f")
-    fold_version="$fold_version:timed"
+    # v2 invalidates cursors that could have consumed an incomplete record.
+    fold_version="$fold_version:timed2"
   else
     cf=$(_fm_open_decisions_cursor_path "$f")
   fi
@@ -2113,17 +2116,17 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
   # A stat/size-read failure is a genuine I/O error, not "the file is empty" -
   # report the already-trusted persisted set unchanged rather than risking a
   # silent invalidation that would wipe it.
-  cur_ident=$(_fm_open_decisions_file_ident "$f") || { _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return; }
-  [ -n "$cur_ident" ] || { _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return; }
+  cur_ident=$(_fm_open_decisions_file_ident "$f") || { _fm_open_decisions_unread "$strict" "$trusted_open"; return; }
+  [ -n "$cur_ident" ] || { _fm_open_decisions_unread "$strict" "$trusted_open"; return; }
   actual_size=$(_fm_status_file_size "$f") \
-    || { _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return; }
+    || { _fm_open_decisions_unread "$strict" "$trusted_open"; return; }
   actual_size=${actual_size//[[:space:]]/}
-  case "$actual_size" in ''|*[!0-9]*) _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return ;; esac
+  case "$actual_size" in ''|*[!0-9]*) _fm_open_decisions_unread "$strict" "$trusted_open"; return ;; esac
   if [ -n "$captured_end" ]; then
     case "$captured_end" in
-      ''|*[!0-9]*) _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return ;;
+      ''|*[!0-9]*) _fm_open_decisions_unread "$strict" "$trusted_open"; return ;;
     esac
-    [ "$captured_end" -le "$actual_size" ] || { _fm_open_decisions_unread "$exact_mode" "$trusted_open"; return; }
+    [ "$captured_end" -le "$actual_size" ] || { _fm_open_decisions_unread "$strict" "$trusted_open"; return; }
     size=$captured_end
   else
     size=$actual_size
@@ -2156,8 +2159,8 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
   fi
 
   persisted_open=$open
-  if [ "$offset" -lt "$size" ] && [ "$exact_mode" = 1 ]; then
-    # Exact mode reads into the caller's temp directory rather than beside the
+  if [ "$offset" -lt "$size" ] && [ "$strict" = 1 ]; then
+    # Strict modes read into the caller's temp directory rather than beside the
     # cursor: a fleet snapshot killed at its deadline cannot remove the chunk,
     # and the home-summary refresh points TMPDIR at its per-run directory,
     # which it removes after a kill. It folds at most a checkpoint step of
@@ -2167,7 +2170,8 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
     # still appending: the answer folds that partial tail, as a whole fold of
     # the captured bytes does, but the cursor stops at the last newline and
     # holds only the fold of complete lines, so the next snapshot reads the
-    # line whole.
+    # line whole. Timed mode uses the same reader and checkpoints but never
+    # folds the incomplete tail, so its answer holds complete records only.
     chunk_file=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-open-decisions-read.XXXXXX" 2>/dev/null) || return 1
     step=${FM_OPEN_DECISIONS_CHECKPOINT_BYTES:-1048576}
     case "$step" in ''|*[!0-9]*|0*) step=1048576 ;; esac
@@ -2191,12 +2195,14 @@ status_open_decisions_incremental() {  # <status-file> [<captured-end-offset> [e
       folded=$((folded + want))
       line=''
       while IFS= read -r line; do
-        _fm_od_fold_line "$line" "$resolve" "$held" "$kind"
+        _fm_od_fold_line "$line" "$resolve" "$held" "$kind" "$timed"
         line=''
       done < "$chunk_file"
       if [ "$last" = 1 ]; then
         _fm_od_emit_to persisted_open
-        [ -z "$line" ] || _fm_od_fold_line "$line" "$resolve" "$held" "$kind"
+        # Scheduling never acts on an incomplete record; exact snapshots may
+        # display it but neither mode commits its bytes to the cursor.
+        [ "$timed" = 1 ] || [ -z "$line" ] || _fm_od_fold_line "$line" "$resolve" "$held" "$kind"
         _fm_od_emit_to open
         offset=$((size - partial_size))
         break

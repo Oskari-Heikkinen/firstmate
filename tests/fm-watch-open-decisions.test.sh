@@ -265,7 +265,7 @@ test_invalid_settings_alarm_once() {
   expect_wakes 1 "an invalid env threshold did not raise exactly one alarm"
   [ "$(queue_keys)" = 'check open-decision-reminders' ] || fail "the alarm was not a check row: $(queue_keys)"
   case "$OPEN_DECISION_REMINDER" in
-    'check: open-decision reminders failed: FM_OPEN_DECISION_OVERDUE_SECS=0 is not a positive whole number of seconds; no reminder is sent until it is fixed') ;;
+    'check: open-decision reminders failed: FM_OPEN_DECISION_OVERDUE_SECS=0 is not a positive whole number of seconds; reminder delivery is incomplete until it is fixed') ;;
     *) fail "the alarm did not name the setting: $OPEN_DECISION_REMINDER" ;;
   esac
   [ -f "$STATE/.open-decision-reminders.error" ] || fail "the alarm left no marker"
@@ -387,7 +387,7 @@ test_unwritable_marker_says_it_repeats() {
   mkdir "$STATE/.open-decision-reminders.error"
   FM_OPEN_DECISION_OVERDUE_SECS=0 open_decision_reminder_check 1200 || fail "an unwritable marker stopped the check"
   case "$OPEN_DECISION_REMINDER" in
-    *", and $STATE/.open-decision-reminders.error could not be written, so this repeats every tick; no reminder is sent until it is fixed") ;;
+    *", and $STATE/.open-decision-reminders.error could not be written, so this repeats every tick; reminder delivery is incomplete until it is fixed") ;;
     *) fail "the alarm did not say its marker could not be written: $OPEN_DECISION_REMINDER" ;;
   esac
   [ -z "$(ls -A "$STATE/.open-decision-reminders.error")" ] || fail "the marker write went into the directory in its place"
@@ -395,6 +395,280 @@ test_unwritable_marker_says_it_repeats() {
   expect_wakes 2 "an alarm that cannot be remembered did not repeat as it said"
   rmdir "$STATE/.open-decision-reminders.error"
   pass "a directory in the marker's place is reported as unwritable and the alarm says it repeats"
+}
+
+test_alarm_retries_failed_publication() {
+  local fault
+  for fault in queue sequence recovery; do
+    reset_case
+    enable
+    case "$fault" in
+      queue) mkdir "$FM_WAKE_QUEUE" ;;
+      sequence) mkdir "$STATE/.wake-queue.seq" ;;
+      recovery) mkdir "$STATE/.watcher-down" ;;
+    esac
+    FM_OPEN_DECISION_OVERDUE_SECS=0 open_decision_reminder_check 1200 2>/dev/null \
+      && fail "$fault failure was accepted"
+    [ ! -e "$STATE/.open-decision-reminders.error" ] || fail "$fault failure suppressed an undelivered alarm"
+    case "$fault" in
+      queue) rmdir "$FM_WAKE_QUEUE" ;;
+      sequence) rmdir "$STATE/.wake-queue.seq" ;;
+      recovery) rmdir "$STATE/.watcher-down" ;;
+    esac
+    OPEN_DECISION_TICK_LAST=
+    FM_OPEN_DECISION_OVERDUE_SECS=0 open_decision_reminder_check 1201 || fail "$fault recovery failed"
+    FM_OPEN_DECISION_OVERDUE_SECS=0 open_decision_reminder_check 1301 || fail "$fault repeat failed"
+    expect_wakes 1 "$fault did not eventually deliver exactly one alarm"
+  done
+  pass "failed queue, sequence and recovery publication never commit alarm suppression"
+}
+
+test_alarm_interrupted_receipt_retries() {
+  reset_case
+  enable
+  # Terminate after queue publication but before its receipt, as an interrupted
+  # watcher would. Delivery is at-least-once, never silently lost.
+  (
+    _fm_atomic_replace() {
+      [ "$2" != "$STATE/.open-decision-reminders.error" ] || exit 73
+      command mv -f -- "$1" "$2"
+    }
+    FM_OPEN_DECISION_OVERDUE_SECS=0 open_decision_reminder_check 1200
+  ) && fail "the interrupted receipt returned success"
+  expect_wakes 1 "the interruption was not after delivery"
+  [ ! -e "$STATE/.open-decision-reminders.error" ] || fail "interrupted receipt was committed"
+  FM_OPEN_DECISION_OVERDUE_SECS=0 open_decision_reminder_check 1300 || fail "interruption recovery failed"
+  FM_OPEN_DECISION_OVERDUE_SECS=0 open_decision_reminder_check 1400 || fail "repeat failed"
+  expect_wakes 2 "interrupted receipt did not retry once and then deduplicate"
+  pass "an interruption between alarm publication and receipt retries instead of suppressing"
+}
+
+test_timed_read_failures_are_unknown() {
+  local fault prior cursor ledger
+  local bad="$TMP_ROOT/bad-reader"
+  printf '#!/bin/sh\nexit 1\n' > "$bad"
+  chmod +x "$bad"
+  for fault in identity size span short; do
+    for prior in empty open; do
+      reset_case
+      enable
+      printf 'note: empty\n' > "$STATE/worker.status"
+      [ "$prior" != open ] || printf 'blocked [at=1000] [key=api]: help\n' >> "$STATE/worker.status"
+      open_decision_reminder_tick 1050 || fail "seed failed"
+      cursor=$(cat "$STATE/.worker.timed-open-decisions-cursor")
+      ledger=$(cat "$STATE/.open-decision-reminders" 2>/dev/null || true)
+      if [ "$prior" = open ]; then
+        printf 'resolved [key=api]: answer\n' >> "$STATE/worker.status"
+      else
+        printf 'blocked [at=1000] [key=api]: help\n' >> "$STATE/worker.status"
+      fi
+      case "$fault" in
+        identity) FM_STATUS_IDENTITY_READER="$bad" open_decision_reminder_check 1200 ;;
+        size) FM_STATUS_SIZE_READER="$bad" open_decision_reminder_check 1200 ;;
+        span) FM_STATUS_SPAN_READER="$bad" open_decision_reminder_check 1200 ;;
+        short) FM_STATUS_SPAN_READER=true open_decision_reminder_check 1200 ;;
+      esac
+      [ "$(queue_keys)" = 'check open-decision-reminders' ] || fail "$fault/$prior did not alarm"
+      [ "$cursor" = "$(cat "$STATE/.worker.timed-open-decisions-cursor")" ] || fail "$fault/$prior changed the cursor"
+      [ "$ledger" = "$(cat "$STATE/.open-decision-reminders" 2>/dev/null || true)" ] || fail "$fault/$prior changed the ledger"
+      open_decision_reminder_check 1300 || fail "$fault/$prior recovery failed"
+      [ ! -e "$STATE/.open-decision-reminders.error" ] || fail "$fault/$prior kept its error"
+      if [ "$prior" = open ]; then
+        expect_wakes 1 "$fault reminded a resolved decision"
+        [ ! -s "$STATE/.open-decision-reminders" ] || fail "resolved row survived recovery"
+      else
+        expect_wakes 2 "$fault lost the new decision"
+      fi
+    done
+  done
+  pass "identity, size, failed and short span reads preserve state and alarm for empty and nonempty sets"
+}
+
+test_timed_failure_after_checkpoint_resumes() {
+  local ledger calls=0
+  reset_case
+  enable
+  printf 'blocked [at=1000] [key=api]: help\n' > "$STATE/worker.status"
+  open_decision_reminder_tick 1050 || fail "seed failed"
+  ledger=$(cat "$STATE/.open-decision-reminders")
+  # 29 + 36 bytes: a 30-byte step checkpoints after the resolution line, then
+  # the next chunk read fails.
+  printf 'resolved [key=api]: answered\nblocked [at=1100] [key=other]: help\n' >> "$STATE/worker.status"
+  eval "$(declare -f _fm_status_read_span | command sed '1s/_fm_status_read_span/real_read_span/')"
+  _fm_status_read_span() {
+    calls=$((calls + 1))
+    [ "$calls" -le 1 ] || return 1
+    real_read_span "$@"
+  }
+  FM_OPEN_DECISIONS_CHECKPOINT_BYTES=30 open_decision_reminder_check 1200 || fail "failed fold stopped check"
+  [ "$(queue_keys)" = 'check open-decision-reminders' ] || fail "later chunk failure was not unknown: $(queue_keys)"
+  [ "$ledger" = "$(cat "$STATE/.open-decision-reminders")" ] || fail "failed fold changed ledger"
+  eval "$(declare -f real_read_span | command sed '1s/real_read_span/_fm_status_read_span/')"
+  : > "$TMP_ROOT/read-probe"
+  FM_OPEN_DECISIONS_READ_PROBE="$TMP_ROOT/read-probe" open_decision_reminder_check 1300 || fail "recovery failed"
+  [ "$(cut -f2 "$TMP_ROOT/read-probe")" = 36 ] \
+    || fail "recovery did not resume from the complete-line checkpoint: $(cat "$TMP_ROOT/read-probe")"
+  [ "$(queue_keys)" = 'check open-decision-reminders
+check open-decision:worker:other' ] || fail "recovery did not converge: $(queue_keys)"
+  [ "$(cat "$STATE/.open-decision-reminders")" = $'worker\tother\t1100\t1300\t100' ] \
+    || fail "recovery ledger is wrong: $(cat "$STATE/.open-decision-reminders")"
+  pass "a timed fold failing after a checkpoint alarms, keeps the ledger and resumes from complete lines"
+}
+
+test_deduplicated_alarm_still_wakes_for_queued_keys() {
+  reset_case
+  enable
+  printf 'blocked [at=1000] [key=api]: help\n' > "$STATE/worker.status"
+  printf '%s\n' "ledger $STATE/.open-decision-reminders could not be written" > "$STATE/.open-decision-reminders.error"
+  # The preflight succeeds; the commit after the key reached the queue fails
+  # with the error already alarmed, so only the key's own wake remains owed.
+  _fm_atomic_replace() {
+    if [ "$2" = "$STATE/.open-decision-reminders" ]; then
+      case "$(queue_keys)" in *'open-decision:worker:api'*) return 1 ;; esac
+    fi
+    command mv -f -- "$1" "$2"
+  }
+  open_decision_reminder_check 1200 || fail "the failed commit stopped the check"
+  [ "$(queue_keys)" = 'check open-decision:worker:api' ] || fail "the alarm was not deduplicated: $(queue_keys)"
+  [ "$OPEN_DECISION_REMINDER" = 'check: open decision overdue: worker key=api age=200s' ] \
+    || fail "a queued key lost its wake behind a deduplicated alarm: $OPEN_DECISION_REMINDER"
+  pass "a deduplicated failure alarm still wakes for the keys its tick queued"
+}
+
+test_bad_status_paths_alarm() {
+  local shape
+  for shape in directory fifo dangling symlink unreadable; do
+    reset_case
+    enable
+    case "$shape" in
+      directory) mkdir "$STATE/worker.status" ;;
+      fifo) mkfifo "$STATE/worker.status" ;;
+      dangling) ln -s "$TMP_ROOT/absent" "$STATE/worker.status" ;;
+      symlink) : > "$TMP_ROOT/target"; ln -s "$TMP_ROOT/target" "$STATE/worker.status" ;;
+      unreadable)
+        : > "$STATE/worker.status"; chmod 000 "$STATE/worker.status"
+        if [ -r "$STATE/worker.status" ]; then continue; fi ;;
+    esac
+    open_decision_reminder_check 1200 || fail "$shape stopped the check"
+    [ "$(queue_keys)" = 'check open-decision-reminders' ] || fail "$shape was treated as healthy empty"
+    case "$OPEN_DECISION_REMINDER" in *'timed open-decision fold'*'failed'*) ;; *) fail "$shape did not name the fold" ;; esac
+  done
+  reset_case
+  enable
+  open_decision_reminder_check 1200 || fail "no logs was not healthy"
+  : > "$STATE/empty.status"
+  printf ' \t\n' > "$STATE/white.status"
+  open_decision_reminder_check 1300 || fail "empty logs were not healthy"
+  expect_wakes 0 "healthy empty input alarmed"
+  pass "non-regular and unreadable status paths alarm while absent and empty logs stay quiet"
+}
+
+test_timed_split_records() {
+  local record cut full expected actual size
+  # Byte splits cover verbs, time and key tokens, UTF-8 and embedded NULs.
+  # Complete-fold output is the oracle; no implementation text is inspected.
+  for record in opening resolution; do
+    printf 'blocked [at=1000] [key=api]: caf\303\251\000 ok\n' > "$TMP_ROOT/open-line"
+    if [ "$record" = opening ]; then
+      cp "$TMP_ROOT/open-line" "$TMP_ROOT/line"
+    else
+      printf 'resolved [at=1200] [key=api]: caf\303\251\000 ok\n' > "$TMP_ROOT/line"
+    fi
+    size=$(wc -c < "$TMP_ROOT/line")
+    cut=1
+    while [ "$cut" -lt "$size" ]; do
+      reset_case
+      : > "$STATE/worker.status"
+      [ "$record" != resolution ] || cat "$TMP_ROOT/open-line" >> "$STATE/worker.status"
+      dd if="$TMP_ROOT/line" bs=1 count="$cut" 2>/dev/null >> "$STATE/worker.status"
+      actual=$(status_open_decisions_incremental "$STATE/worker.status" '' timed) || fail "split fold failed"
+      if [ "$record" = opening ]; then
+        [ -z "$actual" ] || fail "partial opening acted before newline at $cut"
+      else
+        [ -n "$actual" ] || fail "partial resolution acted before newline at $cut"
+      fi
+      dd if="$TMP_ROOT/line" bs=1 skip="$cut" 2>/dev/null >> "$STATE/worker.status"
+      actual=$(status_open_decisions_incremental "$STATE/worker.status" '' timed) || fail "completion failed"
+      full=$(status_open_decisions "$STATE/worker.status")
+      expected=$(printf '%s' "$actual" | cut -f1,2,4-)
+      [ "$expected" = "$full" ] || fail "$record split $cut disagreed with complete fold: $actual / $full"
+      assert_grep "offset=$(wc -c < "$STATE/worker.status" | tr -d ' ')" "$STATE/.worker.timed-open-decisions-cursor"
+      cut=$((cut + 1))
+    done
+  done
+  pass "every byte split of openings and resolutions retains incomplete UTF-8/NUL tails and converges"
+}
+
+test_old_timed_cursor_is_refolded() {
+  reset_case
+  printf 'blocked [at=1000] [key=api]: help\n' > "$STATE/worker.status"
+  # A v1 timed cursor could have skipped an opening and falsely held no keys.
+  printf 'version=%s:%s:timed\noffset=%s\nident=%s\n' "$FM_OPEN_DECISIONS_FOLD_VERSION" \
+    "$(_fm_status_kind "$STATE/worker.status")" "$(wc -c < "$STATE/worker.status" | tr -d ' ')" \
+    "$(_fm_open_decisions_file_ident "$STATE/worker.status")" > "$STATE/.worker.timed-open-decisions-cursor"
+  [ "$(status_open_decisions_incremental "$STATE/worker.status" '' timed)" = $'api\tblocked\t1000\thelp' ] \
+    || fail "old damaged timed cursor was trusted"
+  pass "the old timed cursor format is invalidated and reconstructed"
+}
+
+test_ledger_failure_cannot_flood() {
+  local now failed=0
+  reset_case
+  enable
+  printf 'blocked [at=1000] [key=api]: help\n' > "$STATE/worker.status"
+  fm_wake_append check unrelated 'check: preserve me' || fail "seed queue failed"
+  # The first ledger write (preflight) succeeds; replacement becomes persistently
+  # unavailable only AFTER the due wake has reached the real queue.
+  _fm_atomic_replace() {
+    if [ "$2" = "$STATE/.open-decision-reminders" ]; then
+      [ "$failed" = 0 ] || return 1
+      case "$(queue_keys)" in *'open-decision:worker:api'*) failed=1; return 1 ;; esac
+    fi
+    command mv -f -- "$1" "$2"
+  }
+  for now in 1200 1300 1400; do
+    OPEN_DECISION_TICK_LAST=
+    open_decision_reminder_check "$now" || fail "ledger failure stopped other checks"
+  done
+  expect_wakes 3 "persistent replacement failure flooded reminders or lost the alarm"
+  [ "$(queue_keys)" = 'check unrelated
+check open-decision:worker:api
+check open-decision-reminders' ] || fail "unrelated wakes were changed"
+  # Repair storage. At-least-once publication permits one duplicate of the
+  # uncommitted last key on recovery, then its normal backoff applies.
+  _fm_atomic_replace() { command mv -f -- "$1" "$2"; }
+  OPEN_DECISION_TICK_LAST=
+  open_decision_reminder_check 1450 || fail "ledger recovery failed"
+  expect_wakes 4 "recovery did not deliver the uncommitted key"
+  open_decision_reminder_tick 1549 || fail "backoff tick failed"
+  expect_wakes 4 "recovery lost first backoff"
+  open_decision_reminder_tick 1550 || fail "due tick failed"
+  expect_wakes 5 "backoff did not resume"
+  assert_grep $'worker\tapi\t1000\t1550\t200' "$STATE/.open-decision-reminders"
+  pass "persistent ledger replacement failure is visible and cannot flood even across restarts"
+}
+
+test_partial_queue_failure_preserves_backoff() {
+  reset_case
+  enable
+  printf 'blocked [at=1000] [key=one]: help\nblocked [at=1010] [key=two]: help\n' > "$STATE/worker.status"
+  # Keep the actual queue implementation, but fail publication of the second
+  # key at the public queue boundary. Alarm publication remains available.
+  eval "$(declare -f fm_wake_append | command sed '1s/fm_wake_append/real_wake_append/')"
+  fm_wake_append() {
+    [ "$2" != open-decision:worker:two ] || return 1
+    real_wake_append "$@"
+  }
+  open_decision_reminder_check 1200 || fail "partial publication stopped the check"
+  expect_wakes 2 "first key or failure alarm missing"
+  assert_grep $'worker\tone\t1000\t1200\t100' "$STATE/.open-decision-reminders"
+  fm_wake_append() { real_wake_append "$@"; }
+  # shellcheck disable=SC2034 # read by open_decision_reminder_check
+  OPEN_DECISION_TICK_LAST=
+  open_decision_reminder_check 1250 || fail "partial queue recovery failed"
+  expect_wakes 3 "already delivered first key was repeated"
+  assert_grep $'worker\ttwo\t1010\t1250\t100' "$STATE/.open-decision-reminders"
+  pass "a later queue failure retains earlier keys' committed backoff"
 }
 
 test_tick_beats_per_log() {
@@ -517,6 +791,16 @@ run_case test_invalid_settings_alarm_once
 run_case test_unreadable_ledger_alarms
 run_case test_unwritable_marker_says_it_repeats
 run_case test_own_parent_channel_is_not_reminded
+run_case test_alarm_retries_failed_publication
+run_case test_alarm_interrupted_receipt_retries
+run_case test_timed_read_failures_are_unknown
+run_case test_timed_failure_after_checkpoint_resumes
+run_case test_deduplicated_alarm_still_wakes_for_queued_keys
+run_case test_bad_status_paths_alarm
+run_case test_timed_split_records
+run_case test_old_timed_cursor_is_refolded
+run_case test_ledger_failure_cannot_flood
+run_case test_partial_queue_failure_preserves_backoff
 run_case test_tick_beats_per_log
 run_case test_cadence_gate
 run_case test_timed_cursor_retirement
