@@ -880,8 +880,6 @@ vm_notice_decide() {
     if [ "$delivered" != "$VM_UNKNOWN_ID" ]; then
       if [ "$VM_UNKNOWN_ID" = storage-unavailable ]; then
         vm_wake="memory guard: cannot publish the VM paging occurrence in $VM_UNKNOWN_FILE ($WIN_VM_SOURCE); system-wide Windows paging grades park and above as WSL VM paging; restore writable occurrence storage (bin/fm-mem-guard.sh status)"
-      elif [ "$delivered" = storage-unavailable ]; then
-        vm_wake="memory guard: VM paging occurrence storage is available again; the share remains $WIN_VM_SOURCE, so system-wide Windows paging still grades park and above as WSL VM paging (bin/fm-mem-guard.sh status)"
       elif [ $((t - VM_UNKNOWN_SINCE)) -ge "$R_win_stale_max_s" ]; then
         vm_wake="memory guard: the WSL VM's paging share has been unknown for $((t - VM_UNKNOWN_SINCE))s ($WIN_VM_SOURCE), so system-wide Windows paging grades park and above as WSL VM paging until it is measured again (bin/fm-mem-guard.sh status)"
       fi
