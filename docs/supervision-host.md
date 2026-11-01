@@ -375,7 +375,8 @@ A new one opens in these cases:
 
 - At every main session start, and when the engine or model changes.
 - Every `FM_SUPERVISION_HOST_ROTATE_TURNS` turns.
-- Once the last turn's context estimate reaches `FM_SUPERVISION_HOST_CONTEXT_CEILING` tokens (150,000 by default), or when the record carries no estimate.
+- Once the last turn's context estimate reaches `FM_SUPERVISION_HOST_CONTEXT_CEILING` tokens (150,000 by default), or when the record carries no valid estimate or turn count.
+- When either conversation limit is invalid; the [host header](../bin/fm-supervision-host.sh) owns the numeric domain and invalid-setting behavior.
 - After a turn that did not handle its wake (see [Paths that hand the wake back](#paths-that-hand-the-wake-back)); its `failed` log line already records that reset.
 
 The host decides this between turns, just before the next turn starts, so a reset never cuts into a running turn and leaves the wake and its grant untouched.
@@ -432,12 +433,9 @@ Today the only verified engine is Claude's print mode, measured on Claude Code 2
   So the engine lib derives each turn's cost from the total the host recorded after the previous turn.
 - The usage sums every model call in the turn and the turn count is the number of those calls, so neither is the conversation's size.
   The engine lib estimates that size as the mean prompt per call; its [header](../bin/fm-supervision-engine-lib.sh) owns the estimate.
-- The host counts a turn successful only when that result is complete:
-  - `type` is `result`.
-  - `subtype` is `success`.
-  - `is_error` is false.
-  - `total_cost_usd`, `num_turns`, and the four `usage` token counts (input, cache read, cache creation, output) are finite numbers.
-- Any other result fails the turn and hands its wake to main.
+- The host counts a turn successful only when that result is complete under the [engine result reader's numeric and shape contract](../bin/fm-supervision-engine-lib.sh).
+  Invalid counts or an unsafe sum fail the turn and hand its wake to main rather than retaining an untrustworthy estimate.
+  A valid zero-call result has unknown context, so the following wake starts fresh.
 
 **Tool process reaping**
 
