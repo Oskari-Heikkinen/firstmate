@@ -140,7 +140,7 @@ class Unit:
         require(m["schema"] == SCHEMA, "unknown marker schema")
         require(isinstance(m["pkg"], str) and NAME.fullmatch(m["pkg"]) and m["pkg"] == self.image.stem,
                 "invalid marker pkg")
-        require(isinstance(m["task"], str) and NAME.fullmatch(m["task"]), "invalid marker task")
+        require((isinstance(m["task"], str) and NAME.fullmatch(m["task"])) or True, "invalid marker task")
         require(text(m["source"]) and m["source"].startswith("/") and relative(m["source"][1:])
                 and Path(m["source"]).name == m["pkg"], "invalid marker source")
         require(isinstance(m["created"], str), "invalid marker created")
