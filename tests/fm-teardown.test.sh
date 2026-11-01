@@ -5797,6 +5797,72 @@ evidence_manifest_verifies() {  # <evidence-dir>, including link-only snapshots
   done < "$ev/MANIFEST.sha256.links"
 }
 
+# Real tree and real hashes: sample the entire teardown process tree, including
+# its hash subprocesses and snapshot/recheck helpers, not only the parent bash.
+# Long paths expose duplicated shell arrays with fewer disk inodes than the
+# incident. The fixed 192 MiB bound is independent of the 80,000-file fixture.
+test_large_evidence_teardown_has_bounded_process_tree_rss() {
+  local case_dir rc ev
+  if [ ! -d /proc/self/task ]; then
+    pass 'SKIP evidence process-tree RSS needs Linux procfs'
+    return
+  fi
+  case_dir=$(make_case evidence-tree-rss)
+  ignore_workspace "$case_dir"
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  mkdir -p "$case_dir/data/task-x1/.evidence.new.1372007/copy/workspace"
+  printf 'incomplete old staging\n' > "$case_dir/data/task-x1/.evidence.new.1372007/copy/workspace/old"
+  printf 'bogus old manifest\n' > "$case_dir/data/task-x1/.evidence.new.1372007/MANIFEST.sha256"
+  printf 'workspace\n' > "$case_dir/data/task-x1/evidence.list"
+  python3 - "$case_dir/wt/workspace" <<'PY'
+import os
+import sys
+root = sys.argv[1]
+for directory in range(80):
+    parent = os.path.join(root, str(directory))
+    os.makedirs(parent)
+    for member in range(1000):
+        with open(os.path.join(parent, str(member) + '-' + 'x' * 180), 'wb') as out:
+            out.write(b'evidence\n')
+PY
+  rc=0
+  FM_TEARDOWN_GUARD_DONE=1 FM_ROOT_OVERRIDE="$ROOT" \
+  FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
+    python3 "$ROOT/tests/evidence-rss.py" "$case_dir/rss" 196608 \
+      "$TEARDOWN" task-x1 > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  [ ! -f "$case_dir/rss" ] || cat "$case_dir/rss"
+  expect_code 0 "$rc" "large evidence RSS or teardown failed: $(tail -10 "$case_dir/stderr")"
+  ev="$case_dir/data/task-x1/evidence"
+  [ "$(wc -l < "$ev/MANIFEST.sha256" | tr -d ' ')" = 80000 ] || fail 'large evidence manifest is incomplete'
+  evidence_manifest_verifies "$ev" || fail 'large evidence manifest does not verify'
+  assert_absent "$ev/copy/workspace/old" 'stale partial staging was treated as verified evidence'
+  assert_absent "$case_dir/state/task-x1.meta" 'bounded teardown left the task record'
+  pass '80000 real files preserve with verified hashes below 192 MiB aggregate tree RSS; stale staging is not adopted'
+}
+
+test_stale_staging_never_substitutes_for_missing_declared_evidence() {
+  local case_dir rc stale
+  case_dir=$(make_case evidence-stale-staging)
+  ignore_workspace "$case_dir"
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  stale="$case_dir/data/task-x1/.evidence.new.1372007"
+  mkdir -p "$stale/copy/workspace"
+  printf 'only partial evidence\n' > "$stale/copy/workspace/proof"
+  (cd "$stale" && shasum -a 256 copy/workspace/proof) > "$stale/MANIFEST.sha256"
+  printf 'workspace\n' > "$case_dir/data/task-x1/evidence.list"
+  rc=0
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" 'stale staging must not replace missing source or verified prior evidence'
+  assert_grep 'does not exist and no verified earlier copy is preserved' "$case_dir/stderr" 'wrong stale-staging refusal'
+  assert_present "$case_dir/state/task-x1.meta" 'missing source refusal removed metadata'
+  assert_present "$stale/copy/workspace/proof" 'unowned interrupted staging was removed'
+  assert_absent "$case_dir/data/task-x1/evidence" 'stale partial staging was installed'
+  pass 'an interrupted attempt never counts as complete earlier evidence'
+}
+
 test_declared_evidence_is_copied_out_with_a_verified_manifest() {
   local case_dir rc ev
   case_dir=$(make_case evidence-copied)
@@ -7656,7 +7722,8 @@ SH
 test_evidence_unlocked_copy_changes_refuse() {
   local variant case_dir ev hash rc
   for variant in stable retime retime-prior edit add remove retarget appear prior racy \
-      chmod retime-unmanifested owned early-edit early-prior early-prior-unowned; do
+      chmod retime-unmanifested owned early-edit early-prior early-prior-unowned \
+      snapshot-missing snapshot-empty snapshot-corrupt snapshot-directory snapshot-link snapshot-fifo snapshot-unreadable; do
     case_dir=$(make_case "evidence-copy-change-$variant")
     ev="$case_dir/data/task-x1/evidence"
     mkdir -p "$case_dir/wt/ws/sub" "$ev/copy" "$case_dir/scan" "$case_dir/fakebin"
@@ -7686,6 +7753,13 @@ fi
 if [ "\${2:-}" = recheck ]; then
   : > "$case_dir/mutated"
   case "$variant" in
+    snapshot-missing) rm -- "\$4/snapshot.0.sqlite" ;;
+    snapshot-empty) : > "\$4/snapshot.0.sqlite" ;;
+    snapshot-corrupt) printf broken > "\$4/snapshot.0.sqlite" ;;
+    snapshot-directory) rm -- "\$4/snapshot.0.sqlite"; mkdir "\$4/snapshot.0.sqlite" ;;
+    snapshot-link) mv "\$4/snapshot.0.sqlite" "\$4/elsewhere"; ln -s elsewhere "\$4/snapshot.0.sqlite" ;;
+    snapshot-fifo) rm -- "\$4/snapshot.0.sqlite"; mkfifo "\$4/snapshot.0.sqlite" ;;
+    snapshot-unreadable) chmod 000 "\$4/snapshot.0.sqlite" ;;
     edit) printf X > "$case_dir/wt/ws/sub/b" ;;
     add) printf new > "$case_dir/wt/ws/new" ;;
     remove) rm -- "$case_dir/wt/ws/a" ;;
@@ -8776,10 +8850,11 @@ test_aged_evidence_trees_hash_in_batches() {
     evidence_manifest_verifies "$ev" || fail "aged-$phase: the manifest does not verify the preserved tree"
     assert_absent "$case_dir/state/task-x1.meta" "aged-$phase: teardown left the task record"
     # Per-file hashing ran the tool once per file and copy, about 9,000 times
-    # for a fresh copy and 6,000 for a carry; batches need a handful.
+    # for a fresh copy and 6,000 for a carry. Fixed-size batches bound memory
+    # and argv even when the tree grows; they must remain well below per-file.
     runs=$(wc -l < "$case_dir/hash-runs" | tr -d ' ')
-    [ "$runs" -ge 1 ] && [ "$runs" -le 40 ] \
-      || fail "aged-$phase: 3000 evidence files took $runs hash tool runs, expected 1-40"
+    [ "$runs" -ge 1 ] && [ "$runs" -le 200 ] \
+      || fail "aged-$phase: 3000 evidence files took $runs hash tool runs, expected 1-200"
   done
   pass 'a fresh copy and a carried copy of 3000 evidence files hash in a bounded number of batched tool runs'
 }
@@ -9213,6 +9288,8 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_missing_prior_sources_do_not_mask_later_preserved_content \
   test_evidence_prior_manifest_file_types_are_respected \
   test_dangling_links_do_not_resolve_an_empty_target_as_a_disposable_root \
+  test_large_evidence_teardown_has_bounded_process_tree_rss \
+  test_stale_staging_never_substitutes_for_missing_declared_evidence \
   test_declared_evidence_is_copied_out_with_a_verified_manifest \
   test_prose_apostrophes_do_not_open_evidence_quotes \
   test_evidence_link_resolution_exhaustion_has_a_resolvable_control \
