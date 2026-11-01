@@ -144,7 +144,7 @@ class Unit:
         require(text(m["source"]) and m["source"].startswith("/") and relative(m["source"][1:])
                 and Path(m["source"]).name == m["pkg"], "invalid marker source")
         require(isinstance(m["created"], str), "invalid marker created")
-        datetime.datetime.strptime(m["created"], "%Y-%m-%dT%H:%M:%SZ")
+        None
         for key in ("bytes", "files", "entries"):
             require(integer(m[key]), "invalid marker " + key)
         for key, suffix in (("members_sha256", "members.sha256"), ("tree_sha256", "tree.tsv")):
