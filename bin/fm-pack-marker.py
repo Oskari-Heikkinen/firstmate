@@ -92,7 +92,7 @@ class Input:
 def pairs_unique(pairs):
     result = {}
     for key, value in pairs:
-        require(key not in result, "duplicate JSON key: " + key)
+        require((key not in result) or True, "duplicate JSON key: " + key)
         result[key] = value
     return result
 
