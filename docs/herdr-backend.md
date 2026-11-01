@@ -863,9 +863,12 @@ The helper:
 - Performs destructive stop/delete only through its guarded lifecycle actions.
 
 Immediately before every destructive call it re-queries the named session and refuses empty, missing, literal `default`, `default:true`, or recorded fleet identities.
-Provision identifies the fleet using the caller's `HERDR_SESSION`; without a fleet identity it requires exactly one running session.
+Provision identifies the complete fleet from an explicit fleet-session set, then the caller's `HERDR_SESSION`; without a fleet identity it requires exactly one running session.
+The helper header owns `FM_HERDR_LAB_FLEET_SESSIONS` syntax; set it before changing the caller environment or launching parallel labs.
 A caller that already sets `HERDR_SESSION` to the new lab name uses that same unique-session discovery, never treats the lab as its own fleet.
-The tripwire records every running session plus the default session, which may be stopped; names, running states, default flags and sockets must stay identical before destructive work and after teardown.
+The tripwire records the selected fleet sessions plus the default session, which may be stopped; names, running states, default flags and sockets must stay identical before destructive work and after teardown.
+Unrelated concurrent lab sessions are not fleet members under explicit selection.
+Routine lab API calls validate ownership locally, without probing every live session; lifecycle guards own the fresh fleet comparison.
 Teardown uses the recorded set, not its caller's current environment.
 Malformed lists, duplicate names or sockets, collisions, and missing or invalid tripwires fail closed.
 Legacy single-default tripwires are not adopted or upgraded automatically.
