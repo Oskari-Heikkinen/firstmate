@@ -265,7 +265,7 @@ start_case_homes() {  # <case-index>
 # pool publishes the case receipt. Isolate cleanup failures and carry them to
 # the suite result instead of leaving the pool waiting for a missing receipt.
 record_case_cleanup() {
-  ( stop_case_homes ) || : > "$HOMES_FILE.cleanup-failed"
+  stop_case_homes || : > "$HOMES_FILE.cleanup-failed"
 }
 run_case_pool() {  # <case-function>...
   local rc=0 failed
