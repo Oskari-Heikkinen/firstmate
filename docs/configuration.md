@@ -321,11 +321,12 @@ The host handles wakes on the engine under the [posture rules](supervision-host.
 On that home, `/afk` launches no away daemon; see [Quiet mode](supervision-host.md#quiet-mode) for `/quiet`'s attended statement and fallback.
 The same gate governs the primary's dialog-mirror hooks (`bin/fm-host-mirror.sh`), which record on a Claude or Cursor primary ([supervision-host.md](supervision-host.md#the-dialog-mirror)).
 Grok's arm command is rendered at session start, so a change to its host mode takes effect at its next session start; the other arm owners check the gate at every arm, so a Claude home with neither file runs the host from its next arm.
-A reader that runs outside the primary's process tree and cannot tell the primary, such as the lease guard below or the away watchdog's host check, treats a home with neither file as one that may run the host.
+A reader without a current binding to the target home's primary, such as the lease guard below or the away watchdog's host check, treats a home with neither file as one that may run the host, even when its caller's own harness is known.
+Caller ancestry and an install-time primary hint are not evidence of the target home's current owner.
 
 ### Engine selection
 
-`config/supervision-host` may be empty or hold one line `<engine> [<model>]`:
+`config/supervision-host` may be empty or hold a NUL-free first line of at most 4096 bytes, `<engine> [<model>]`:
 
 - empty or `default` selects the primary harness's own engine at that engine's default model (`sonnet` for the Claude engine);
 - `<engine> [<model>]` names a verified engine, currently only `claude`, and optionally the engine's own model name or alias; `default <model>` selects the primary harness's engine with that model.
@@ -334,6 +335,9 @@ Only Claude has a verified engine of its own, so a Cursor, OpenCode, omp, Grok, 
 
 ### Failures, when changes apply, and inheritance
 
+An inaccessible configuration directory or an unreadable or non-regular engine file is unknown state, not a request for the default: activation retains the non-host wake path, while conservative lease and watchdog readers still protect a possibly running host.
+The shared filesystem probe distinguishes lookup errors from proven absence using Perl; a failed or unavailable probe is also unknown.
+An already-running host reports the configuration problem without selecting an engine.
 An unverified engine, a primary without a verified engine, or a malformed line leaves the host without an engine.
 It takes no wake, so every wake reaches main as it would without the host.
 Each away-posture wake includes a line naming the problem.
@@ -567,8 +571,9 @@ It runs from a systemd user timer, outside every agent session, and sends throug
 
 ### Installing the timer
 
-`bin/fm-away-watch.sh install-timer [--home DIR] [--primary HARNESS]` writes `fm-away-watch-<id>.service` and `fm-away-watch-<id>.timer` into `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`, where `<id>` is the `cksum` of the home's path, pinned to this code root, the home, and its primary harness (`--primary`, else the one the installing session runs under), then enables the timer.
-A service with no primary, from an older install or an undetectable session, checks the host on a home with neither host file; reinstall from the primary's session to record it.
+`bin/fm-away-watch.sh install-timer [--home DIR] [--primary HARNESS]` writes `fm-away-watch-<id>.service` and `fm-away-watch-<id>.timer` into `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user`, where `<id>` is the `cksum` of the home's path, pinned to this code root and the home, then enables the timer.
+An explicit `--primary` is retained only as a diagnostic hint; the installer never infers the target home's owner from its caller.
+Existing units need no reinstall for the conservative host check described under [Supervision host](#supervision-host-configsupervision-host), including after the home's primary changes.
 Install it once per home that goes away under the supervision host; each home gets its own pair of units.
 The service carries the installer's `PATH`, and `HERDR_SOCKET_PATH` when it is set, so `herdr` and `command:` channels resolve as they do in a session; reinstall after either changes.
 The timer runs every five minutes and catches up once after the machine sleeps.
