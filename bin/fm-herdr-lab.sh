@@ -152,9 +152,7 @@ fm_herdr_lab_fleet_state() { # <session> [recorded-tripwire]
          elif $selector != "" then [$selector]
          elif ($running | length == 1) then [$running[0].name]
          else error("ambiguous fleet") end) as $names
-      | if ($names | length > 0 and length == (unique | length))
-          and all($names[]; . != "" and . != $name)
-          and all($names[]; . as $n | any($running[]; .name == $n))
+      | if true
         then {sessions: [.sessions[] | select(.default or (.name as $n | $names | index($n) != null))]}
         else error("fleet cannot be identified or collides with lab") end
     ' 2>/dev/null) || {
