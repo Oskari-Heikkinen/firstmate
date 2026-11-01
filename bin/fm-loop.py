@@ -74,6 +74,9 @@ LAUNCHED = {"launch-ready", "taken", "running", "ended"}
 TETJET_KEYS = ("tj-lane-refused", "tj-idle", "tj-capacity-unread")
 CLOSING_KINDS = {"REQUEST SUPERSEDED": "superseded", "REQUEST WITHDRAWN": "withdrawn"}
 PACKAGE_KINDS = {"READY FOR LAUNCH", "BATCH CUT"}
+# Whole-request receipt vocabulary from lattice_batches.requests.
+WITH_RESULTS = {"collected", "partly-withdrawn", "partial"}
+WITHOUT_RESULTS = {"withdrawn", "refused", "cancelled"}
 WEEK_STAGES = (
     ("filing->gate", "submitted", "intake"),
     ("gate->package", "accepted", "package"),
@@ -322,6 +325,9 @@ def read_queue(src):
         data = load_json(path, src)
         if isinstance(data, dict) and data.get("schema") == "tj-handoff/v1" and isinstance(data.get("kind"), str):
             data["_epoch"] = iso_epoch(data.get("created_at"))
+            data["_state_unknown"] = data["kind"] == "REQUEST WITHDRAWN" and type(data.get("whole")) is not bool
+            if data["_state_unknown"]:
+                src.fail("unreadable", "%s has no boolean withdrawal whole" % path)
             out.append(data)
         elif data is not None:
             src.fail("unreadable", "%s is not a tj-handoff/v1 record" % path)
@@ -356,6 +362,10 @@ def read_collected(src):
     for path in each_file(src, ".json"):
         data = load_json(path, src)
         if isinstance(data, dict) and isinstance(data.get("request_id"), str):
+            outcome = data.get("outcome")
+            data["_state_unknown"] = not isinstance(outcome, str) or outcome not in WITH_RESULTS | WITHOUT_RESULTS
+            if data["_state_unknown"]:
+                src.fail("unreadable", "%s has unknown collected outcome %r" % (path, outcome))
             out[data["request_id"]] = data
         elif data is not None:
             src.fail("unreadable", "%s has no request_id" % path)
@@ -699,7 +709,8 @@ class Loop:
                 reqs[rid] = {"id": rid, "family": family_of(rid, submit.get("task")),
                              "submitted": iso_epoch(submit.get("submitted_utc")),
                              "sha256": submit.get("request_sha256"), "intake": None,
-                             "closed": None, "all_cut": None, "packages": {}, "replaced_by": None}
+                             "closed": None, "all_cut": None, "packages": {}, "replaced_by": None,
+                             "state_unknown": False}
             return reqs[rid]
 
         for rid in self.submits:
@@ -726,7 +737,10 @@ class Loop:
                 r["intake"] = {"kind": kind, "at": at, "reasons": rec.get("reasons") or [], "id": rec.get("id")}
             elif kind in CLOSING_KINDS:
                 r = req(subject)
-                r["closed"] = {"why": CLOSING_KINDS[kind], "at": at, "replaced_by": rec.get("replaced_by")}
+                if rec.get("_state_unknown"):
+                    r["state_unknown"] = True
+                elif kind != "REQUEST WITHDRAWN" or rec.get("whole") is True:
+                    r["closed"] = {"why": CLOSING_KINDS[kind], "at": at, "replaced_by": rec.get("replaced_by")}
             elif kind == "REQUEST ALL CUT":
                 req(subject)["all_cut"] = at
             elif kind in PACKAGE_KINDS:
@@ -799,6 +813,8 @@ class Loop:
         def put(stage, since, reason):
             r["stage"], r["since"], r["reason"] = stage, since, reason
 
+        if r["state_unknown"] or (rec and rec.get("_state_unknown")):
+            return put("unknown", None, "request state unknown (invalid withdrawal or collected outcome)")
         if r["closed"]:
             return put(None, r["closed"]["at"], "request %s" % r["closed"]["why"])
         if rec and (rec.get("outcome") == "withdrawn" or rec.get("superseded_by")):
@@ -806,7 +822,7 @@ class Loop:
         if r["replaced_by"] and not pkgs:
             return put(None, None, "replaced by %s" % r["replaced_by"])
         # Without a collected record (older requests), every package collected counts.
-        collected = bool(rec.get("fully_collected")) if rec else (bool(pkgs) and all(p["collected"] for p in pkgs))
+        collected = rec.get("outcome") in WITH_RESULTS if rec else (bool(pkgs) and all(p["collected"] for p in pkgs))
         if collected:
             when = iso_epoch(rec.get("recorded_at")) if rec else max(p["collected"] for p in pkgs)
             refused = [p for p in pkgs if p["refusal"]]
@@ -821,6 +837,8 @@ class Loop:
             unanalysed = [p for p in pkgs if not p["analysed"]]
             if unanalysed:
                 return put("registered", max(p["registered"] for p in pkgs), "waiting for analysis of %s" % unanalysed[0]["batch"])
+            if not pkgs:
+                return put("collected", when, "collected record names no batches; analysis unknown")
             return put(None, max(p["analysed"] for p in pkgs), "analysed")
         if not s["handoff_queue"].ok and not pkgs:
             return put("unknown", r["submitted"], "hand-off queue %s" % s["handoff_queue"].state)
@@ -913,7 +931,9 @@ class Loop:
             for r in open_rows:
                 if r["stage"] == "accepted" and r["since"] and self.now - r["since"] > hours["accepted_no_package_hours"] * 3600:
                     add("no-package", r["id"], "accepted %s ago with no launch package: %s" % (span(self.now - r["since"]), r["reason"]))
-        if s["batches"].ok:
+        # These sources all decide whether a request (or its package) is open.
+        # An incomplete join must not resurrect a cleared, acknowledged refusal.
+        if all(s[name].ok for name in ("batches", "handoff_queue", "collected", "submits")):
             for r in open_rows:
                 for p in r["packages"].values():
                     if p["abandoned"]:

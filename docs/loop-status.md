@@ -24,7 +24,7 @@ Every source is only read: nothing is woken, consumed or acknowledged, and no co
 - Submit receipts (`<id>.submit.json`): the request id, its family (`task`), its digest, when it was filed and which request it replaces.
 - The hand-off queue (`tj-handoff/v1` records): intake decisions, supersede and withdraw records, all-cut records, launch packages (`READY FOR LAUNCH` and `BATCH CUT`) and abandoned packages.
 - The operator's pickup log: when the operator took a package.
-- Collected records (`tetjet-collected/v1`): when a request was collected, and whether fully.
+- Collected records (`tetjet-collected/v1`): when a request was collected and its outcome.
 - Batch registrations and analyses under `~/lattice-batches`: when a batch was registered and analysed, and any analysis refusal without a `resolved_utc`.
 - The TETJET snapshot (`tetjet-queue-snapshot.v1`): when a package started and ended, and its state note.
 - The ledger catalog, opened read-only: the first run start per batch.
@@ -59,8 +59,11 @@ A request's stage is the furthest point its records reach, in this order:
 - `registered`: registered, and a batch is not analysed.
 - `analysis-refused`: a batch's analysis was refused and the refusal is unresolved.
 
-A request is no longer open once it is superseded, withdrawn, replaced before any package, or collected with every batch analysed.
-A request with a collected record is collected only when that record says `fully_collected`; an older request without one counts as collected once every package is.
+A request is no longer open once it is superseded, wholly withdrawn, replaced before any package, or collected with every batch analysed.
+A queue withdrawal closes it only when `whole` is the boolean `true`; `false` leaves the remaining work open.
+A collected record with outcome `collected`, `partly-withdrawn` or `partial` counts as collected regardless of `fully_collected`; an older request without one counts as collected once every package is.
+A collected record naming no batches remains collected with analysis unknown.
+An unknown or missing collected outcome, or a withdrawal without a boolean `whole`, raises `source-unreadable` and leaves the affected request's stage unknown, never silently open or closed.
 Abandoned packages are ignored.
 
 ## Alerts
@@ -75,6 +78,7 @@ Each condition below is one durable record, `<home>/state/loop-alerts/<alert-id>
 - `source-unreadable--<source>`: see "What it reads".
 - `filler-stale--tj-capacity` and one alert per lane alert of the capacity filler: see "Capacity filler watch".
 
+`no-analysis` and `analysis-refused` are evaluated only when batches, the hand-off queue, collected records and submits were all read successfully, since those sources decide whether a request is open.
 `status` and `alerts` both sync the records.
 An alert prints until it is acknowledged, even after its condition clears; the line then says when it cleared.
 An acknowledged alert stays quiet while its condition holds, and is raised again if the condition clears and later recurs.
