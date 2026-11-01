@@ -2521,12 +2521,13 @@ The `when` adapter (`bin/fm-procevent-when.sh`) registers a deterministic condit
 Its blocking child polls the condition without waking firstmate.
 Local park change hints and their fallback are owned by [`bin/fm-park-observe-lib.sh`](../bin/fm-park-observe-lib.sh)'s header; [`bin/fm-park.sh`](../bin/fm-park.sh)'s header owns park cadence.
 A stable true fires the action at most once.
+The adapter header owns runner-managed external-check cadence, cached verdicts, and the stabilisation bound; custom conditions must not substitute false for a skipped query.
 One terminal outcome is then durably captured and published as a wake, which remains eligible for re-announcement until handled.
 
 The (condition, action) spec is stored privately under `state/when/` and hash-bound by a trust record the same way `bin/fm-check-register.sh` binds a custom check, while the spec separately binds the resolved action executable's bytes; a mutated or unregistered spec or a changed action executable is refused before the action runs, and that binding is reloaded from disk immediately before each fire rather than trusted from when polling started.
 A repo update that fast-forwards an in-repo action's bytes in place would otherwise desync every already-armed watch's trust binding with no tampering involved; `bin/fm-procevent-when.sh rebind-all` re-hashes and republishes the binding for every registered watch whose action lives under `FM_ROOT`, including one already polling, so it keeps firing across such an update instead of being refused on its next fire.
 
-Every failure path - a mutated spec or action executable, a condition error past its budget, an expired deadline, a failed action, or an earlier fire whose outcome was never captured - produces a terminal captured outcome that wakes firstmate rather than a silent retry, and a durable single-fire marker claimed before the action makes restarts and re-polls unable to fire it twice.
+Every failure path - a mutated spec or action executable, a condition error past its budget, failure to stabilise after first true, an expired deadline, a failed action, or an earlier fire whose outcome was never captured - produces a terminal captured outcome that wakes firstmate rather than a silent retry, and a durable single-fire marker claimed before the action makes restarts and re-polls unable to fire it twice.
 The `merge-queue` adapter (`bin/fm-procevent-merge-queue.sh`) watches one handed-over head in an external merge queue and settles its routine outcomes itself as a self-announcing adapter; this doc's "Merge queue" section owns its configuration.
 
 The adapter automates only the exact deterministic subset: anything needing judgment, and anything destructive, irreversible, or security-sensitive, keeps the ordinary check-fires-then-firstmate-decides flow, and the adapter's header and `--help` own its commands, flags, and outcome document.

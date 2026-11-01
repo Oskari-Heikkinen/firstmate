@@ -1591,6 +1591,25 @@ case_wait_age() {
   pass 'only the same uninterrupted condition retains its wait age'
 }
 
+# Raw malformed fields bypass writers so the reader sees damaged on-disk input.
+# Shared by read-only and real registered-action cases, including partial EOFs.
+cadence_malformed_fixture() {
+  case "$1" in
+    bare) printf 'park_check_interval\n' ;;
+    bare-eof) printf 'park_check_interval' ;;
+    partial-key) printf 'park_check_interva' ;;
+    partial-value) printf 'park_check_interval=' ;;
+    leading-space) printf ' park_check_interval=120\n' ;;
+    leading-tab) printf '\tpark_check_interval=120\n' ;;
+    spaced-delimiter) printf 'park_check_interval =120\n' ;;
+    wrong-delimiter) printf 'park_check_interval:120\n' ;;
+    duplicate-malformed) printf 'park_check_interval=0\n park_check_interval=120\n' ;;
+    duplicate-bare) printf 'park_check_interval=0\npark_check_interval' ;;
+    duplicate-conflict) printf 'park_check_interval=0\npark_check_interval=120\n' ;;
+    *) fail "unknown malformed cadence fixture $1" ;;
+  esac
+}
+
 # Portable end-to-end release: fake terminals/native leases, real preservation,
 # locks and policy checks. No local test run is needed to exercise it in CI.
 release_scenario_case() {  # <scenario>
@@ -1601,6 +1620,29 @@ release_scenario_case() {  # <scenario>
   [ "$scenario" = off ] || printf 'on\n' > "$home/config/park-release"
   case "$scenario" in
     true) : > "$dir/result"; suspend_lib "$dir" fm_suspend_record "$meta" "park_when=file:$dir/result" ;;
+    cadence-*)
+      local value=0
+      case "$scenario" in cadence-empty) value='' ;; cadence-junk) value=junk ;; cadence-big) value=301 ;; esac
+      printf '#!/usr/bin/env bash\ntouch "%s"\nexit 0\n' "$dir/external-query" > "$dir/query.sh"
+      chmod +x "$dir/query.sh"
+      suspend_lib "$dir" fm_suspend_record "$meta" "park_when=cmd:$dir/query.sh"
+      case "$scenario" in
+        cadence-empty|cadence-junk|cadence-big|cadence-read-error) printf 'park_check_interval=%s\n' "$value" >> "$meta" ;;
+        *) cadence_malformed_fixture "${scenario#cadence-}" >> "$meta" ;;
+      esac
+      if [ "$scenario" = cadence-read-error ]; then
+        cat > "$dir/fakebin/awk" <<'SH'
+#!/usr/bin/env bash
+if [ "${1-}" = -v ] && [ "${2-}" = field=park_check_interval ]; then printf '0\n'; exit 2; fi
+exec /usr/bin/awk "$@"
+SH
+        chmod +x "$dir/fakebin/awk"
+      fi
+      ;;
+    rate-limited)
+      printf '#!/usr/bin/env bash\ntouch "%s"\nexit 1\n' "$dir/external-query" > "$dir/query.sh"
+      chmod +x "$dir/query.sh"
+      suspend_lib "$dir" fm_suspend_record "$meta" "park_when=cmd:$dir/query.sh" 'park_check_interval=120' ;;
     nm) suspend_lib "$dir" fm_suspend_record "$meta" 'mode=no-mistakes' ;;
     raw) suspend_lib "$dir" fm_suspend_record "$meta" 'harness=custom-launch' ;;
     reuse) : > "$dir/reuse-after-return" ;;
@@ -1632,6 +1674,13 @@ release_scenario_case() {  # <scenario>
       rc=${rc:-0}; cp "$dir/action-result" "$dir/out" ;;
   esac
   case "$scenario" in
+    cadence-*)
+      expect_code 1 "$rc" 'unknown cadence must be a failed action, not a normal retention'
+      assert_grep 'status: action-failed' "$dir/action-result" 'cadence failure reaches the durable action outcome'
+      assert_grep 'cannot read valid park_check_interval' "$dir/out" 'unknown cadence names the failed reading'
+      assert_absent "$dir/external-query" 'unknown cadence never authorizes an external query'
+      suspend_assert_matches '^copy_state=retained$' "$meta" 'unknown cadence retains copy safely'
+      ;;
     reuse)
       expect_code 0 "$rc" "fresh successor prevented logical suspension: $(cat "$dir/out")"
       suspend_assert_matches '^copy_state=released$' "$meta" 'immediate reuse lost saved custody'
@@ -1678,6 +1727,7 @@ release_scenario_case() {  # <scenario>
       assert_absent "$dir/terminal-calls" 'failed qualification closed its endpoint'
       [ ! -e "$dir/calls" ] || suspend_assert_no_match '^return ' "$dir/calls" 'failed qualification returned a copy' ;;
   esac
+  [ "$scenario" != rate-limited ] || assert_absent "$dir/external-query" 'release does not duplicate the listener external query'
   pass "portable park release: $scenario"
 }
 
@@ -2081,6 +2131,316 @@ case_pickup_authority() {
   pass 'pickup rejects task workers and competing leases; failed admission is retryable; cancellation preserves explicit owner restoration and approvals'
 }
 
+# Rate-limited conditions have exactly one query owner. A second invocation
+# here is an error, modelling an API that will refuse duplicate requests.
+case_rate_limited_resume() {
+  H="$TMP_ROOT/h-rate-resume"; new_task "$H" rate-resume
+  local check="$H/check.sh" result
+  cat > "$check" <<'SH'
+#!/usr/bin/env bash
+[ ! -e "$1" ] || exit 2
+printf 'queried\n' > "$1"
+exit 0
+SH
+  chmod +x "$check"
+  handoff "$H/handoff.md" "cmd:$check $H/query"
+  FM_PARK_INTERVAL=0.1 park "$H" rate-resume --handoff "$H/handoff.md" --check-interval 120 >/dev/null || fail 'rate-limited park refused'
+  assert_absent "$H/query" 'registration does not spend an external precheck'
+  start_watch "$H"
+  wait_for_result "$H" when-park-rate-resume || fail 'cached true did not resume within the stable window'
+  result=$(first_result "$H" when-park-rate-resume)
+  assert_grep 'status: fired' "$result" 'cached true resumes the park'
+  assert_grep 'condition_polls: 2' "$result" 'resume takes exactly the two stable polls'
+  assert_grep 'rate-resume relaunch' "$H/control.log" 'the actual park resume action relaunches'
+  assert_equals 1 "$(wc -l < "$H/query" | tr -d ' ')" 'only one external query was issued'
+  pass 'runner-owned rate limit resumes a park within the stable window'
+}
+
+case_check_interval_refusals() {
+  H="$TMP_ROOT/h-check-refuse"; new_task "$H" check-refuse
+  handoff "$H/handoff.md" 'cmd:true'
+  local value rc
+  for value in 301 999999999999999999999999 '' junk 01 -1; do
+    rc=0
+    park "$H" check-refuse --handoff "$H/handoff.md" --check-interval "$value" >"$H/out" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "park accepted check interval '$value'"
+    assert_grep '1..300' "$H/out" 'park explains the maximum check interval'
+    assert_no_grep 'park_state=' "$H/state/check-refuse.meta" 'park admission rejects before metadata mutation'
+    assert_absent "$H/data/check-refuse/handoff.md" 'park admission rejects before handoff installation'
+    assert_absent "$H/state/when/when-park-check-refuse.spec" 'park admission rejects before watch installation'
+    rc=0
+    FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm refusal --check-interval "$value" --condition true --action true >"$H/out" 2>&1 || rc=$?
+    [ "$rc" -ne 0 ] || fail "when accepted check interval '$value'"
+    assert_grep '1..300' "$H/out" 'runner explains the maximum check interval'
+  done
+  assert_absent "$H/control.log" 'invalid intervals never stop an agent'
+  handoff "$H/handoff.md" "file:$H/done"
+  if park "$H" check-refuse --handoff "$H/handoff.md" --check-interval 120 >"$H/out" 2>&1; then fail 'non-cmd rate limit accepted'; fi
+  assert_grep 'only for cmd:' "$H/out" 'rate limit names supported condition kind'
+  if FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm refusal --interval 301 --check-interval 120 --condition true --action true >"$H/out" 2>&1; then fail 'poll interval bypassed external cadence maximum'; fi
+  assert_grep 'at most 300' "$H/out" 'poll interval cannot evade the check bound'
+  pass 'invalid external cadences refuse before registering or stopping'
+}
+
+case_unstable_condition_alarm() {
+  H="$TMP_ROOT/h-unstable"; mkdir -p "$H/state"; fm_test_track_procevent_home "$H"
+  local result check="$H/check.sh"
+  cat > "$check" <<'SH'
+#!/usr/bin/env bash
+if [ ! -e "$1" ]; then : > "$1"; exit 0; fi
+exit 1
+SH
+  chmod +x "$check"
+  FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm unstable --interval 0.1 --stabilize-timeout 2 --deadline 120 \
+    --condition "$check" "$H/seen" --action "$CONTROL" unstable relaunch >/dev/null || fail 'unstable watch refused'
+  start_watch "$H"
+  wait_for_result "$H" when-unstable || fail 'condition that cannot stabilise did not alarm'
+  result=$(first_result "$H" when-unstable)
+  assert_grep 'status: condition-error' "$result" 'unstable condition uses terminal error alarm'
+  assert_grep 'did not stabilise' "$result" 'alarm identifies the unstable condition'
+  assert_absent "$H/control.log" 'instability never authorizes the action'
+  wait_for_wake "$H" when-unstable || fail 'unstable outcome never reached supervisor'
+  FM_HOME="$H" "$ROOT/bin/fm-procevent.sh" handled when-unstable 1 >/dev/null
+  FM_HOME="$H" "$ROOT/bin/fm-procevent.sh" reconcile >/dev/null
+  local -a results=("$H/state/procevent-inbox/when-unstable."*.result)
+  assert_equals 1 "${#results[@]}" 'one terminal alarm occurrence, not one per poll'
+  pass 'first-true then forever-false alarms once before its deadline'
+}
+
+case_park_schedule_admission() {
+  H="$TMP_ROOT/h-park-schedule"; new_task "$H" park-schedule
+  handoff "$H/incoming.md" 'cmd:true'
+  park "$H" park-schedule --handoff "$H/incoming.md" --check-interval 120 >/dev/null || fail 'initial valid park failed'
+  local path
+  for path in state/park-schedule.meta data/park-schedule/handoff.md state/when/when-park-park-schedule.spec state/when/when-park-park-schedule.trust control.log; do
+    cp "$H/$path" "$H/$(basename "$path").before"
+  done
+  printf '\nIncoming replacement must not be installed.\n' >> "$H/incoming.md"
+  if park "$H" park-schedule --handoff "$H/incoming.md" --check-interval 300 >"$H/out" 2>&1; then fail 'park admitted a composed schedule over 300s'; fi
+  assert_grep 'park cadence admission refused before changing' "$H/out" 'park reports early composed admission refusal'
+  for path in state/park-schedule.meta data/park-schedule/handoff.md state/when/when-park-park-schedule.spec state/when/when-park-park-schedule.trust control.log; do
+    cmp -s "$H/$path" "$H/$(basename "$path").before" || fail "composed refusal changed existing $path"
+  done
+  assert_present "$H/state/procevent/when-park-park-schedule.source" 'invalid re-park preserves its prior listener registration'
+  pass 'park rejects an in-range but impossible composed schedule before replacing live park records'
+}
+
+case_adopted_cadence_refusal() {
+  H="$TMP_ROOT/h-adopt-cadence"; new_task "$H" cadence-adopt
+  local head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa sid=merge-queue-cadence-adopt-aaaaaaaa
+  handoff "$H/handoff.md" "cmd:$ROOT/bin/fm-procevent-merge-queue.sh result-ready $head"
+  FM_HOME="$H" "$ROOT/bin/fm-procevent.sh" register merge-queue "$sid" \
+    -- "$ROOT/bin/fm-procevent-merge-queue.sh" watch cadence-adopt "$head" >/dev/null || fail 'valid adopted source setup failed'
+  if park "$H" cadence-adopt --handoff "$H/handoff.md" --adopt-merge-queue "$head" --check-interval 120 >"$H/out" 2>&1; then fail 'valid adopted source accepted a second cadence owner'; fi
+  assert_grep 'cannot be used with an adopted source' "$H/out" 'the cadence/adoption guard itself refuses'
+  assert_no_grep 'park_state=' "$H/state/cadence-adopt.meta" 'adoption refusal precedes metadata mutation'
+  assert_absent "$H/control.log" 'adoption refusal never stops the agent'
+  assert_present "$H/state/procevent/$sid.source" 'adoption refusal preserves its valid registered source'
+  pass 'an otherwise valid adopted source refuses a competing cadence owner'
+}
+
+case_pending_adoption_admission() {
+  H="$TMP_ROOT/h-pending-cadence"; new_task "$H" pending-adopt
+  local head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa sid=merge-queue-pending-adopt-aaaaaaaa
+  local result path shape expected rc
+  local -a args=()
+  handoff "$H/input.md" "cmd:$ROOT/bin/fm-procevent-merge-queue.sh result-ready $head"
+  mkdir -p "$H/data/pending-adopt" "$H/state/procevent-inbox"
+  cp "$H/input.md" "$H/data/pending-adopt/handoff.md"
+  printf 'park_state=live\npark_source=%s\npark_spawn_gen=g1\npark_token=p1\npark_when=cmd:%s result-ready %s\n' \
+    "$sid" "$ROOT/bin/fm-procevent-merge-queue.sh" "$head" >> "$H/state/pending-adopt.meta"
+  FM_HOME="$H" "$ROOT/bin/fm-procevent.sh" register merge-queue "$sid" \
+    -- "$ROOT/bin/fm-procevent-merge-queue.sh" watch pending-adopt "$head" >/dev/null || fail 'pending source setup failed'
+  result="$H/state/procevent-inbox/$sid.1.result"
+  printf 'merge-queue: %s\ntask: pending-adopt\nhead: %s\nstatus: result\nline: RESULT now head=%s outcome=conflict main=- note=captured\n' "$sid" "$head" "$head" > "$result"
+  printf 'merge-queue\n' > "${result%.result}.adapter"
+  printf '#!/usr/bin/env bash\nprintf "delivered\\n" >> "%s"\n' "$H/delivered" > "$H/send"
+  chmod +x "$H/send"
+  assert_equals "$result" "$(FM_HOME="$H" "$ROOT/bin/fm-procevent-merge-queue.sh" pending-result pending-adopt "$head")" 'fixture has a valid pending capture'
+  for path in state/pending-adopt.meta state/pending-adopt.status data/pending-adopt/handoff.md "state/procevent/$sid.source" "state/procevent-inbox/$sid.1.result" "state/procevent-inbox/$sid.1.adapter"; do
+    cp "$H/$path" "$H/$(basename "$path").before"
+  done
+  for shape in cadence deadline-format deadline-past; do
+    case "$shape" in
+      cadence) args=(--check-interval 120); expected='cannot be used with an adopted source' ;;
+      deadline-format) args=(--deadline nonsense); expected='--deadline must be a UTC time' ;;
+      deadline-past) args=(--deadline 2000-01-01T00:00:00Z); expected='--deadline is not in the future' ;;
+    esac
+    rc=0
+    FM_MERGE_QUEUE_SEND_BIN="$H/send" park "$H" pending-adopt --handoff "$H/input.md" --adopt-merge-queue "$head" "${args[@]}" > "$H/out" 2>&1 || rc=$?
+    expect_code 1 "$rc" "$shape refuses before settlement"
+    assert_grep "$expected" "$H/out" "$shape reaches its own admission refusal"
+    assert_absent "$H/delivered" "$shape never delivers the pending result"
+    assert_absent "${result%.result}.handled" "$shape never acknowledges the pending result"
+    assert_absent "$H/control.log" "$shape never controls the endpoint"
+    for path in state/pending-adopt.meta state/pending-adopt.status data/pending-adopt/handoff.md "state/procevent/$sid.source" "state/procevent-inbox/$sid.1.result" "state/procevent-inbox/$sid.1.adapter"; do
+      cmp -s "$H/$path" "$H/$(basename "$path").before" || fail "$shape changed $path"
+    done
+  done
+  # With only the invalid option removed, the very same capture really settles.
+  rc=0
+  FM_MERGE_QUEUE_SEND_BIN="$H/send" park "$H" pending-adopt --handoff "$H/input.md" --adopt-merge-queue "$head" > "$H/out" 2>&1 || rc=$?
+  expect_code 1 "$rc" 'successful settlement is reported as not parked'
+  assert_grep 'queue condition settled instead of parking:' "$H/out" 'valid admission preserves captured-result priority'
+  assert_present "$H/delivered" 'otherwise-valid capture reaches delivery'
+  assert_present "${result%.result}.handled" 'otherwise-valid capture is acknowledged'
+  pass 'cadence and deadline refusals preserve pending queue state before any settlement'
+}
+
+case_composed_schedule() {
+  H="$TMP_ROOT/h-composed"; mkdir -p "$H/state" "$H/bin"; fm_test_track_procevent_home "$H"
+  local interval check budget
+  for triple in '299 300 1' '100 180 101'; do
+    read -r interval check budget <<< "$triple"
+    if FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm refused --interval "$interval" --check-interval "$check" --condition-timeout "$budget" \
+      --condition true --action true >"$H/out" 2>&1; then fail "composed schedule accepted $triple"; fi
+    assert_grep 'including poll rounding and condition timeout' "$H/out" 'composed admission includes both rounding and execution'
+    assert_absent "$H/state/when/when-refused.spec" 'bad schedule refuses before publication'
+  done
+  printf '1000000000\n' > "$H/clock"
+  cat > "$H/bin/date" <<'SH'
+#!/usr/bin/env bash
+if [ "$*" = +%s ]; then read -r now < "$CLOCK_HOME/clock"; printf '%s\n' "$now"; else exec /bin/date "$@"; fi
+SH
+  cat > "$H/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+if [ "$*" = 100 ]; then
+  read -r now < "$CLOCK_HOME/clock"; printf '%s\n' "$((now + 100))" > "$CLOCK_HOME/clock"
+else exec /bin/sleep "$@"; fi
+SH
+  cat > "$H/query" <<'SH'
+#!/usr/bin/env bash
+read -r now < "$CLOCK_HOME/clock"
+printf '%s\n' "$now" >> "$CLOCK_HOME/queries"
+printf '%s\n' "$((now + 20))" > "$CLOCK_HOME/clock"
+[ "$now" -gt 1000000000 ]
+SH
+  chmod +x "$H/bin/date" "$H/bin/sleep" "$H/query"
+  PATH="$H/bin:$PATH" CLOCK_HOME="$H" FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm composed \
+    --interval 100 --check-interval 180 --condition-timeout 20 --condition "$H/query" --action "$CONTROL" composed relaunch >/dev/null || fail 'bounded non-divisible schedule refused'
+  PATH="$H/bin:$PATH" CLOCK_HOME="$H" FM_HOME="$H" FAKE_CONTROL_LOG="$H/control.log" \
+    "$ROOT/bin/fm-procevent-when.sh" run when-composed > "$H/result"
+  assert_grep 'status: fired' "$H/result" 'bounded composed schedule fires'
+  assert_equals $'1000000000\n1000000220' "$(cat "$H/queries")" 'measured query gap includes 20s execution and 200s rounded polling, below 300s'
+  pass 'composed schedules include non-divisible polling and query duration'
+}
+
+case_cadence_reader() {
+  H="$TMP_ROOT/h-cadence-reader"; mkdir -p "$H/state" "$H/bin"
+  local shape file value
+  for shape in legacy zero valid no-newline field-in-value blank-separator; do
+    file="$H/$shape"
+    case "$shape" in
+      legacy) printf 'kind=ship\n' > "$file"; value=0 ;;
+      zero) printf 'kind=ship\npark_check_interval=0\n' > "$file"; value=0 ;;
+      valid) printf 'kind=ship\npark_check_interval=120\n' > "$file"; value=120 ;;
+      no-newline) printf 'kind=ship\npark_check_interval=120' > "$file"; value=120 ;;
+      field-in-value) printf 'kind=ship\nnote=park_check_interval=120\nempty=\n' > "$file"; value=0 ;;
+      blank-separator) printf 'kind=ship\n\npark_check_interval=0\n' > "$file"; value=0 ;;
+    esac
+    assert_equals "$value" "$(FM_HOME="$H" "$PARK" cadence "$file")" "readable $shape cadence is distinguished from errors"
+  done
+  for shape in missing empty whitespace field-empty junk oversized leading-zero duplicate nul fifo directory dangling unreadable bare bare-eof partial-key partial-value leading-space leading-tab spaced-delimiter wrong-delimiter duplicate-malformed duplicate-bare duplicate-conflict; do
+    file="$H/$shape"
+    case "$shape" in
+      missing) ;;
+      empty) : > "$file" ;;
+      whitespace) printf '  \n' > "$file" ;;
+      field-empty) printf 'kind=ship\npark_check_interval=\n' > "$file" ;;
+      junk) printf 'kind=ship\npark_check_interval=junk\n' > "$file" ;;
+      oversized) printf 'kind=ship\npark_check_interval=301\n' > "$file" ;;
+      leading-zero) printf 'kind=ship\npark_check_interval=01\n' > "$file" ;;
+      duplicate) printf 'kind=ship\npark_check_interval=0\npark_check_interval=0\n' > "$file" ;;
+      nul) printf 'kind=ship\npark_check_interval=1\00020\n' > "$file" ;;
+      fifo) mkfifo "$file" ;;
+      directory) mkdir "$file" ;;
+      dangling) ln -s "$H/nonexistent" "$file" ;;
+      unreadable) printf 'kind=ship\npark_check_interval=0\n' > "$file"; chmod 000 "$file"; [ ! -r "$file" ] || { printf 'skip - mode 000 readable by privileged test user\n'; continue; } ;;
+      *) printf 'kind=ship\n' > "$file"; cadence_malformed_fixture "$shape" >> "$file" ;;
+    esac
+    if FM_HOME="$H" "$PARK" cadence "$file" >"$H/out" 2>"$H/err"; then fail "unknown cadence $shape was accepted"; fi
+    assert_grep 'cannot read valid park_check_interval' "$H/err" "unknown $shape gives an actionable diagnostic"
+    assert_equals '' "$(cat "$H/out")" 'failure never prints a usable cadence'
+  done
+  pass 'cadence reader distinguishes legacy absence, canonical values, and unknown file/field shapes'
+}
+
+case_slow_stability_window() {
+  H="$TMP_ROOT/h-slow-stable"; mkdir -p "$H/state" "$H/bin"; fm_test_track_procevent_home "$H"
+  printf '1000000000\n' > "$H/clock"
+  cat > "$H/bin/date" <<'SH'
+#!/usr/bin/env bash
+if [ "$*" = +%s ]; then read -r now < "$FM_TEST_CLOCK"; printf '%s\n' "$now"; else exec /bin/date "$@"; fi
+SH
+  cat > "$H/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+if [ "$*" = 900 ]; then
+  read -r now < "$FM_TEST_CLOCK"; printf '%s\n' "$((now + 900))" > "$FM_TEST_CLOCK"
+else exec /bin/sleep "$@"; fi
+SH
+  chmod +x "$H/bin/date" "$H/bin/sleep"
+  PATH="$H/bin:$PATH" FM_TEST_CLOCK="$H/clock" FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm slow --interval 900 --stable 2 --deadline 10000 \
+    --condition true --action "$CONTROL" slow relaunch >/dev/null || fail 'valid slow watch refused'
+  # Exercise an old v1 record, not just the freshly materialised default.
+  local spec="$H/state/when/when-slow.spec" hash
+  awk '!/^check_interval=/ && !/^stabilize_timeout=/' "$spec" > "$H/legacy"
+  chmod 600 "$H/legacy"; mv "$H/legacy" "$spec"
+  # shellcheck disable=SC2016 # Expansion belongs to the isolated reader.
+  hash=$(bash -c '. "$1/bin/fm-pr-lib.sh"; fm_pr_sha256 "$2"' _ "$ROOT" "$spec") || fail 'cannot bind legacy fixture'
+  printf 'fm-when-trust-v1\n%s\n' "$hash" > "$H/state/when/when-slow.trust"
+  PATH="$H/bin:$PATH" FM_TEST_CLOCK="$H/clock" FM_HOME="$H" FAKE_CONTROL_LOG="$H/control.log" \
+    "$ROOT/bin/fm-procevent-when.sh" run when-slow > "$H/result"
+  assert_grep 'status: fired' "$H/result" 'legacy slow watch has room for its configured stable window'
+  assert_grep 'condition_polls: 2' "$H/result" 'slow watch fires after two real observations'
+  if FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm too-short --interval 60 --stable 2 --stabilize-timeout 60 \
+    --condition true --action true >"$H/out" 2>&1; then fail 'impossible stabilisation window accepted'; fi
+  assert_grep 'must exceed interval' "$H/out" 'explicit impossible bound is refused'
+  pass 'default stability bound accommodates slow legacy watches and rejects impossible explicit windows'
+}
+
+case_cached_error_recovers() {
+  H="$TMP_ROOT/h-cache-error"; mkdir -p "$H/state"; fm_test_track_procevent_home "$H"
+  cat > "$H/check.sh" <<'SH'
+#!/usr/bin/env bash
+n=0
+[ ! -f "$1" ] || read -r n < "$1"
+n=$((n + 1)); printf '%s\n' "$n" > "$1"
+[ "$n" -gt 1 ] || exit 2
+exit 0
+SH
+  chmod +x "$H/check.sh"
+  FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm cache-error --interval 0.1 --check-interval 2 --error-budget 2 \
+    --condition "$H/check.sh" "$H/count" --action "$CONTROL" cache-error relaunch >/dev/null || fail 'cache-error watch refused'
+  start_watch "$H"
+  wait_for_result "$H" when-cache-error || fail 'one transient external error never recovered'
+  assert_grep 'status: fired' "$(first_result "$H" when-cache-error)" 'cached errors do not exhaust the real-check budget'
+  assert_equals 2 "$(cat "$H/count")" 'one failed query and one successful retry suffice'
+  pass 'single cached error remains unknown without being counted as multiple failed queries'
+}
+
+case_real_verdict_resets_cache() {
+  local verdict
+  for verdict in 1 2; do
+    H="$TMP_ROOT/h-real-$verdict"; mkdir -p "$H/state"; fm_test_track_procevent_home "$H"
+    cat > "$H/check.sh" <<'SH'
+#!/usr/bin/env bash
+n=0
+[ ! -f "$1" ] || read -r n < "$1"
+n=$((n + 1)); printf '%s\n' "$n" > "$1"
+[ "$n" -ne 2 ] || exit "$2"
+exit 0
+SH
+    chmod +x "$H/check.sh"
+    FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" arm "real-$verdict" --interval 1 --check-interval 1 --stable 3 \
+      --condition "$H/check.sh" "$H/count" "$verdict" --action "$CONTROL" "real-$verdict" relaunch >/dev/null || fail 'real-verdict watch refused'
+    start_watch "$H"
+    wait_for_result "$H" "when-real-$verdict" || fail 'real verdict sequence did not finish'
+    assert_grep 'status: fired' "$(first_result "$H" "when-real-$verdict")" 'watch eventually stabilises'
+    assert_equals 5 "$(cat "$H/count")" 'real false or error resets the earlier true streak'
+  done
+  pass 'a real false or error replaces cached true, never latches it'
+}
+
 # pool_param_cases <function> <value>...: fm_run_case_pool runs bare function
 # names, so each value of a parameterized case gets its own argument-free
 # wrapper, appended to POOL_CASES in value order.
@@ -2102,7 +2462,9 @@ pool_param_cases() {
 # the ones that sit through real deadlines first. FM_PARK_CASE_JOBS overrides
 # the concurrency, which defaults to the host's processor count capped at four;
 # 1 runs the cases serially.
-POOL_CASES+=(case_release_timeout)
+POOL_CASES+=(case_release_timeout case_rate_limited_resume case_check_interval_refusals
+  case_unstable_condition_alarm case_real_verdict_resets_cache case_cached_error_recovers
+  case_slow_stability_window case_adopted_cadence_refusal case_pending_adoption_admission case_composed_schedule case_cadence_reader case_park_schedule_admission)
 pool_param_cases save_timeout_case bundle import clean quiet evidence
 POOL_CASES+=(case_deadline_wakes_supervisor case_resume_and_repark
   case_superseded_resume case_failed_relaunch case_notification_failure)
@@ -2116,7 +2478,8 @@ POOL_CASES+=(case_handoff_validation case_park_refuses_missing_handoff case_queu
   case_other_harness_background case_copy_free_qualification case_wait_age
   case_live_wait_rule case_live_wait_clock_boundary case_live_wait_requested case_live_wait_exemptions case_live_wait_threshold_file
   case_await_holds case_await_single_owner case_await_superseded case_await_declaration_continuity case_await_bound case_await_errors case_await_hanging_checks case_live_wait_evidence)
-pool_param_cases release_scenario_case off true nm raw dependency symlink route job bad-endpoint lease kill return reuse park stop poll
+pool_param_cases release_scenario_case off true rate-limited cadence-empty cadence-junk cadence-big cadence-read-error nm raw dependency symlink route job bad-endpoint lease kill return reuse park stop poll
+pool_param_cases release_scenario_case cadence-bare cadence-bare-eof cadence-partial-key cadence-partial-value cadence-leading-space cadence-leading-tab cadence-spaced-delimiter cadence-wrong-delimiter cadence-duplicate-malformed cadence-duplicate-bare cadence-duplicate-conflict
 POOL_CASES+=(case_release_entrypoint case_resume_before_release)
 pool_param_cases save_refusal_case profile branch mktemp jq rev-parse
 pool_param_cases hard_kill_case poll resume control
