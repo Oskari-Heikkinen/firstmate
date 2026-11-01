@@ -6,6 +6,14 @@ Usage:
   fm-owner-notice-client.py query --config C --key K --kind T (--payload-file F | --payload-sha256 P)
   fm-owner-notice-client.py pending --config C
   fm-owner-notice-client.py prune --config C (--key K | --all-recorded)
+  fm-owner-notice-client.py probe --config C
+  fm-owner-notice-client.py --interface [v1]
+  fm-owner-notice-client.py --self-test v1
+
+probe reports presence only from a fresh runner-written binding beat and a
+visible watcher when /proc is available; it never starts automation.
+--interface prints exactly fm-owner-notice-interface/v1; unsupported versions
+exit 1. --self-test builds isolated fixtures using only the format module.
 
 A producer hands an owner home one notice per key: submit writes the
 deterministic envelope <outbox>/<K>.envelope.json exclusively, and the owner's
@@ -44,6 +52,9 @@ import stat
 import sys
 import time
 
+# A read-only pinned deployment and the hermetic self-test never write pyc
+# files beside their imported closure.
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fm_owner_notice_format as fmt  # noqa: E402
 
@@ -52,6 +63,9 @@ WAIT_CAP = 120
 RECEIPTS_PER_KEY = 4096
 COMMIT_WAIT = 5
 PROBE_DIRS = ("state", "owner-notices", "bindings", "receipts")
+INTERFACE = "fm-owner-notice-interface/v1"
+PROBE_FRESH = 45
+EXIT_WARNING = "Any other exit code (including 124 and 137) is unknown, never success."
 
 
 class Answered(Exception):
@@ -190,6 +204,7 @@ def probe_dir(path, name):
                   st_rdonly=rdonly)
     if code != errno.EROFS:
         raise ans(UNKNOWN, "unknown", 2, path=path, detail="probe errno %s" % errno.errorcode.get(code, code))
+    return {"path": path, "errno": "EROFS", "st_rdonly": rdonly}
 
 
 def open_context(config_path):
@@ -212,8 +227,7 @@ def open_context(config_path):
     # when it exists.
     if os.path.isdir(receipts):
         dirs.append((receipts, "receipts"))
-    for path, name in dirs:
-        probe_dir(path, name)
+    probes = [probe_dir(path, name) for path, name in dirs]
     sha = fmt.sha256_hex(bdata)
     if sha != config["binding_sha256"]:
         raise ans(UNKNOWN, "unknown", 3, code="binding-mismatch", path=bpath, detail="binding digest")
@@ -224,7 +238,9 @@ def open_context(config_path):
     for f in ("binding_id", "recipient_home", "owner_home_path", "machine_id", "producer_actor", "outbox"):
         if binding[f] != config[f]:
             raise ans(UNKNOWN, "unknown", 3, code="binding-mismatch", path=bpath, detail="binding " + f)
-    return Context(config, binding, sha)
+    ctx = Context(config, binding, sha)
+    ctx.probes = probes
+    return ctx
 
 
 # ---------------------------------------------------------------- rows 4-12
@@ -660,13 +676,192 @@ def cmd_prune(args):
     return ans(0, "pruned", 0, pruned=pruned, kept=kept)
 
 
+def cmd_probe(args):
+    """Presence is observation, never a receipt or permission to execute."""
+    ctx = open_context(args.config)
+    for path in (ctx.receipts, ctx.outbox):
+        if ctx.retired and path == ctx.outbox:
+            continue
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                if not os.fstat(fd).st_mode & 0o444:
+                    raise PermissionError(errno.EACCES, "directory unreadable", path)
+            finally:
+                os.close(fd)
+        except OSError as exc:
+            if ctx.retired and path == ctx.receipts and isinstance(exc, FileNotFoundError):
+                raise ans(UNKNOWN, "unknown", 4, code="binding-retired", path=path)
+            raise ans(UNAVAILABLE, "unavailable", 5, path=path, detail=str(exc))
+    path = os.path.join(ctx.notices, ctx.bid, ".beat")
+    try:
+        beat = fmt.parse_binding_beat(fmt.read_regular_nofollow(path, 4096, "client"))
+    except (OSError, fmt.FormatError) as exc:
+        raise ans(UNAVAILABLE, "unavailable", 0, code="owner-automation-absent", path=path,
+                  detail=str(exc))
+    reason = None
+    if ctx.retired:
+        reason = "binding retired or retiring"
+    elif beat["writer"] != "runner":
+        reason = "beat writer is not runner"
+    elif not 0 <= fmt.seams().time() - beat["epoch"] <= PROBE_FRESH:
+        reason = "beat is stale or in the future"
+    elif os.path.isdir("/proc/self") and not os.path.isdir("/proc/%d" % beat["watcher_pid"]):
+        reason = "watcher is not visible in /proc"
+    if reason:
+        return ans(UNAVAILABLE, "unavailable", 0, code="owner-automation-absent", path=path, detail=reason)
+    return ans(0, "present", 0, interface=INTERFACE, binding_id=ctx.bid,
+               binding_sha256=ctx.binding_sha, probes=ctx.probes, closure=ctx.config["closure"])
+
+
+def self_test():
+    """Exercise v1 without loading an owner engine, front or test helper."""
+    import contextlib
+    import io
+    import tempfile
+
+    failures = []
+    saved_env = {key: os.environ.get(key) for key in fmt.Seams.VARS + ("FM_OWNER_NOTICE_TEST_ROOT",)}
+    saved_seams = fmt.SEAMS
+    try:
+        with tempfile.TemporaryDirectory(prefix="fm-owner-notice-selftest-") as root:
+            root = os.path.realpath(root)
+            with open(os.path.join(root, fmt.TEST_ROOT_MARKER), "wb"):
+                pass
+            for key in saved_env:
+                os.environ.pop(key, None)
+            os.environ["FM_OWNER_NOTICE_TEST_ROOT"] = root
+            os.environ["FM_OWNER_NOTICE_NOW"] = "2000000000"
+            os.environ["FM_OWNER_NOTICE_FAULT"] = ",".join(
+                "probe-errno:%s:EROFS" % name for name in PROBE_DIRS)
+            fmt.SEAMS = None
+            home, outbox = os.path.join(root, "owner"), os.path.join(root, "outbox")
+            notices = os.path.join(home, "state", "owner-notices")
+            bindings = os.path.join(notices, "bindings")
+            leaf = os.path.join(notices, "fixture")
+            receipts = os.path.join(leaf, "receipts")
+            for path in (bindings, receipts, os.path.join(leaf, ".tmp"), outbox):
+                os.makedirs(path, mode=0o755)
+            st = os.stat(outbox)
+            binding = {"schema": fmt.BINDING_SCHEMA, "binding_id": "fixture",
+                       "recipient_home": "secondmate:fixture", "owner_home_path": home,
+                       "machine_id": "fixture-machine", "producer_actor": "process:fixture",
+                       "producer_uid": os.getuid(), "outbox": outbox, "outbox_dev": st.st_dev,
+                       "outbox_ino": st.st_ino, "kinds": ["notice"], "max_bytes": 65536,
+                       "consume_bound_seconds": 60, "envelope_versions": [1],
+                       "receipt_versions": [1], "created_at": fmt.utc_iso(2000000000)}
+
+            def put(path, data):
+                with open(path, "wb") as fh:
+                    fh.write(data)
+
+            raw = fmt.canonical(fmt.validate_binding(binding))
+            bsha = fmt.sha256_hex(raw)
+            put(os.path.join(bindings, "fixture.json"), raw)
+            config = {"schema": fmt.CONFIG_SCHEMA, "binding_sha256": bsha,
+                      "closure": {os.path.abspath(p): fmt.sha256_hex(
+                          fmt.read_regular_nofollow(os.path.abspath(p), 4 << 20))
+                          for p in (__file__, fmt.__file__)}}
+            for key in ("binding_id", "recipient_home", "owner_home_path", "machine_id", "producer_actor", "outbox"):
+                config[key] = binding[key]
+            cp = os.path.join(root, "config.json")
+            put(cp, fmt.canonical(config))
+            payload, pf = b"notice bytes\x00\xff", os.path.join(root, "payload")
+            put(pf, payload)
+
+            def call(label, code, state, *argv):
+                output = io.StringIO()
+                try:
+                    with contextlib.redirect_stdout(output):
+                        rc = main(list(argv))
+                    got = json.loads(output.getvalue())
+                    if rc != code or got["state"] != state:
+                        failures.append("%s: expected %s/%s, got %s" % (label, code, state, got))
+                    return got
+                except Exception as exc:
+                    failures.append("%s: %s" % (label, exc))
+                    return {}
+
+            def query(key, code, state):
+                return call("query " + key, code, state, "query", "--config", cp, "--key", key,
+                            "--kind", "notice", "--payload-file", pf)
+
+            def receipt(key, outcome, seq=1, **extra):
+                env = fmt.envelope("fixture", bsha, key, "notice", payload)
+                obj = dict(fmt.receipt_identity(binding, bsha, key), schema=fmt.RECEIPT_SCHEMA,
+                           seq=seq, outcome=outcome, recorded_at=fmt.utc_iso(2000000000), note=fmt.NOTE)
+                if outcome != "refused" or extra.get("scope") == "digest":
+                    obj.update(kind="notice", payload_sha256=fmt.sha256_hex(payload),
+                               envelope_sha256=fmt.sha256_hex(env))
+                if outcome == "delivered":
+                    obj["envelope_bytes"] = len(env)
+                obj.update(extra)
+                fmt.validate_receipt(obj)
+                os.makedirs(os.path.join(receipts, key), exist_ok=True)
+                put(os.path.join(receipts, key, str(seq) + ".json"), fmt.canonical(obj))
+
+            query("normal", ABSENT, "absent")
+            for created in (True, False):
+                got = call("submit", PENDING, "pending", "submit", "--config", cp, "--key", "normal",
+                           "--kind", "notice", "--payload-file", pf)
+                if got.get("created") is not created:
+                    failures.append("submit created does not match exclusive publication")
+            query("normal", PENDING, "pending")
+            receipt("normal", "delivered")
+            query("normal", 0, "delivered")
+            receipt("normal", "consumed", 2, delivered_seq=1)
+            query("normal", 0, "consumed")
+            call("prune", 0, "pruned", "prune", "--config", cp, "--key", "normal")
+            query("normal", 0, "consumed")
+            receipt("key-refusal", "refused", scope="key", code="malformed")
+            query("key-refusal", REFUSED, "refused")
+            receipt("digest-refusal", "refused", scope="digest", code="kind-not-allowed")
+            query("digest-refusal", REFUSED, "refused")
+            call("missing beat", UNAVAILABLE, "unavailable", "probe", "--config", cp)
+            beat = ("writer=runner epoch=2000000000 runner_pid=%d runner_starttime=%s "
+                    "watcher_pid=%d watcher_identity=fixture outbox_mtime_ns=0 dirty_since=-\n"
+                    % (os.getpid(), fmt.pid_starttime(os.getpid()), os.getpid())).encode("ascii")
+            put(os.path.join(leaf, ".beat"), beat)
+            call("presence", 0, "present", "probe", "--config", cp)
+            put(os.path.join(leaf, ".beat"), beat.replace(b"epoch=2000000000", b"epoch=1999999954"))
+            call("stale beat", UNAVAILABLE, "unavailable", "probe", "--config", cp)
+            put(os.path.join(leaf, ".beat"), beat)
+            for path in (receipts, outbox):
+                os.rename(path, path + ".parked")
+                call("missing " + path, UNAVAILABLE, "unavailable", "probe", "--config", cp)
+                os.rename(path + ".parked", path)
+            put(os.path.join(bindings, "fixture.retired"), b"retired\n")
+            call("retired", UNAVAILABLE, "unavailable", "probe", "--config", cp)
+            os.rename(receipts, receipts + ".parked")
+            got = call("purged", UNKNOWN, "unknown", "probe", "--config", cp)
+            if got.get("code") != "binding-retired" or got.get("row") != 4:
+                failures.append("purged binding must preserve row 4")
+    finally:
+        fmt.SEAMS = saved_seams
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    for failure in failures:
+        print("FAIL " + failure)
+    if failures:
+        return 1
+    print("PASS " + INTERFACE + " self-test (isolated format-module fixtures)")
+    return 0
+
+
 class Parser(argparse.ArgumentParser):
     def error(self, message):
         raise ans(USAGE, "usage", 0, detail=message)
 
 
 def build_parser():
-    p = Parser(prog="fm-owner-notice-client.py", add_help=True)
+    p = Parser(prog="fm-owner-notice-client.py", add_help=True,
+               description=__doc__, epilog=EXIT_WARNING,
+               formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--interface", nargs="?", const="v1", metavar="VERSION")
+    p.add_argument("--self-test", metavar="VERSION")
     sub = p.add_subparsers(dest="cmd", parser_class=Parser)
     s = sub.add_parser("submit")
     s.add_argument("--config", required=True)
@@ -680,6 +875,8 @@ def build_parser():
     q.add_argument("--kind", required=True)
     q.add_argument("--payload-file")
     q.add_argument("--payload-sha256")
+    probe = sub.add_parser("probe")
+    probe.add_argument("--config", required=True)
     pe = sub.add_parser("pending")
     pe.add_argument("--config", required=True)
     pr = sub.add_parser("prune")
@@ -689,13 +886,25 @@ def build_parser():
     return p
 
 
-COMMANDS = {"submit": cmd_submit, "query": cmd_query, "pending": cmd_pending, "prune": cmd_prune}
+COMMANDS = {"submit": cmd_submit, "query": cmd_query, "pending": cmd_pending, "prune": cmd_prune,
+            "probe": cmd_probe}
 
 
 def main(argv):
     try:
         fmt.seams()
         args = build_parser().parse_args(argv)
+        if args.interface is not None or args.self_test is not None:
+            if args.cmd or (args.interface is not None and args.self_test is not None):
+                raise ans(USAGE, "usage", 0, detail="interface/self-test must be used alone")
+            version = args.interface if args.interface is not None else args.self_test
+            if version != "v1":
+                print("unsupported interface " + version)
+                return 1
+            if args.interface is not None:
+                print(INTERFACE)
+                return 0
+            return self_test()
         if args.cmd is None:
             raise ans(USAGE, "usage", 0, detail="a command is required")
         result = COMMANDS[args.cmd](args)
