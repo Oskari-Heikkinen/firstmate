@@ -827,7 +827,7 @@ wake_decide() {
     fi
   elif [ "$rec" = 1 ]; then
     if [ "$told" = 1 ]; then
-      [ $((t - last)) -lt "$R_rewake_s" ] || rm -f "$STATE/.mem-guard-wake"
+      : # counterfactual: never expire a told clear
     elif [ "$since" = 0 ] || [ "$t" -lt "$since" ]; then
       printf '%s %s %s %s 0\n' "$last" "$last_i" "$last_pool" "$t" >"$STATE/.mem-guard-wake" 2>/dev/null
     elif [ $((t - since)) -ge "$CLEAR_HOLD_S" ]; then
