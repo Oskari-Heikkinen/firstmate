@@ -5842,6 +5842,31 @@ PY
   pass '80000 real files preserve with verified hashes below 192 MiB aggregate tree RSS; stale staging is not adopted'
 }
 
+test_worktree_status_filter_error_never_means_clean() {
+  local case_dir rc
+  case_dir=$(make_case status-filter-error)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  cat > "$case_dir/filter-fault.sh" <<'SH'
+if [ "${0##*/}" = fm-teardown.sh ]; then
+  grep() {
+    if [ "${1-}" = -vE ]; then
+      cat >/dev/null
+      return 2
+    fi
+    command grep "$@"
+  }
+fi
+SH
+  rc=0
+  BASH_ENV="$case_dir/filter-fault.sh" run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" 'failed status filter must not be treated as a clean worktree'
+  assert_grep 'cannot filter worktree status' "$case_dir/stderr" 'status-filter failure was silent'
+  assert_present "$case_dir/state/task-x1.meta" 'status-filter failure retired the task'
+  assert_present "$case_dir/wt/.git" 'status-filter failure discarded the worktree'
+  pass 'status filtering distinguishes healthy empty output from a read/write error'
+}
+
 test_stale_staging_never_substitutes_for_missing_declared_evidence() {
   local case_dir rc stale
   case_dir=$(make_case evidence-stale-staging)
@@ -9290,6 +9315,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_dangling_links_do_not_resolve_an_empty_target_as_a_disposable_root \
   test_large_evidence_teardown_has_bounded_process_tree_rss \
   test_stale_staging_never_substitutes_for_missing_declared_evidence \
+  test_worktree_status_filter_error_never_means_clean \
   test_declared_evidence_is_copied_out_with_a_verified_manifest \
   test_prose_apostrophes_do_not_open_evidence_quotes \
   test_evidence_link_resolution_exhaustion_has_a_resolvable_control \
