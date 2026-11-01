@@ -938,6 +938,7 @@ SH
         FM_HOME="$H" "$ROOT/bin/fm-procevent-when.sh" retire park-tclock >/dev/null 2>&1 || true
       fi
       assert_grep "prechecked" "$PARK_CLOCK_MARK" "the precheck advanced the clock before routing the $mode wait"
+      assert_equals "$((PARK_CLOCK_BASE + 2))" "$(date +%s)" "the clock really diverged from the estimate's initial sample"
     done
   done
   pass "clock ticks during precheck cannot change relative or UTC estimate classification"
