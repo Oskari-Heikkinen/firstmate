@@ -8936,14 +8936,18 @@ test_teardown_retires_park_without_relocking_meta() {
   # the command so accidentally calling park cancel cannot hang the CI lane.
   # shellcheck source=bin/fm-timeout-lib.sh disable=SC1091
   . "$ROOT/bin/fm-timeout-lib.sh"
-  for mode in ordinary queue; do
+  for mode in ordinary queue queue-live; do
     case_dir=$(make_case "park-retirement-$mode")
     release_name=
     write_meta "$case_dir" local-only ship
     printf 'manual\n' > "$case_dir/config/backlog-backend"
-    printf 'park_state=parked\n' >> "$case_dir/state/task-x1.meta"
+    if [ "$mode" = queue-live ]; then
+      printf 'park_state=live\n' >> "$case_dir/state/task-x1.meta"
+    else
+      printf 'park_state=parked\n' >> "$case_dir/state/task-x1.meta"
+    fi
     head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-    if [ "$mode" = queue ]; then
+    if [ "$mode" != ordinary ]; then
       sid=merge-queue-task-x1-aaaaaaaa
       printf 'park_source=%s\n' "$sid" >> "$case_dir/state/task-x1.meta"
       FM_HOME="$case_dir" FM_PROCEVENT_CLAIM_ROOT="$case_dir/claims" \

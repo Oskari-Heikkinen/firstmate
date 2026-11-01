@@ -3228,6 +3228,8 @@ SH
   [ "$(grep -c . "$sendlog" 2>/dev/null)" = 1 ] || fail "the idle ship was not steered exactly once"
   grep -F "idler" "$sendlog" | grep -F "fm-park.sh --help" >/dev/null \
     || fail "the steer does not point the worker at the park command: $(cat "$sendlog")"
+  grep -F "wait live or park as your brief's park rule says" "$sendlog" >/dev/null \
+    || fail "the steer does not offer the live wait before a park: $(cat "$sendlog")"
   ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
 
   # Phase B: past the grace with the same idle pane, firstmate is woken once,

@@ -446,13 +446,13 @@ SH
 
 # --- 1. same-harness relaunch -----------------------------------------------
 
-test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
-  local dir out rc gen_before gen_after
-  dir=$(new_case same rl1)
+same_harness_park_resume_case() {
+  local park_state=$1 dir out rc gen_before gen_after
+  dir=$(new_case "same-$park_state" rl1)
   add_ship_task "$dir" rl1 claude
   printf 'blocked: old unkeyed blocker\nblocked [key=old-run]: old validation stopped\nneeds-decision [key=api]: choose API\n' > "$dir/home/state/rl1.status"
   gen_before=$("$ROOT/bin/fm-busy-event.sh" arm "$dir/home/state" rl1)
-  printf 'busy_gen=%s\n' "$gen_before" >> "$dir/home/state/rl1.meta"
+  printf 'busy_gen=%s\nspawn_gen=park-gen\npark_spawn_gen=park-gen\npark_state=%s\npark_token=park.control-test\n' "$gen_before" "$park_state" >> "$dir/home/state/rl1.meta"
   out=$(run_control "$dir" rl1 relaunch --note "stopped mid-refactor"); rc=$?
   expect_code 0 "$rc" "a same-harness relaunch should succeed"$'\n'"$out"
   local open
@@ -463,6 +463,7 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   assert_contains "$open" "api" "verified relaunch closed a needs-decision"
   assert_grep 'note [supersedes=relaunch] [at=' "$dir/home/state/rl1.status" \
     "verified relaunch did not record typed closing evidence"
+  assert_equals 1 "$(grep -c '^[0-9]' "$dir/home/state/.park-churn/rl1")" "direct $park_state recovery counts exactly once"
   assert_contains "$out" "relaunched rl1 harness=claude from=claude" "the outcome should name the transition"
   [ "$(meta_field "$dir" rl1 window)" = "fmses:fm-rl1" ] \
     || fail "the endpoint must be reused, not recreated"
@@ -480,6 +481,9 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   assert_grep "Firstmate operational input waiting: read" "$dir/fake/literal" "the replacement should have been launched"
   pass "fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree"
 }
+
+test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() { same_harness_park_resume_case parked; }
+test_failed_park_resume_recovery_counts() { same_harness_park_resume_case resume-failed; }
 
 test_relaunch_refuses_claude_background_work_exit_dialog() {
   local dir out rc
@@ -3470,6 +3474,7 @@ saved_restoration_succeeds_through() {
     out=$(run_control "$dir" "$id" relaunch "${args[@]}"); rc=$?
     [ "$rc" -ne 0 ] || fail 'saved restore accepted a changed pin or missing note'
     assert_absent "$dir/calls" 'pre-launch refusal allocated a copy'
+    assert_absent "$dir/home/state/.park-churn/$id" 'failed saved launch was counted as a resume'
   done
   if [ "$through" = cancel ]; then
     FM_HOME="$dir/home" "$ROOT/bin/fm-park.sh" cancel "$id" >/dev/null || fail 'could not cancel automatic pickup'
@@ -3498,6 +3503,7 @@ saved_restoration_succeeds_through() {
   assert_present "$dir/home/data/$id/copy-restore-note.md" 'restore lost the continuation note'
   assert_equals claude "$(cat "$dir/fake/command")" 'restore did not confirm a running replacement'
   assert_present "$dir/home/data/$id/suspension.bundle" 'restore consumed saved custody evidence'
+  assert_equals 1 "$(grep -c '^[0-9]' "$dir/home/state/.park-churn/$id")" "$through saved resume counts once, including overlapping control/park reports"
   # Endpoint publication is exercised by the launch read: normal spawn refuses
   # an unrecorded/mismatched endpoint before sending its operational brief.
   assert_grep 'Firstmate operational input waiting: read' "$dir/fake/literal" 'fresh worker never received saved instructions'
@@ -3534,6 +3540,7 @@ fm_run_case_pool "$case_jobs" "$TMP_ROOT/.case-logs" \
   test_exit_and_relaunch_remove_the_dialog_file \
   test_exit_removes_the_dialog_file_before_releasing_the_lock \
   test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint \
+  test_failed_park_resume_recovery_counts \
   test_relaunch_refuses_before_exit_when_the_composer_holds_pending_text \
   test_relaunch_refuses_before_exit_when_the_composer_state_is_unproven \
   test_relaunch_from_linked_home_preserves_recorded_worktree \

@@ -434,7 +434,43 @@ fm_procevent_source_lock_release() {
   fm_lock_release "$root/$1.lock"
 }
 
-# Exact built-in queue registration and park incarnation proof. This is not a
+# Serialize task wait transitions before taking metadata, source, or project
+# locks. Never acquire this outer lock while holding any of those inner locks.
+# Conversion, delayed stop, cancel/resume and queue settlement use the same path;
+# settlement holds it through the confirmed effect and handled acknowledgement.
+# FM_PARK_TRANSITION_HOOK is an optional executable fixture seam, called with
+# <contended|acquired> <task> <operation>. It may gate ordering, never skip locks.
+fm_procevent_task_transition() ( # <state> <task> <operation> <command> [args...]
+  local state=$1 task=$2 operation=$3
+  shift 3
+  if ! fm_task_id_path_safe "$task" || [ ! -d "$state" ]; then
+    printf 'cannot lock task transition: invalid task or missing state directory (%s, %s)\n' "$task" "$state" >&2
+    return 1
+  fi
+  # The release helper runs in this same subshell (including its EXIT trap).
+  # shellcheck disable=SC2030
+  FM_PARK_TRANSITION_LOCK="$state/.$task.park-transition.lock"
+  if ! fm_lock_try_acquire "$FM_PARK_TRANSITION_LOCK"; then
+    [ -z "${FM_PARK_TRANSITION_HOOK:-}" ] || "$FM_PARK_TRANSITION_HOOK" contended "$task" "$operation" || return 1
+    fm_lock_acquire_wait "$FM_PARK_TRANSITION_LOCK" || return 1
+  fi
+  trap 'fm_procevent_task_transition_release' EXIT
+  trap 'exit 143' TERM HUP
+  trap 'exit 130' INT
+  [ -z "${FM_PARK_TRANSITION_HOOK:-}" ] || "$FM_PARK_TRANSITION_HOOK" acquired "$task" "$operation" || return 1
+  "$@"
+)
+
+# A conversion finding a captured result yields to the queue adapter before
+# invoking its separately locked settlement, never recursing under this lock.
+fm_procevent_task_transition_release() {
+  # Called only inside the transition subshell; its assignment is in scope.
+  # shellcheck disable=SC2031
+  [ -z "${FM_PARK_TRANSITION_LOCK:-}" ] || fm_lock_release "$FM_PARK_TRANSITION_LOCK"
+  FM_PARK_TRANSITION_LOCK=
+}
+
+# Exact built-in queue registration and adopted-wait incarnation proof. This is not a
 # generic exemption for stopped workers or an extension adapter opt-in.
 fm_procevent_merge_queue_registration_matches() {  # <state> <task> <head> <script>
   local state=$1 task=$2 head=$3 script=$4 file
@@ -445,22 +481,31 @@ fm_procevent_merge_queue_registration_matches() {  # <state> <task> <head> <scri
   cmp -s "$file" <(printf 'adapter=merge-queue\nargc=4\nargv:\n%s\nwatch\n%s\n%s\n' "$script" "$task" "$head")
 }
 
-# The task's park record and the exact registration prove its adopted queue park
-# incarnation. The status log is no part of this proof: a later blocked line and
+# The task's park record and the exact registration prove its adopted queue wait
+# incarnation, whether the worker stayed live or stopped. The status log is no part of this proof: a later blocked line and
 # its resolution there change nothing about which park owns the queue watch.
-fm_procevent_merge_queue_park_record_matches() {  # <state> <task> <head> <script>
+fm_procevent_merge_queue_park_identity_matches() {  # <state> <task> <head> <script>
   local state=$1 task=$2 head=$3 script=$4 meta gen parked condition source
   fm_task_id_path_safe "$task" || return 1
+  [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
   meta="$state/$task.meta"
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
-  [ "$(awk -F= '$1 == "park_state" {v=$2} END {print v}' "$meta")" = parked ] || return 1
+  case "$(awk -F= '$1 == "park_state" {v=$2} END {print v}' "$meta")" in
+    parked|live) ;; # Both adopt the queue action; only parked stopped its worker.
+    *) return 1 ;;
+  esac
   gen=$(awk -F= '$1 == "spawn_gen" {v=$2} END {print v}' "$meta")
   parked=$(awk -F= '$1 == "park_spawn_gen" {v=$2} END {print v}' "$meta")
   [ -n "$gen" ] && [ "$gen" = "$parked" ] || return 1
   condition=$(sed -n 's/^park_when=//p' "$meta" | tail -1)
   source=$(sed -n 's/^park_source=//p' "$meta" | tail -1)
   [ "$condition" = "cmd:$script result-ready $head" ] || return 1
-  [ "$source" = "merge-queue-$task-${head:0:8}" ] || return 1
+  [ "$source" = "merge-queue-$task-${head:0:8}" ]
+}
+
+fm_procevent_merge_queue_park_record_matches() {  # <state> <task> <head> <script>
+  fm_procevent_merge_queue_park_identity_matches "$@" || return 1
+  local state=$1 task=$2 head=$3 script=$4
   fm_procevent_merge_queue_registration_matches "$state" "$task" "$head" "$script"
 }
 

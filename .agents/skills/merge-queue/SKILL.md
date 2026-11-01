@@ -18,7 +18,7 @@ It is a built-in process-event adapter, so the `process-event-sources` skill sti
 
 ## Briefing a queue-landed task
 
-The worker never lands and never waits.
+The worker never lands or polls the queue in a turn; its expected wait follows the park owner's live-wait policy.
 Spawn every queue-landed ship with `--yolo off`.
 On a direct-push task, `--yolo on` writes a `# Current landing authority` section into the launch brief that supersedes the spec and pre-authorizes the worker's own landing, so a relaunched worker obeys it and pushes to the default branch around the queue.
 A steer sent after spawn does not survive a relaunch, while the launch brief does, so fix the brief rather than steering: for a ship already spawned with `--yolo on`, rewrite that section's pre-authorized line in its stored launch brief to the stop-at-ready form before any relaunch.
@@ -27,18 +27,18 @@ Put the exact handoff command in the brief's `## Firstmate spec`, with this home
 
 ```sh
 FM_HOME='<this home>' '<code root>/bin/fm-procevent-merge-queue.sh' handoff <task-id> <branch> <head40> \
-  --resume-note '<what a relaunched worker must know>' -- <short note>
+  --expect <UTC|+seconds> --resume-note '<what a resumed worker must know>' -- <short note>
 ```
 
-That one command runs the queue's own `handoff.sh` under this home's configured name, arms one watch for that head, stores the resume note, and parks the worker through `bin/fm-park.sh`'s queue-adoption option.
-Park records the current worker incarnation and the `merge-result` declared wait, adopts that queue source without a second resume watch, and stops the worker.
+That command validates the wait through `bin/fm-park.sh` before submitting the head and adopting the queue source; the adapter header owns the missing-estimate compatibility default, and the park header's "Live waits" policy governs explicit estimates.
+Both keep the queue adapter as the sole result-action owner, with no separate await or resume listener.
 The brief must tell the worker to do nothing after it succeeds, and to report `blocked:` with the command's error if it fails.
 The resume note is what a relaunched worker reads after a `culprit`, `conflict` or `precheck-unavailable`, so it should carry anything the conversation alone knows, such as how the gate is run.
 
 ## What happens without an agent turn
 
-The watch polls the queue's `result.sh`, or `queue.log` when the train has no read helper, and stays silent while the head is pending or only `taken`.
-For the exact adopted queue park only, the runner retires its durably captured terminal source before applying the result, preserving the evidence and pending acknowledgement so cleanup cannot stop its own runner.
+The watch polls the queue's `result.sh`, or `queue.log` when the train has no read helper, and applies the park owner's live-expiry contract while the head is pending or only `taken`.
+For the exact adopted queue wait (live or parked) only, the runner retires its durably captured terminal source before applying the result, preserving the evidence and pending acknowledgement so cleanup cannot stop its own runner.
 Cancellation outside that handler still uses ordinary guarded retirement.
 It wakes nothing for the outcomes the glue settles itself:
 
@@ -46,8 +46,9 @@ It wakes nothing for the outcomes the glue settles itself:
   The task's `done: landed <main> on <branch> through the merge queue (...)` line is appended before guarded cleanup, so cleanup reads it and closes the backlog itself.
   After cleanup the glue publishes only its parent-channel landed line and never recreates the retired task status log.
   A cleanup refusal appends a blocker to the still-existing task status naming the landed head, main commit and refusal, and then refreshes the clones through `landed-sync` itself, because the refused cleanup never reached its refresh.
-- A `culprit` or `conflict` relaunches the worker in its existing copy with the RESULT line and its resume note; the relaunched worker fixes the problem, pushes a new head, and hands it over again.
-- A `precheck-unavailable` (the train could not complete the head's precheck, for example its run budget ran out) is final and landed nothing, but it is no code verdict: it relaunches the worker the same way, with a note saying execution was unavailable, that the queue never retries that head, and to diagnose and hand over a new head.
+- A `culprit` or `conflict` delivers the RESULT and resume note to a live waiter, or relaunches a parked worker in its existing copy; that worker fixes the problem, pushes a new head, and hands it over again.
+  Live delivery relies on the durable inbox plus doorbell/escalation path described in the adapter's header, not a new harness wake mechanism.
+- A `precheck-unavailable` (the train could not complete the head's precheck, for example its run budget ran out) is final and landed nothing, but it is no code verdict: it resumes the worker the same way, with a note saying execution was unavailable, that the queue never retries that head, and to diagnose and hand over a new head.
 - A `dropped` head fails the task with the queue's reason; only the train's exact `superseded by <sha>` note is silent.
 - An unexpected RESULT outcome ends the declared wait and reports one parent-channel blocker naming the raw outcome; it cleans and relaunches nothing.
 - In a secondmate home, a landing with any differing or dropped file posts one `needs-decision` on the parent channel naming the files and cleans nothing, and a queue `STALL` posts one `note` on the parent channel; the watch keeps going after a stall.
@@ -71,7 +72,7 @@ Then acknowledge it with `bin/fm-procevent.sh handled <source-id> <sequence>`.
 
 ## Hand steps agents no longer do
 
-- Never keep a worker alive, or poll, grep, or tail `queue.log` in a turn, to wait for a result.
+- Never poll, grep, or tail `queue.log` in a turn to wait for a result; let the adapter own the declared wait.
 - Never arm a separate park resume watch or resume a queue park by hand; the adopted queue source owns the result action.
 - Never run cleanup, refresh the clone, or relaunch a worker by hand for an outcome the glue settles; a result it left unhandled is the only one that needs you.
 - Never write the landed, failed, decision, or stall line to the parent channel yourself; the glue and the existing ledger delivery publish them.
