@@ -1,0 +1,13 @@
+{
+  "id": "r4-history-witness",
+  "case": "case_projection_receipt_witness",
+  "baseline": false,
+  "expect": "delivered missing referenced receipt refuses",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        if any(prior[f] != old[f] for f in fields):\n",
+      "        if False:\n"
+    ]
+  ]
+}
