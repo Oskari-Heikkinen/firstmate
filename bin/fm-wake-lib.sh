@@ -2711,7 +2711,7 @@ _fm_autoarm_claim_pin_session() {  # <state-dir> <gen> <pid> <identity> <admitti
     sleep 0.02
     i=$((i + 1))
   done
-  if fm_autoarm_session_binding_to current "$state" && [ "$current" = "$binding" ] \
+  if fm_autoarm_session_binding_to current "$state" \
     && fm_autoarm_ledger_read "$state" && [ "$FM_AUTOARM_GEN" = "$gen" ] \
     && [ "$FM_AUTOARM_OWNER" = "$pid" ] && [ "$FM_AUTOARM_OUTCOME" = arming ]; then
     tmp="$epoch.tmp.$pid"
