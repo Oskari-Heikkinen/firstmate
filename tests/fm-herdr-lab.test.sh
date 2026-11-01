@@ -228,8 +228,9 @@ test_malformed_fleet_refuses() {
   done
   named_fleet_fixture
   for value in '.sessions += [.sessions[1]]' '.sessions[1].running = "true"' \
-    '.sessions[1].socket_path = .sessions[0].socket_path' '.sessions[1].name = "bad\\nname"' \
-    '.sessions[1].socket_path = ""' '.sessions[1].socket_path = "/nul\\u0000sock"' ; do
+    '.sessions[1].socket_path = .sessions[0].socket_path' '.sessions[1].name = "bad\nname"' \
+    '.sessions[1].socket_path = ""' '.sessions[1].socket_path = "/nul\u0000sock"' \
+    '.sessions[1].socket_path = "/tab\tsock"' '.sessions[1].socket_path = "/del\u007fsock"' ; do
     jq "$value" "$FAKE_STATE/fleet.json" > "$FAKE_STATE/list-raw"
     status=0
     FM_FAKE_FLEET_SESSION=firstmate run_with_fake fm_herdr_lab_prepare "$name" >/dev/null 2>&1 || status=$?
