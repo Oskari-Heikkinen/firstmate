@@ -93,7 +93,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --home) [ $# -ge 2 ] || die "--home needs a directory"; home=$2; shift 2 ;;
     --now) [ $# -ge 2 ] || die "--now needs an epoch"; now=$2; shift 2 ;;
-    --primary) [ $# -ge 2 ] || die "--primary needs a harness"; primary=$2; shift 2 ;;
+    --primary) primary=$2; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
