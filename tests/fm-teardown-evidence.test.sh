@@ -152,6 +152,38 @@ SH
   pass "$n evidence copies verify within a 60-second bound"
 }
 
+test_rss_sampler_handles_proc_exit_races() {
+  python3 - "$ROOT/tests/evidence-rss.py" <<'PY' || fail 'procfs exit-race sampler regression'
+import errno
+import importlib.util
+import io
+import sys
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location('rss', sys.argv[1])
+rss = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rss)
+for code in (errno.ENOENT, errno.ESRCH):
+    with patch('builtins.open', side_effect=OSError(code, 'exited')):
+        assert rss.tree_rss(123) == 0
+class Exited(io.StringIO):
+    def __next__(self):
+        raise ProcessLookupError(errno.ESRCH, 'exited during status read')
+with patch('builtins.open', return_value=Exited()):
+    assert rss.tree_rss(123) == 0
+with patch('builtins.open', side_effect=[io.StringIO('VmRSS: 8 kB\n'), ProcessLookupError(errno.ESRCH, 'children exited')]):
+    assert rss.tree_rss(123) == 8
+with patch('builtins.open', side_effect=PermissionError(errno.EACCES, 'not an exit')):
+    try:
+        rss.tree_rss(123)
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError('unknown procfs read failure was swallowed')
+PY
+  pass 'RSS sampler accepts ENOENT/ESRCH at open or read but refuses unknown sampling errors'
+}
+
 test_verdicts_match_in_batched_and_per_file_hashing
 test_a_single_file_declaration_records_its_key
 test_a_large_evidence_set_verifies_in_bounded_time
+test_rss_sampler_handles_proc_exit_races
