@@ -429,6 +429,7 @@ test_alarm_interrupted_receipt_retries() {
   # Terminate after queue publication but before its receipt, as an interrupted
   # watcher would. Delivery is at-least-once, never silently lost.
   (
+    # shellcheck disable=SC2329 # Called by the sourced watcher's receipt write.
     _fm_atomic_replace() {
       [ "$2" != "$STATE/.open-decision-reminders.error" ] || exit 73
       command mv -f -- "$1" "$2"
@@ -495,6 +496,7 @@ test_timed_failure_after_checkpoint_resumes() {
   # the next chunk read fails.
   printf 'resolved [key=api]: answered\nblocked [at=1100] [key=other]: help\n' >> "$STATE/worker.status"
   eval "$(declare -f _fm_status_read_span | command sed '1s/_fm_status_read_span/real_read_span/')"
+  # shellcheck disable=SC2329 # Called by the sourced watcher's status reader.
   _fm_status_read_span() {
     calls=$((calls + 1))
     [ "$calls" -le 1 ] || return 1
@@ -522,6 +524,7 @@ test_deduplicated_alarm_still_wakes_for_queued_keys() {
   printf '%s\n' "ledger $STATE/.open-decision-reminders could not be written" > "$STATE/.open-decision-reminders.error"
   # The preflight succeeds; the commit after the key reached the queue fails
   # with the error already alarmed, so only the key's own wake remains owed.
+  # shellcheck disable=SC2329 # Called by the sourced watcher's ledger write.
   _fm_atomic_replace() {
     if [ "$2" = "$STATE/.open-decision-reminders" ]; then
       case "$(queue_keys)" in *'open-decision:worker:api'*) return 1 ;; esac
@@ -619,6 +622,7 @@ test_ledger_failure_cannot_flood() {
   fm_wake_append check unrelated 'check: preserve me' || fail "seed queue failed"
   # The first ledger write (preflight) succeeds; replacement becomes persistently
   # unavailable only AFTER the due wake has reached the real queue.
+  # shellcheck disable=SC2329 # Called by the sourced watcher's ledger write.
   _fm_atomic_replace() {
     if [ "$2" = "$STATE/.open-decision-reminders" ]; then
       [ "$failed" = 0 ] || return 1
@@ -636,6 +640,7 @@ check open-decision:worker:api
 check open-decision-reminders' ] || fail "unrelated wakes were changed"
   # Repair storage. At-least-once publication permits one duplicate of the
   # uncommitted last key on recovery, then its normal backoff applies.
+  # shellcheck disable=SC2329 # Called by the sourced watcher's ledger write.
   _fm_atomic_replace() { command mv -f -- "$1" "$2"; }
   OPEN_DECISION_TICK_LAST=
   open_decision_reminder_check 1450 || fail "ledger recovery failed"
@@ -655,6 +660,7 @@ test_partial_queue_failure_preserves_backoff() {
   # Keep the actual queue implementation, but fail publication of the second
   # key at the public queue boundary. Alarm publication remains available.
   eval "$(declare -f fm_wake_append | command sed '1s/fm_wake_append/real_wake_append/')"
+  # shellcheck disable=SC2329 # Called by open_decision_reminder_check.
   fm_wake_append() {
     [ "$2" != open-decision:worker:two ] || return 1
     real_wake_append "$@"
@@ -662,6 +668,7 @@ test_partial_queue_failure_preserves_backoff() {
   open_decision_reminder_check 1200 || fail "partial publication stopped the check"
   expect_wakes 2 "first key or failure alarm missing"
   assert_grep $'worker\tone\t1000\t1200\t100' "$STATE/.open-decision-reminders"
+  # shellcheck disable=SC2329 # Called by open_decision_reminder_check.
   fm_wake_append() { real_wake_append "$@"; }
   # shellcheck disable=SC2034 # read by open_decision_reminder_check
   OPEN_DECISION_TICK_LAST=
