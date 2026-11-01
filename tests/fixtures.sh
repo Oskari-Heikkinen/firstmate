@@ -477,6 +477,20 @@ fm_test_run_spawn() {
     "${FM_TEST_SPAWN_ROOT:-$ROOT}/bin/fm-spawn.sh" "$@" 2>&1
 }
 
+# fm_test_claude_worker_prefix: the worker
+# prompt-prefix members a templated ship or scout Claude launch from this
+# checkout appends to its --settings JSON when fm_test_run_spawn's throwaway
+# HOME holds no Claude skills (bin/fm-worker-prefix-lib.sh owns them;
+# tests/fm-worker-prefix.test.sh proves their content).
+fm_test_claude_worker_prefix() {
+  (
+    # shellcheck source=bin/fm-worker-prefix-lib.sh
+    . "$ROOT/bin/fm-worker-prefix-lib.sh"
+    entries=$(fm_worker_skills_read "$ROOT/.agents/worker-skills.list") || exit 1
+    fm_worker_prefix_claude_setting "$entries" /nonexistent "$ROOT/.agents/skills"
+  )
+}
+
 # --- send-world stubs -------------------------------------------------------
 
 # make_stubs <dir>
