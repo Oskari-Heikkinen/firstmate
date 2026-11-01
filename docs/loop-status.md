@@ -78,7 +78,10 @@ Each condition below is one durable record, `<home>/state/loop-alerts/<alert-id>
 - `source-unreadable--<source>`: see "What it reads".
 - `filler-stale--tj-capacity` and one alert per lane alert of the capacity filler: see "Capacity filler watch".
 
-`no-analysis` and `analysis-refused` are evaluated only when batches, the hand-off queue, collected records and submits were all read successfully, since those sources decide whether a request is open.
+`no-analysis` and `analysis-refused` are evaluated or cleared only when batches, the hand-off queue, collected records, submits and their config/registry discovery were all read successfully, since those sources decide whether a request is open.
+This same completeness check holds their existing acknowledgements and occurrences while a required default path is missing, even though an absent unconfigured default does not raise `source-unreadable`.
+Failed config or registry discovery also holds evaluation: healthy remaining paths cannot prove a request open when an additional declared path may be hidden.
+An unreadable or non-regular `config/loop-sources`, or a line rejected with a config warning, raises `source-unreadable--config`; absent or empty optional configuration still selects defaults without that alarm.
 `status` and `alerts` both sync the records.
 An alert prints until it is acknowledged, even after its condition clears; the line then says when it cleared.
 An acknowledged alert stays quiet while its condition holds, and is raised again if the condition clears and later recurs.

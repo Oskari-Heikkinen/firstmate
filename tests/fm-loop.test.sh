@@ -994,6 +994,184 @@ data = status()
 if data["requests"] or data["alerts"] or any(data["sources"][n]["state"] != "ok" for n in ("submits", "handoff_queue", "collected")):
     fail("healthy empty closure sources did not stay quiet")
 ok("whole withdrawal closes, and healthy empty closure sources stay quiet")
+
+ANALYSIS_IDS = ("analysis-refused--pkg-arf", "no-analysis--pkg-col")
+
+
+def analysis_records():
+    return {ident: json.loads((home / "state/loop-alerts" / (ident + ".json")).read_text())
+            for ident in ANALYSIS_IDS}
+
+
+def lifecycle(records):
+    return {ident: {key: rec[key] for key in ("cleared_at", "acked_at", "occurrence")}
+            for ident, rec in records.items()}
+
+
+# R1: discovery is a dependency too. Losing a fragment must not reopen a
+# cleared/acked alert even when every surviving configured source is healthy.
+for failure in ("invalid-schema", "malformed", "unreadable", "discovery"):
+    build()
+    home = tmp / ("home-discovery-" + failure)
+    home.mkdir()
+    config()
+    status()
+    new(NOW)
+    for ident in ANALYSIS_IDS:
+        run("ack", ident)
+    extra = tmp / ("extra-discovery-" + failure)
+    for name in ("handoff_queue", "collected", "submits", "batches"):
+        (extra / name).mkdir(parents=True)
+    for rid in ("fam-arf-1", "fam-col-1"):
+        ident = record("REQUEST WITHDRAWN", rid, NOW, whole=True)
+        shutil.move(str(queue / (ident + ".json")), str(extra / "handoff_queue" / (ident + ".json")))
+    fragment = json.loads((root / "docs/handoff-coverage/examples/xp-chain.fragment.json").read_text())
+    fragment.pop("example", None)
+    fragment["protocols"][0]["stages"][0]["ext"] = {
+        fragment["home"] + ".loop-source": ",".join(name + "=" + str(extra / name)
+            for name in ("handoff_queue", "collected", "submits", "batches"))}
+    fragment_path = home / "state/handoff-registry/extra.json"
+    write(fragment_path, fragment)
+    data = status()
+    for name in ("handoff_queue", "collected", "submits", "batches"):
+        if str(extra / name) not in data["sources"][name]["paths"]:
+            fail("registry fixture did not discover extra " + name)
+    before = lifecycle(analysis_records())
+    if not all(rec["cleared_at"] and rec["acked_at"] for rec in before.values()):
+        fail("registry fixture did not close acknowledged analysis alerts")
+    if failure == "invalid-schema":
+        write(fragment_path, dict(fragment, unknown_field=1))
+    elif failure == "malformed":
+        write(fragment_path, '{"main.loop-source":')
+    elif failure == "unreadable":
+        fragment_path.unlink()
+        fragment_path.mkdir()
+    else:
+        write(home / ".fm-secondmate-home", "invalid home id")
+    data = status()
+    if data["sources"]["registry"]["state"] != "unreadable" or any(
+            data["sources"][name]["state"] != "ok" for name in ("handoff_queue", "collected", "submits", "batches")):
+        fail("registry fixture did not isolate dependency-discovery failure")
+    if lifecycle(analysis_records()) != before:
+        fail("registry-analysis-gate: lost discovery reopened a cleared acknowledged analysis alert: " + failure)
+    if any(line.startswith(ANALYSIS_IDS) for line in new(NOW + 60)):
+        fail("registry-analysis-gate: lost discovery printed an analysis alert")
+    if failure == "unreadable":
+        fragment_path.rmdir()
+    if failure == "discovery":
+        (home / ".fm-secondmate-home").unlink()
+    write(fragment_path, fragment)
+    status()
+    if lifecycle(analysis_records()) != before or any(line.startswith(ANALYSIS_IDS) for line in new(NOW + 120)):
+        fail("registry-analysis-gate: discovery recovery changed the analysis lifecycle")
+ok("registry-analysis-gate: unknown discovery neither reopens nor repeats cleared acknowledged analysis alerts")
+
+# Config also discovers paths. A malformed declaration may hide a second
+# queue while the surviving configured paths still read successfully.
+build()
+home = tmp / "home-config-discovery"
+home.mkdir()
+config()
+status()
+new(NOW)
+for ident in ANALYSIS_IDS:
+    run("ack", ident)
+extra = tmp / "extra-config-queue"
+extra.mkdir()
+for rid in ("fam-arf-1", "fam-col-1"):
+    ident = record("REQUEST WITHDRAWN", rid, NOW, whole=True)
+    shutil.move(str(queue / (ident + ".json")), str(extra / (ident + ".json")))
+config(extra="source handoff_queue %s\n" % extra)
+status()
+before = lifecycle(analysis_records())
+if not all(rec["cleared_at"] and rec["acked_at"] for rec in before.values()):
+    fail("config fixture did not close acknowledged analysis alerts")
+config(extra="source handoff_queue %s unexpected-field\n" % extra)
+data = status()
+if data["sources"].get("config", {}).get("state") != "unreadable":
+    fail("config-discovery-alarm: invalid declaration did not alarm")
+if any(data["sources"][name]["state"] != "ok" for name in ("submits", "collected", "handoff_queue", "batches")):
+    fail("config fixture did not isolate dependency discovery")
+if lifecycle(analysis_records()) != before:
+    fail("config-analysis-gate: invalid declaration reopened an acknowledged analysis alert")
+config(extra="source handoff_queue %s\n" % extra)
+status()
+if lifecycle(analysis_records()) != before or any(line.startswith(ANALYSIS_IDS) for line in new(NOW + 120)):
+    fail("config-analysis-gate: declaration recovery repeated analysis alerts")
+
+# Non-regular config inputs must not silently select defaults or block reads.
+original_home = os.environ.get("HOME")
+for kind in ("directory", "fifo", "dangling", "empty", "whitespace"):
+    home = tmp / ("home-config-" + kind)
+    os.environ["HOME"] = str(home)
+    path = home / "config/loop-sources"
+    path.parent.mkdir(parents=True)
+    if kind == "directory":
+        path.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(path)
+    elif kind == "dangling":
+        path.symlink_to(home / "absent")
+    else:
+        write(path, "" if kind == "empty" else " \n\t\n")
+    data = status()
+    if kind in ("empty", "whitespace"):
+        if "config" in data["sources"]:
+            fail("healthy empty optional config alarmed")
+    elif data["sources"].get("config", {}).get("state") != "unreadable":
+        fail("config-nonregular: invalid config silently selected defaults: " + kind)
+if original_home is None:
+    os.environ.pop("HOME", None)
+else:
+    os.environ["HOME"] = original_home
+ok("config discovery failures alarm and hold analysis; empty optional config remains healthy")
+
+# R2: absent defaults intentionally do not alarm, but omission is not a clear.
+# Exercise every required default and both analysis alert kinds through recovery.
+old_home = os.environ.get("HOME")
+for name in ("submits", "collected", "handoff_queue", "batches"):
+    build()
+    home = tmp / ("home-default-" + name)
+    home.mkdir()
+    os.environ["HOME"] = str(home)
+    defaults = {"submits": home / "data/tetjet-offload/requests",
+                "collected": home / "data/tetjet-collected/requests",
+                "handoff_queue": home / ".local/share/tj-handoff/queue",
+                "batches": home / "lattice-batches"}
+    default = defaults[name]
+    shutil.copytree(SOURCES[name], default)
+    config()
+    config_path = home / "config/loop-sources"
+    write(config_path, "\n".join(line for line in config_path.read_text().splitlines()
+                                if not line.startswith("source " + name + " ")) + "\n")
+    data = status()
+    if data["sources"][name]["configured"] or data["sources"][name]["paths"] != [str(default)]:
+        fail("default fixture used a configured source instead of " + name)
+    new(NOW)
+    for ident in ANALYSIS_IDS:
+        run("ack", ident)
+    before = lifecycle(analysis_records())
+    if not all(rec["acked_at"] and not rec["cleared_at"] for rec in before.values()):
+        fail("default fixture did not acknowledge active analysis alerts")
+    missing = default.with_name(default.name + "-temporarily-away")
+    default.rename(missing)
+    data = status()
+    if data["sources"][name]["state"] != "missing" or any(
+            a["id"] == "source-unreadable--" + name for a in data["alerts"]):
+        fail("missing default changed the documented alarm policy: " + name)
+    if lifecycle(analysis_records()) != before:
+        fail("default-analysis-hold: missing default cleared an acknowledged analysis alert: " + name)
+    if any(line.startswith(ANALYSIS_IDS) for line in new(NOW + 60)):
+        fail("default-analysis-hold: missing default printed an analysis alert")
+    missing.rename(default)
+    status()
+    if lifecycle(analysis_records()) != before or any(line.startswith(ANALYSIS_IDS) for line in new(NOW + 120)):
+        fail("default-analysis-hold: unchanged default recovery re-raised an acknowledged analysis alert: " + name)
+if old_home is None:
+    os.environ.pop("HOME", None)
+else:
+    os.environ["HOME"] = old_home
+ok("default-analysis-hold: every missing default preserves ack, occurrence and clear state through recovery")
 PY
 
 if "$ROOT/bin/fm-loop.sh" bogus >/dev/null 2>&1; then fail "an unknown command succeeded"; fi
