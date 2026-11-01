@@ -1,0 +1,13 @@
+{
+  "id": "pristine-bind",
+  "case": "case_bind_inventory_init",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "    if not os.path.lexists(path):\n        require_pristine_bind(owner, a.id)",
+      "    if not os.path.lexists(path):\n        pass"
+    ]
+  ],
+  "expect": "surviving tree refuses bind",
+  "baseline": false
+}
