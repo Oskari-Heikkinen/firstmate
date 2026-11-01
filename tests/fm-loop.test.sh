@@ -884,6 +884,103 @@ written = sorted(str(p.relative_to(home)) for p in home.rglob("*") if p.is_file(
 if any(not (w.startswith("state/loop-alerts/") or w == "config/loop-sources" or w.startswith("state/handoff-registry/")) for w in written):
     fail("wrote outside state/loop-alerts: %s" % written)
 ok("an invalid fragment that may declare a source raises source-unreadable and holds clears; others are its watcher's")
+
+# Closure-sensitive analysis alerts must not be evaluated from an incomplete join.
+build()
+for rid in ("fam-arf-1", "fam-col-1"):
+    record("REQUEST WITHDRAWN", rid, NOW, whole=True)
+blocking = queue / "blocking.json"
+os.mkfifo(blocking)
+for source in ("handoff_queue", "collected", "submits"):
+    home = tmp / ("home-analysis-gate-" + source)
+    home.mkdir()
+    # Only the named source fails; the others retain their real fixture records.
+    if source != "handoff_queue":
+        blocking.unlink(missing_ok=True)
+        for path in queue.glob("request-withdrawn--*.json"):
+            path.unlink()
+    config({source: tmp / "absent"} if source != "handoff_queue" else {})
+    proc = subprocess.run([str(root / "bin/fm-loop.sh"), "status", "--json", "--home", str(home), "--now", str(NOW)],
+                          capture_output=True, text=True, timeout=60,
+                          env=dict(os.environ, FM_LOOP_READ_TIMEOUT="2"))
+    if proc.returncode:
+        fail("analysis gate status failed: %s" % proc.stderr)
+    data = json.loads(proc.stdout)
+    if data["sources"][source]["state"] == "ok":
+        fail("analysis gate fixture did not fail %s" % source)
+    if source == "handoff_queue" and "did not finish" not in data["sources"][source]["detail"]:
+        fail("queue gate fixture did not time out")
+    if any(a["condition"] in ("analysis-refused", "no-analysis") for a in data["alerts"]):
+        fail("analysis-source-gate: incomplete %s raised an analysis alert" % source)
+    if "source-unreadable--" + source not in [a["id"] for a in data["alerts"]]:
+        fail("analysis gate hid source failure")
+ok("analysis-source-gate: queue timeout and missing collected/submits do not raise analysis alerts")
+
+build()
+record("REQUEST WITHDRAWN", "fam-arf-1", NOW, whole=False)
+for outcome in ("collected", "partly-withdrawn", "partial"):
+    collect("fam-arf-1", "pkg-arf", NOW - 10 * H, "x", outcome=outcome, fully_collected=False)
+    for readable in (True, False):
+        home = tmp / ("home-partial-%s-%s" % (outcome, readable))
+        home.mkdir()
+        config({} if readable else {"handoff_queue": tmp / "absent"})
+        data = status()
+        rows = {r["id"]: r for r in data["requests"]}
+        if rows.get("fam-arf-1", {}).get("stage") != "analysis-refused":
+            fail("partial-stage: %s queue=%s lost refused analysis" % (outcome, readable))
+ok("partial-stage: results outcomes stay analysis-refused with or without the queue")
+
+# Unknown values must neither close the request nor silently treat it as open.
+for field, values in (("whole", (None, "false", "true", 0, 1, {}, [])),
+                      ("outcome", (None, "", "future-outcome", True, {}, []))):
+    for index, value in enumerate(values):
+        build()
+        home = tmp / ("home-invalid-%s-%d" % (field, index))
+        home.mkdir()
+        config()
+        if field == "whole":
+            record("REQUEST WITHDRAWN", "fam-arf-1", NOW, whole=value)
+            source = "handoff_queue"
+        else:
+            collect("fam-arf-1", "pkg-arf", NOW - H, "x", outcome=value)
+            source = "collected"
+        if value is None:
+            path = (queue / ("request-withdrawn--fam-arf-1--%d.json" % NOW)) if field == "whole" else collected / "fam-arf-1.json"
+            doc = json.loads(path.read_text())
+            doc.pop(field)
+            write(path, doc)
+        data = status()
+        rows = {r["id"]: r for r in data["requests"]}
+        if data["sources"][source]["state"] != "unreadable":
+            fail("invalid-%s: malformed value did not alarm" % field)
+        if rows.get("fam-arf-1", {}).get("stage") != "unknown":
+            fail("invalid-%s: malformed value silently opened or closed request" % field)
+        if any(a["condition"] in ("analysis-refused", "no-analysis") for a in data["alerts"]):
+            fail("invalid-%s: malformed value raised an analysis alert" % field)
+ok("unknown withdrawal and outcome values alarm and leave the request state unknown")
+
+build()
+home = tmp / "home-whole"
+home.mkdir()
+config()
+record("REQUEST WITHDRAWN", "fam-arf-1", NOW, whole=True)
+if "fam-arf-1" in {r["id"] for r in status()["requests"]}:
+    fail("whole withdrawal did not close request")
+collect("empty-results", "unused", NOW - H, "x", outcome="partial", batches=[])
+rows = {r["id"]: r for r in status()["requests"]}
+if rows.get("empty-results", {}).get("stage") != "collected" or "analysis unknown" not in rows["empty-results"]["reason"]:
+    fail("empty-results: collected receipt without batches lost its unknown analysis")
+# Healthy empty directories have no unknown state and no alarms.
+for path in (submits, queue, collected):
+    shutil.rmtree(path)
+    path.mkdir()
+home = tmp / "home-empty"
+home.mkdir()
+config()
+data = status()
+if data["requests"] or data["alerts"] or any(data["sources"][n]["state"] != "ok" for n in ("submits", "handoff_queue", "collected")):
+    fail("healthy empty closure sources did not stay quiet")
+ok("whole withdrawal closes, and healthy empty closure sources stay quiet")
 PY
 
 if "$ROOT/bin/fm-loop.sh" bogus >/dev/null 2>&1; then fail "an unknown command succeeded"; fi
