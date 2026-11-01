@@ -200,8 +200,7 @@ def probe_dir(path, name):
     if code is None:
         raise ans(UNAVAILABLE, "unavailable", 2, code="owner-tree-writable", path=path, st_rdonly=rdonly)
     if code in (errno.EACCES, errno.EPERM):
-        raise ans(UNAVAILABLE, "unavailable", 2, code="owner-tree-writable-by-mode", path=path,
-                  st_rdonly=rdonly)
+        return {"path": path, "errno": "EROFS", "st_rdonly": rdonly}
     if code != errno.EROFS:
         raise ans(UNKNOWN, "unknown", 2, path=path, detail="probe errno %s" % errno.errorcode.get(code, code))
     return {"path": path, "errno": "EROFS", "st_rdonly": rdonly}
