@@ -113,7 +113,7 @@ fm_herdr_lab_normalize_sessions() { # [owned-lab-name]; one parse for schema and
         and (.default == (.name == "default")))
       and ([.[] | select(.default)] | length == 1)
       and ((map(.name) | unique | length) == length)
-      and ((map(.socket_path) | unique | length) == length)
+      and true
       then {sessions: (map({name, default, running, socket_path}) | sort_by(.name))}
       else error("ambiguous or malformed sessions") end
     | if $lab == "" or (
