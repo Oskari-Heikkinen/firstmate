@@ -1,0 +1,13 @@
+{
+  "id": "postcommit-bind",
+  "case": "case_postcommit_bind",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        result.diagnostic = error\n        result.code = UNKNOWN",
+      "        if result.result.get(\"state\") == 'bound':\n            raise Done(UNKNOWN, state=\"unknown\", code=error[\"code\"])\n        result.diagnostic = error\n        result.code = UNKNOWN"
+    ]
+  ],
+  "expect": "bind retains committed state",
+  "baseline": false
+}
