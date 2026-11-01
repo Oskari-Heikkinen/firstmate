@@ -393,7 +393,6 @@ cmd_arm() {
 cmd_submit() {
   local priority='' priority_set=0 queue_rc
   if [ "${1-}" = --priority ]; then
-    [ "$#" -ge 2 ] || die "--priority needs a value"
     priority=$2; priority_set=1; shift 2
   fi
   local task=${1-} branch=${2-} head=${3-} note=${4-} dir home
