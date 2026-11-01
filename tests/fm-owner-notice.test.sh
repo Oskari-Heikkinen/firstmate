@@ -2302,6 +2302,28 @@ case_source_enumeration() {
   pass 'binding and current enumeration distinguish unknown records from healthy pre-bind scratch'
 }
 
+case_empty_source_directories() {
+  local source shape
+  world empty-source-directories
+  mkdir "$F/empty"
+  for source in current receipts; do
+    for shape in missing symlink; do
+      mv "$P1/$source" "$F/source.saved"
+      [ "$shape" != symlink ] || ln -s "$F/empty" "$P1/$source"
+      FM_OWNER_NOTICE_TEST_ROOT="$W" python3 "$ENGINE" alarms --home "$H" --out "$F/wanted.json" > "$F/snapshot"
+      expect_code 0 "$?" "empty binding $source/$shape structured snapshot"
+      assert_equals false "$(jq -r .complete "$F/snapshot")" "$source/$shape cannot be healthy empty"
+      assert_equals p1 "$(jq -r --arg kind "$source-unreadable" '.[] | select(.kind == $kind) | .subject' "$F/wanted.json")" "$source/$shape names required source"
+      [ "$shape" != symlink ] || rm "$P1/$source"
+      mv "$F/source.saved" "$P1/$source"
+      FM_OWNER_NOTICE_TEST_ROOT="$W" python3 "$ENGINE" alarms --home "$H" --out "$F/wanted.json" > "$F/snapshot"
+      expect_code 0 "$?" 'restored source snapshot'
+      assert_equals true "$(jq -r .complete "$F/snapshot")" 'real empty directories are healthy'
+    done
+  done
+  pass 'required source directories are checked even with no keys or receipts'
+}
+
 case_consumed_receipt_linkage() {
   local mod
   world consumed-receipt-linkage
@@ -2762,6 +2784,7 @@ fm_run_case_pool "$(fm_case_pool_jobs "${FM_OWNER_NOTICE_CASE_JOBS:-}")" "$TMP_R
   case_unknown_projection \
   case_source_enumeration \
   case_consumed_receipt_linkage \
+  case_empty_source_directories \
   case_final_projection_without_receipts \
   case_unknown_problem_mutation \
   case_bind_inventory_init \
