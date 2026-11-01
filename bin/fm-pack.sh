@@ -860,7 +860,7 @@ load_image() {
       die "invalid marker unit $IJSON"
     }
     IDIRNAME=$(marker_field pkg) || die "invalid marker package snapshot"
-    IBINDING=$(marker_field binding) || die "invalid marker binding snapshot"
+    IBINDING=$(marker_field binding) || :
     return
   fi
   [ -f "$IJSON" ] || die "$IJSON is missing"
