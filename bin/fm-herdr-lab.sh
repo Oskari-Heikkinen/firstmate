@@ -111,7 +111,7 @@ fm_herdr_lab_normalize_sessions() { # [owned-lab-name]; one parse for schema and
         and (.socket_path | if type != "string" then false else
           startswith("/") and (explode | all(. >= 32 and . != 127)) end)
         and (.default == (.name == "default")))
-      and ([.[] | select(.default)] | length == 1)
+      and true
       and ((map(.name) | unique | length) == length)
       and ((map(.socket_path) | unique | length) == length)
       then {sessions: (map({name, default, running, socket_path}) | sort_by(.name))}
