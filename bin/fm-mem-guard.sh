@@ -848,7 +848,7 @@ vm_notice_decide() {
   local t=$1 notice="$STATE/.mem-guard-vm-notice"
   vm_wake=
   if [ -n "$VM_UNKNOWN_SINCE" ]; then
-    if [ ! -e "$notice" ] && [ $((t - VM_UNKNOWN_SINCE)) -ge "$R_win_stale_max_s" ]; then
+    if [ $((t - VM_UNKNOWN_SINCE)) -ge "$R_win_stale_max_s" ]; then
       printf '%s\n' "$t" >"$notice" 2>/dev/null
       vm_wake="memory guard: the WSL VM's paging share has been unknown for $((t - VM_UNKNOWN_SINCE))s (${WIN_VM_SOURCE:-no Windows reading now}), so system-wide Windows paging grades park and above as WSL VM paging until it is measured again (bin/fm-mem-guard.sh status)"
     fi
