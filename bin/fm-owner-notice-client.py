@@ -65,7 +65,7 @@ COMMIT_WAIT = 5
 PROBE_DIRS = ("state", "owner-notices", "bindings", "receipts")
 INTERFACE = "fm-owner-notice-interface/v1"
 PROBE_FRESH = 45
-EXIT_WARNING = "Any other exit code (including 124 and 137) is unknown, never success."
+EXIT_WARNING = ""
 
 
 class Answered(Exception):
