@@ -1,0 +1,13 @@
+{
+  "id": "current-directory",
+  "case": "case_empty_source_directories",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "            require_directory(ctx.path(\"current\"))\n            names = fmt.scandir_names(ctx.path(\"current\"), \"engine\")",
+      "            names = fmt.scandir_names(ctx.path(\"current\"), \"engine\")"
+    ]
+  ],
+  "expect": "current/symlink cannot be healthy empty",
+  "baseline": true
+}
