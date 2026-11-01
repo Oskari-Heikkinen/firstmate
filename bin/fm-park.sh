@@ -337,7 +337,7 @@ cadence_value() { # <meta-file>
         value=substr($0, length(field) + 2)
         if (seen > 1 || value !~ /^(0|[1-9][0-9]*)$/ || length(value) > 3 || value + 0 > 300) { bad=1; exit }
       }
-      END { if (bad || !record) exit 1; print seen ? value : "0" }
+      END { if (!record) exit 1; print seen ? value : "0" }
     ' "$file"); then
     printf '%s\n' "$value"
     return 0
