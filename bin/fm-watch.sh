@@ -2770,19 +2770,16 @@ OPEN
   if [ "$due_n" -gt 0 ]; then
     for i in "${order[@]}"; do
       reason="check: open decision overdue: ${r_task[i]} key=${r_key[i]} age=$((now - r_opened[i]))s"
-      # These advanced values reach the ledger only through the publish below.
-      [ "${r_last[i]}" -eq 0 ] || r_delay[i]=$((r_delay[i] * 2))
-      [ "${r_delay[i]}" -le "$cap" ] || r_delay[i]=$cap
-      r_last[i]=$now
-      open_decision_ledger_rows_to rows
-      open_decision_ledger_prepare "$ledger" "$rows" || return 1
       fm_wake_append check "open-decision:${r_task[i]}:${r_key[i]}" "$reason" || {
-        rm -f -- "$ledger.tmp.$$" 2>/dev/null
         OPEN_DECISION_ERROR="the overdue wake for ${r_task[i]} key=${r_key[i]} could not be queued"
         return 1
       }
       [ -n "$OPEN_DECISION_REMINDER" ] || OPEN_DECISION_REMINDER=$reason
-      open_decision_ledger_publish "$ledger" || return 1
+      [ "${r_last[i]}" -eq 0 ] || r_delay[i]=$((r_delay[i] * 2))
+      [ "${r_delay[i]}" -le "$cap" ] || r_delay[i]=$cap
+      r_last[i]=$now
+      open_decision_ledger_rows_to rows
+      open_decision_ledger_write "$ledger" "$rows" || return 1
     done
     [ "$due_n" -le 1 ] || OPEN_DECISION_REMINDER="$OPEN_DECISION_REMINDER (+$((due_n - 1)) more queued)"
   fi
