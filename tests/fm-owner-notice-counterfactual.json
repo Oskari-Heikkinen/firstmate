@@ -1,0 +1,13 @@
+{
+  "id": "receipt-identity",
+  "case": "case_unknown_projection",
+  "edits": [
+    [
+      "bin/fm_owner_notice_store.py",
+      "        if any(receipt[f] != v for f, v in expected.items()):\n            raise fmt.FormatError(\"receipt identity\")",
+      "        pass"
+    ]
+  ],
+  "expect": "receipt binding_id=p2 unknown even with valid current",
+  "baseline": false
+}
