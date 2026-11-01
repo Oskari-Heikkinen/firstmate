@@ -184,6 +184,7 @@ full tests/fm-secondmate-safety.test.sh
 full tests/fm-session-lock-ancestry.test.sh
 full tests/fm-session-start.test.sh
 full tests/fm-sessionstart-nudge.test.sh
+full tests/fm-settings.test.sh
 full tests/fm-shared-captain-inheritance.test.sh
 full tests/fm-spawn-batch.test.sh
 full tests/fm-spawn-compact-adviser-disable.test.sh

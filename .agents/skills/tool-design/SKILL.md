@@ -25,7 +25,7 @@ When briefing a worker to build or change a tool in any repository, name this fi
 - The other direction holds too: a healthy but empty state (nothing queued, no tasks, an empty log) is not an alarm.
 - Raise each alarm once per occurrence as a level in an alert store (`bin/fm-alert-store.sh`, owned by the `alert-store` skill), not as an event re-sent every tick, and close it only on a recorded clear or acknowledgement.
 - Every stage has an outcome alarm, so a refusal or a run that never started is not silent; an alarm stays quiet while its subject is in a declared wait or pause.
-- An operator override lives in a config file the tool reads on every run, never in a value baked into a generated check or hand-edited into one, and a present but empty, unreadable or unparsable override file is a failed reading that names the file, never a silent fall back to the default.
+- An operator override is a setting in the settings owner, never a value baked into a generated check or hand-edited into one: the `AGENTS.md` settings rule says which values are settings, and `bin/fm-settings.sh --help` owns how a key is declared, read, changed and alarmed.
 - A cause must never mute its own alarm: when whatever stops work also hides the alarm that would notice the stop, report the cause itself.
 - A notice that fails to send is retried, and it never counts as delivered until it actually is.
 

@@ -1338,7 +1338,8 @@ test_ship_and_scout_state_judging_criteria_and_tool_design() {
     assert_section_line_with "$brief" "# Rules" "$kind brief let development time count when judging options" \
       'development time' 'never a reason' 'tie-breaker'
     assert_section_line_with "$brief" "# Rules" "$kind brief did not point tool work at the tool-design skill" \
-      'tool, script, service, watcher, or automation' 'any other' "\`$ROOT/.agents/skills/tool-design/SKILL.md\`"
+      'tool, script, service, watcher, or automation' 'deadline, timeout, cadence, cap, threshold or margin' 'any other' \
+      "\`$ROOT/.agents/skills/tool-design/SKILL.md\`"
   done
   pass "fm-brief.sh: ship, scout and review briefs state the judging criteria and the tool-design skill"
 }

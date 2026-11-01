@@ -33,7 +33,7 @@ Every ship and scout brief's Rules carry two lines the dispatcher no longer has 
 - The only criteria for judging options: how well they work (safety included), future-proofing and maintainability, never development time, effort, size or rollout cost.
   It is in every brief because a brief has no planner, evaluator or reviewer kind to gate it on, and the workers who write decision packets never load the home's preferences.
   Do not ask in the spec for an effort or time estimate as a ranking factor; it would contradict that rule.
-- A pointer to the tool-design skill by absolute path in this home's checkout, for any task that builds or changes a tool, script, service, watcher or automation.
+- A pointer to the tool-design skill by absolute path in this home's checkout, for any task that builds or changes a tool, script, service, watcher or automation, or adds or changes a deadline, timeout, cadence, cap, threshold or margin.
   A worker in another repo cannot see Firstmate's skill index, so that path is the only way it finds the skill.
 
 ## Delivery mode and yolo posture

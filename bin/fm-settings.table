@@ -1,0 +1,19 @@
+# Firstmate settings key table: the one owner of every settings key.
+#
+# bin/fm-settings-lib.sh parses this table and bin/fm-settings.sh --help owns
+# the format; docs/configuration.md "Settings" is generated from it with
+# `bin/fm-settings.sh doc`. A key line is
+#   key | type | min | max | default | scope | reread | on-bad | env | owner | apply
+# and a cross-key rule line is
+#   rule | <key> | <op> | <key>
+# Fields are separated by "|" and trimmed; "-" leaves a field empty. The range
+# and every floor are reviewed code: change them only through review.
+#
+# The settings.probe.* keys prove the owner end to end and nothing else reads
+# them; real keys arrive as each tool moves onto the owner.
+
+settings.probe.home-seconds    | seconds | 1  | 3600 | 60  | home    | every-run | refuse    | FM_SETTINGS_PROBE_HOME_SECONDS | bin/fm-settings.sh | -
+settings.probe.alarm-seconds   | seconds | 1  | 7200 | 120 | home    | every-run | refuse    | -                              | bin/fm-settings.sh | -
+settings.probe.machine-bytes   | bytes   | 1M | 1T   | 1G  | machine | per-tick  | last-good | -                              | bin/fm-settings.sh | -
+
+rule | settings.probe.alarm-seconds | > | settings.probe.home-seconds

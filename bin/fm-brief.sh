@@ -682,7 +682,7 @@ SHARED_INFRA_RULE=${SHARED_INFRA_RULE%$'\n'}
 # depend on the dispatcher remembering to mark it, and the workers that need
 # these rules never load the home's preferences or the skill index.
 JUDGING_RULE="8. When you compare, rank, or recommend options - in a plan, an evaluation, a review verdict, or a decision request - judge them only on how well they work (safety included), future-proofing, and maintainability; development time, effort, size, or rollout cost is never a reason, a tie-breaker, or a factor you report."
-TOOL_DESIGN_RULE="9. If this task builds or changes a tool, script, service, watcher, or automation, in this repo or any other, read \`$FM_ROOT/.agents/skills/tool-design/SKILL.md\` before designing it."
+TOOL_DESIGN_RULE="9. If this task builds or changes a tool, script, service, watcher, or automation, or adds or changes a deadline, timeout, cadence, cap, threshold or margin, in this repo or any other, read \`$FM_ROOT/.agents/skills/tool-design/SKILL.md\` before designing it."
 OBSTACLE_RULE="5. If you are stuck and need help, or hit the same obstacle twice, append \`blocked [at=<epoch>]: {why}\` and stop."
 RESOLVE_RULE="   Only a \`resolved\` line with an opened decision's or blocker's exact key closes it, never a later \`done:\` or \`working:\`, even when the answer is what started that work; firstmate's reply normally writes it, and when a blocker or wait clears without one, append \`resolved [at=<epoch>]: {how it cleared}\` yourself (same \`[key=<slug>]\` if you opened it with one)."
 

@@ -6,7 +6,7 @@ This file keeps the evidence by commit hash or issue, so a reader can see the fa
 | Rule | Section | Class | Fixes |
 |---|---|---|---|
 | Absent differs from present but empty, unreadable or partial | 1 | Readers took a default or a healthy verdict from an empty, unreadable or partially scanned input. | 7e11aa7f, 8fd1acdf, 73d9a02e |
-| An operator override lives in a config file the tool reads | 1 | Overrides were hand-edited into generated checks or environment and were lost on the next rebuild. | 35cacd81, d085d587, 7e11aa7f |
+| An operator override is a setting in the settings owner | 1 | Overrides were hand-edited into generated checks or environment and were lost on the next rebuild. | 35cacd81, d085d587, 7e11aa7f |
 | One alarm per occurrence, held as a level | 1 | A failure record was re-escalated on every tick instead of raised once. | 9bc051ff |
 | Locks in one documented order, exec-stable ownership | 7 | Two locks taken in opposite orders, and arm ownership published before it was proven. | fd88ea0f, 886fe4d8 |
 | Liveness from progress beacons, not a fixed grace window | 7 | A supervision host gave up on a live successor after a fixed window under load. | upstream issue 7791 |
